@@ -4,6 +4,15 @@
  */
 
 /**
+ * Obtient un nœud DOM valide pour l'observation MutationObserver
+ * Fallback sur document.documentElement si document.body n'existe pas encore
+ * @returns {Node}
+ */
+function getObserverTarget() {
+  return document.body || document.documentElement;
+}
+
+/**
  * Attend que le DOM soit complètement chargé et stable
  * @param {number} maxWait - Timeout maximum en ms
  * @returns {Promise<void>}
@@ -12,7 +21,7 @@ function waitForDOMReady(maxWait = 5000) {
   const logger = window.TotleadsLogger;
   
   return new Promise((resolve) => {
-    if (document.readyState === 'complete') {
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
       logger?.debug('[EventDetector] DOM déjà prêt');
       resolve();
       return;
@@ -25,7 +34,7 @@ function waitForDOMReady(maxWait = 5000) {
       resolve();
     }, maxWait);
     
-    window.addEventListener('load', () => {
+    window.addEventListener('DOMContentLoaded', () => {
       clearTimeout(timeout);
       logger?.debug('[EventDetector] DOM prêt');
       resolve();
@@ -84,19 +93,20 @@ function waitForContentLoad(maxWait = 5000) {
     let lastMutationTime = startTime;
     let mutationCount = 0;
     
+    const observer = new MutationObserver(() => {
+      lastMutationTime = Date.now();
+      mutationCount++;
+    });
+
     const timeout = setTimeout(() => {
       observer.disconnect();
       logger?.debug('[EventDetector] Timeout contenu, résolution');
       resolve();
     }, maxWait);
     
-    // Observer les mutations du DOM
-    const observer = new MutationObserver(() => {
-      lastMutationTime = Date.now();
-      mutationCount++;
-    });
-    
-    observer.observe(document.body, {
+    // Nœud sécurisé : document.body s'il existe, sinon document.documentElement
+    const targetNode = getObserverTarget();
+    observer.observe(targetNode, {
       childList: true,
       subtree: true
     });
@@ -144,13 +154,6 @@ function waitForClickableElement(selector, maxWait = 5000) {
     
     logger?.debug(`[EventDetector] Attente élément cliquable: ${selector}`);
     
-    const timeout = setTimeout(() => {
-      observer.disconnect();
-      logger?.warn(`[EventDetector] Timeout pour: ${selector}`);
-      resolve(null);
-    }, maxWait);
-    
-    // Observer l'apparition de l'élément
     const observer = new MutationObserver(() => {
       const element = checkElement();
       if (element) {
@@ -159,8 +162,15 @@ function waitForClickableElement(selector, maxWait = 5000) {
         resolve(element);
       }
     });
+
+    const timeout = setTimeout(() => {
+      observer.disconnect();
+      logger?.warn(`[EventDetector] Timeout pour: ${selector}`);
+      resolve(null);
+    }, maxWait);
     
-    observer.observe(document.body, {
+    const targetNode = getObserverTarget();
+    observer.observe(targetNode, {
       childList: true,
       subtree: true,
       attributes: true,
@@ -273,4 +283,3 @@ if (typeof window !== 'undefined') {
     waitForCustomEvent,
   };
 }
-
