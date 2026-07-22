@@ -1,0 +1,276 @@
+/**
+ * Détecteurs d'événements pour remplacer les délais fixes
+ * Améliore les performances en écoutant les vrais événements
+ */
+
+/**
+ * Attend que le DOM soit complètement chargé et stable
+ * @param {number} maxWait - Timeout maximum en ms
+ * @returns {Promise<void>}
+ */
+function waitForDOMReady(maxWait = 5000) {
+  const logger = window.TotleadsLogger;
+  
+  return new Promise((resolve) => {
+    if (document.readyState === 'complete') {
+      logger?.debug('[EventDetector] DOM déjà prêt');
+      resolve();
+      return;
+    }
+    
+    logger?.debug('[EventDetector] Attente du DOM...');
+    
+    const timeout = setTimeout(() => {
+      logger?.warn('[EventDetector] Timeout DOM, résolution forcée');
+      resolve();
+    }, maxWait);
+    
+    window.addEventListener('load', () => {
+      clearTimeout(timeout);
+      logger?.debug('[EventDetector] DOM prêt');
+      resolve();
+    }, { once: true });
+  });
+}
+
+/**
+ * Attend qu'une navigation LinkedIn soit terminée
+ * Détecte les changements d'URL et la fin du chargement
+ * @param {number} maxWait - Timeout maximum en ms
+ * @returns {Promise<boolean>} - true si navigation détectée
+ */
+function waitForNavigationComplete(maxWait = 10000) {
+  const logger = window.TotleadsLogger;
+  
+  return new Promise((resolve) => {
+    const initialUrl = window.location.href;
+    let navigationDetected = false;
+    
+    const timeout = setTimeout(() => {
+      if (!navigationDetected) {
+        logger?.warn('[EventDetector] Timeout navigation');
+        resolve(false);
+      }
+    }, maxWait);
+    
+    // Observer les changements d'URL (SPA)
+    const urlCheckInterval = setInterval(() => {
+      if (window.location.href !== initialUrl) {
+        navigationDetected = true;
+        logger?.debug('[EventDetector] Navigation détectée');
+        
+        // Attendre que le contenu se charge
+        waitForContentLoad().then(() => {
+          clearInterval(urlCheckInterval);
+          clearTimeout(timeout);
+          resolve(true);
+        });
+      }
+    }, 100);
+  });
+}
+
+/**
+ * Attend que le contenu de la page soit chargé
+ * Détecte l'apparition d'éléments clés et l'absence d'animation
+ * @param {number} maxWait - Timeout maximum en ms
+ * @returns {Promise<void>}
+ */
+function waitForContentLoad(maxWait = 5000) {
+  const logger = window.TotleadsLogger;
+  
+  return new Promise((resolve) => {
+    const startTime = Date.now();
+    let lastMutationTime = startTime;
+    let mutationCount = 0;
+    
+    const timeout = setTimeout(() => {
+      observer.disconnect();
+      logger?.debug('[EventDetector] Timeout contenu, résolution');
+      resolve();
+    }, maxWait);
+    
+    // Observer les mutations du DOM
+    const observer = new MutationObserver(() => {
+      lastMutationTime = Date.now();
+      mutationCount++;
+    });
+    
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+    
+    // Vérifier périodiquement si le DOM est stable
+    const checkStability = setInterval(() => {
+      const timeSinceLastMutation = Date.now() - lastMutationTime;
+      
+      // Si pas de mutation depuis 500ms, le DOM est stable
+      if (timeSinceLastMutation > 500 && mutationCount > 0) {
+        clearInterval(checkStability);
+        clearTimeout(timeout);
+        observer.disconnect();
+        resolve();
+      }
+    }, 100);
+  });
+}
+
+/**
+ * Attend qu'un élément soit visible ET cliquable
+ * @param {string} selector - Sélecteur CSS
+ * @param {number} maxWait - Timeout maximum en ms
+ * @returns {Promise<Element|null>}
+ */
+function waitForClickableElement(selector, maxWait = 5000) {
+  const logger = window.TotleadsLogger;
+  
+  return new Promise((resolve) => {
+    // Vérifier si l'élément existe déjà et est cliquable
+    const checkElement = () => {
+      const element = document.querySelector(selector);
+      if (element && isElementClickable(element)) {
+        logger?.debug(`[EventDetector] Élément cliquable trouvé: ${selector}`);
+        return element;
+      }
+      return null;
+    };
+    
+    const existing = checkElement();
+    if (existing) {
+      resolve(existing);
+      return;
+    }
+    
+    logger?.debug(`[EventDetector] Attente élément cliquable: ${selector}`);
+    
+    const timeout = setTimeout(() => {
+      observer.disconnect();
+      logger?.warn(`[EventDetector] Timeout pour: ${selector}`);
+      resolve(null);
+    }, maxWait);
+    
+    // Observer l'apparition de l'élément
+    const observer = new MutationObserver(() => {
+      const element = checkElement();
+      if (element) {
+        clearTimeout(timeout);
+        observer.disconnect();
+        resolve(element);
+      }
+    });
+    
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['disabled', 'aria-disabled', 'style', 'class']
+    });
+  });
+}
+
+/**
+ * Vérifie si un élément est réellement cliquable
+ * @param {Element} element - Élément à vérifier
+ * @returns {boolean}
+ */
+function isElementClickable(element) {
+  if (!element) return false;
+  
+  // Vérifier si disabled
+  if (element.disabled || element.getAttribute('aria-disabled') === 'true') {
+    return false;
+  }
+  
+  // Vérifier la visibilité
+  const style = window.getComputedStyle(element);
+  if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+    return false;
+  }
+  
+  // Vérifier si l'élément a une taille
+  const rect = element.getBoundingClientRect();
+  if (rect.width === 0 || rect.height === 0) {
+    return false;
+  }
+  
+  return true;
+}
+
+/**
+ * Attend qu'une requête API soit terminée
+ * Écoute les appels fetch/XHR avec un pattern d'URL
+ * @param {string} urlPattern - Pattern d'URL à surveiller
+ * @param {number} maxWait - Timeout maximum en ms
+ * @returns {Promise<boolean>}
+ */
+function waitForApiCall(urlPattern, maxWait = 15000) {
+  const logger = window.TotleadsLogger;
+  
+  return new Promise((resolve) => {
+    logger?.debug(`[EventDetector] Attente API: ${urlPattern}`);
+    
+    const timeout = setTimeout(() => {
+      window.removeEventListener('message', messageHandler);
+      logger?.warn(`[EventDetector] Timeout API: ${urlPattern}`);
+      resolve(false);
+    }, maxWait);
+    
+    const messageHandler = (event) => {
+      if (event.source !== window) return;
+      
+      if (event.data.type === 'LINKEDIN_API_CAPTURED' && 
+          event.data.data?.url?.includes(urlPattern)) {
+        clearTimeout(timeout);
+        window.removeEventListener('message', messageHandler);
+        logger?.info(`[EventDetector] API capturée: ${urlPattern}`);
+        resolve(true);
+      }
+    };
+    
+    window.addEventListener('message', messageHandler);
+  });
+}
+
+/**
+ * Attend un événement personnalisé
+ * @param {string} eventName - Nom de l'événement
+ * @param {number} maxWait - Timeout maximum en ms
+ * @returns {Promise<CustomEvent|null>}
+ */
+function waitForCustomEvent(eventName, maxWait = 5000) {
+  const logger = window.TotleadsLogger;
+  
+  return new Promise((resolve) => {
+    logger?.debug(`[EventDetector] Attente événement: ${eventName}`);
+    
+    const timeout = setTimeout(() => {
+      window.removeEventListener(eventName, eventHandler);
+      logger?.warn(`[EventDetector] Timeout événement: ${eventName}`);
+      resolve(null);
+    }, maxWait);
+    
+    const eventHandler = (event) => {
+      clearTimeout(timeout);
+      window.removeEventListener(eventName, eventHandler);
+      logger?.debug(`[EventDetector] Événement reçu: ${eventName}`);
+      resolve(event);
+    };
+    
+    window.addEventListener(eventName, eventHandler, { once: true });
+  });
+}
+
+// Exposer les fonctions globalement
+if (typeof window !== 'undefined') {
+  window.TotleadsEventDetectors = {
+    waitForDOMReady,
+    waitForNavigationComplete,
+    waitForContentLoad,
+    waitForClickableElement,
+    isElementClickable,
+    waitForApiCall,
+    waitForCustomEvent,
+  };
+}
+

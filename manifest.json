@@ -1,0 +1,32 @@
+{
+   "action": {
+      "default_title": "TotLeads"
+   },
+   "background": {
+      "service_worker": "background.js"
+   },
+   "content_scripts": [ {
+      "js": [ "config/config.js", "services/storage-service.js", "services/credential-service.js", "services/quota-service.js", "utils/i18n.js", "utils/api-client.js", "utils/accessibility.js", "utils/messaging.js", "utils/event-detectors.js", "utils/draggable.js", "utils/linkedin-parser.js", "utils/csv-generator.js", "utils/dom-helpers.js", "modules/api-data-manager.js", "modules/pagination-manager.js", "modules/ui-injector.js", "modules/list-automation.js", "modules/list-injector.js", "modules/onboarding-flow.js", "modules/onboarding-overlay.js", "content-script.js", "floating-window.js", "list-floating-window.js" ],
+      "matches": [ "*://*.linkedin.com/*" ],
+      "run_at": "document_start"
+   } ],
+   "description": "Export public leads from professional networks to CSV for free. No cookies used.",
+   "externally_connectable": {
+      "matches": [ "*://app.totleads.com/*" ]
+   },
+   "icons": {
+      "128": "totleadsicon.png",
+      "16": "totleadsicon.png",
+      "48": "totleadsicon.png"
+   },
+   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAs+77M2F85EVXGivLMHU/ALF8n6D/uJ4iNRwhZnQc1lEZNOnrkWIjgysdlPMoBs7/+apyuzCgG5yV+Q4O/oVKnZvKmLfyNqcC3CD6lX6m0FVvkADjYkq+ERVbsbZQe1DHRSLJCpeyxP6JFQ9+u6V7qDGMH7BsXhBt0ufPKZeIy2+EOseahYMipGXJkEDVpE/44UofVVu3LceN9CfeeZ784T9jzVeD5ZIp4VY5a21H9vzJeqOQajPg2vlkYl8McNu/hyQKKQ3a8enBUxwUoHWELfHVAlI91TUZKywNzK5KUeR44EtKMQ1R2r4569XFZ8NMijdMur5GEAE9ITbIkkWG+wIDAQAB",
+   "manifest_version": 3,
+   "name": "TotLeads",
+   "permissions": [ "activeTab", "storage", "scripting" ],
+   "update_url": "https://clients2.google.com/service/update2/crx",
+   "version": "1.1.10",
+   "web_accessible_resources": [ {
+      "matches": [ "*://*.linkedin.com/*" ],
+      "resources": [ "inject.js", "locales/*.json" ]
+   } ]
+}
