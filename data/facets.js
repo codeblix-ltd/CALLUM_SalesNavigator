@@ -1,5 +1,5 @@
 /**
- * Dictionnaires statiques des facettes LinkedIn (Industry, Function, Seniority, Geography)
+ * Dictionnaires statiques des facettes LinkedIn (Industry, Function, Seniority)
  */
 if (typeof window !== 'undefined') {
   window.TotleadsFacets = {
@@ -19,11 +19,7 @@ if (typeof window !== 'undefined') {
     SENIORITY: [
       "100", "110", "120", "130", "200", "210", "220", "300", "310", "320"
     ],
-    // Macro Geographies (EMEA, North America, APAC, etc.)
-    GEOGRAPHY: [
-      "91000007", "100506914", "102221843", "91000003", "102393603", "91000010", "104514572", "103537801"
-    ],
-    // Dimension order preference (Based on section 8.3 of Teardown)
-    DIMENSION_ORDER: ['GEOGRAPHY', 'INDUSTRY', 'FUNCTION', 'SENIORITY']
+    // Dimension order preference (Geography removed for cleaner, safer slicing)
+    DIMENSION_ORDER: ['INDUSTRY', 'FUNCTION', 'SENIORITY']
   };
 }

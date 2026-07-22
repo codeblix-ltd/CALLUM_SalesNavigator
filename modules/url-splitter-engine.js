@@ -11,28 +11,37 @@ class UrlSplitterEngine {
     this.targetCeiling = 2500;
   }
 
-  start(rootUrl, targetCeiling = 2500) {
-    this.targetCeiling = targetCeiling;
-    
-    const isAccount = rootUrl.includes('/sales/search/company');
-    const apiManager = window.TotleadsAPIDataManager;
-    const lastApiData = isAccount ? apiManager?.getFreshAccountApiData(0) : apiManager?.getFreshApiData(0);
-    
-    this.queue = [{
-      url: rootUrl,
-      apiUrl: lastApiData?.url || null,
-      depth: 0,
-      parent_id: null,
-      partition_id: crypto.randomUUID(),
-      used_dimensions: []
-    }];
-    this.accepted = [];
-    this.unresolved = [];
-    this.isRunning = true;
-    
-    window.TotleadsLogger?.info('[Splitter] Démarrage du partitionnement adaptatif');
-    this.notifyProgress(rootUrl, 0);
-    this.processNext();
+start(rootUrl, targetCeiling = 2500) {
+      this.targetCeiling = targetCeiling;
+      
+      const isAccount = rootUrl.includes('/sales/search/company');
+      const apiManager = window.TotleadsAPIDataManager;
+      const lastApiData = isAccount ? apiManager?.getFreshAccountApiData(0) : apiManager?.getFreshApiData(0);
+      
+      // FIX: Detect dimensions already applied in the user's search
+      const decodedUrl = decodeURIComponent(rootUrl);
+      const existingDimensions = Array.from(decodedUrl.matchAll(/\btype:([A-Z0-9_]+)\b/g)).map(m => m[1]);
+      
+      // Keep only the dimensions that the splitter actually uses
+      const order = window.TotleadsFacets?.DIMENSION_ORDER || [];
+      const used_dimensions = existingDimensions.filter(dim => order.includes(dim));
+      
+      this.queue = [{
+        url: rootUrl,
+        apiUrl: lastApiData?.url || null,
+        depth: 0,
+        parent_id: null,
+        partition_id: crypto.randomUUID(),
+        // <--- Now it knows if INDUSTRY or FUNCTION are already used!
+        used_dimensions: used_dimensions 
+      }];
+      this.accepted = [];
+      this.unresolved = [];
+      this.isRunning = true;
+      
+      window.TotleadsLogger?.info('[Splitter] Démarrage du partitionnement adaptatif');
+      this.notifyProgress(rootUrl, 0);
+      this.processNext();
   }
 
   notifyProgress(currentUrl = '', currentCount = 0) {
