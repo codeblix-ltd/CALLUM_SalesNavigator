@@ -126,6 +126,35 @@ async function addExportButton() {
       onClick: handleExportButtonClick,
       leadsCount: leadsCount
     });
+
+    // Add this helper function below `createStyledButton`
+    function addSplitUrlButton(buttonContainer, resultsSpan) {
+      const config = window.TotleadsConfig;
+      const domHelpers = window.TotleadsDOMHelpers;
+
+      if (document.getElementById('totleads-splitter-btn')) return;
+
+      const splitterButton = domHelpers.createStyledButton({
+        id: 'totleads-splitter-btn',
+        text: 'Split URL (Adaptive)',
+        onClick: () => {
+          // Opens the Splitter UI Window
+          window.postMessage({ type: 'LINKEDIN_SPLITTER', action: 'SHOW_WINDOW' }, '*');
+        },
+        labelRole: 'splitter-button-label'
+      });
+
+      // Apply secondary styling so it differs from the main export button
+      splitterButton.style.background = 'linear-gradient(135deg, #6c757d 0%, #5a6268 100%)';
+      splitterButton.style.border = '1px solid #6c757d';
+
+      if (resultsSpan) {
+        buttonContainer.insertBefore(splitterButton, resultsSpan);
+        splitterButton.style.setProperty('margin-right', '10px', 'important');
+      } else {
+        buttonContainer.appendChild(splitterButton);
+      }
+    }
     
     // Améliorer l'accessibilité du bouton
     const a11y = window.TotleadsA11y;
@@ -151,7 +180,8 @@ async function addExportButton() {
         // Insérer le bouton dans la div, avant le span
         resultsContainer.insertBefore(button, resultsSpan);
         // Ajouter un margin-right pour espacer du span
-        button.style.setProperty('margin-right', '20px', 'important');
+        button.style.setProperty('margin-right', '10px', 'important'); // reduced from 20px
+        addSplitUrlButton(resultsContainer, resultsSpan); // <--- INJECT NEW BUTTON HERE
       } else {
         // Fallback: ajouter au début de la div des résultats
         resultsContainer.prepend(button);

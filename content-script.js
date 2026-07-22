@@ -102,6 +102,15 @@ function setupMessageHandlers() {
   window.addEventListener('message', async (event) => {
     if (event.source !== window) return;
 
+    // Listen for commands from the Splitter Engine
+    if (event.data.type === 'LINKEDIN_SPLITTER' && event.data.action === 'NAVIGATE_AND_COUNT') {
+      // Use History API to load the new filter without reloading the Chrome Extension environment
+      window.history.pushState({}, '', event.data.data.url);
+      
+      // Notify page that URL changed so it fetches the new results natively
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    }
+
     // Données API capturées depuis inject.js
     if (event.data.type === config.messages.LINKEDIN_API_CAPTURED) {
       try {
