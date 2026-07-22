@@ -35,7 +35,7 @@
           if (contentType && contentType.includes('application/json')) {
             const data = await clonedResponse.json();
             
-            if (data.elements && Array.isArray(data.elements) && data.elements.length > 0) {
+            if (data.elements && Array.isArray(data.elements)) {
 
               window.postMessage({
                 type: 'LINKEDIN_API_CAPTURED',
@@ -68,7 +68,7 @@
 
             totleadsDiagAccount('fetch', data, urlString);
 
-            if (data.elements && Array.isArray(data.elements) && data.elements.length > 0) {
+            if (data.elements && Array.isArray(data.elements)) {
 
               window.postMessage({
                 type: 'LINKEDIN_ACCOUNTS_API_CAPTURED',
@@ -173,7 +173,7 @@
                 try {
                   const data = JSON.parse(responseText);
                   
-                  if (data.elements && Array.isArray(data.elements) && data.elements.length > 0) {
+                  if (data.elements && Array.isArray(data.elements)) {
                     // Construire l'URL complète
                     const fullUrl = xhr._url.startsWith('http') ? xhr._url : `https://www.linkedin.com${xhr._url}`;
 
@@ -208,7 +208,7 @@
 
               const data = JSON.parse(responseData);
 
-              if (data.elements && Array.isArray(data.elements) && data.elements.length > 0) {
+              if (data.elements && Array.isArray(data.elements)) {
                 const fullUrl = xhr._url.startsWith('http') ? xhr._url : `https://www.linkedin.com${xhr._url}`;
 
                 window.postMessage({
@@ -244,7 +244,7 @@
                 try {
                   const data = JSON.parse(responseText);
                   
-                  if (data.elements && Array.isArray(data.elements) && data.elements.length > 0) {
+                  if (data.elements && Array.isArray(data.elements)) {
                     // Construire l'URL complète
                     const fullUrl = xhr._url.startsWith('http') ? xhr._url : `https://www.linkedin.com${xhr._url}`;
 
@@ -281,7 +281,7 @@
 
               const data = JSON.parse(responseData);
 
-              if (data.elements && Array.isArray(data.elements) && data.elements.length > 0) {
+              if (data.elements && Array.isArray(data.elements)) {
                 const fullUrl = xhr._url.startsWith('http') ? xhr._url : `https://www.linkedin.com${xhr._url}`;
 
                 totleadsDiagAccount('xhr-text', data, fullUrl);

@@ -66,6 +66,53 @@ async function getLeadsCount() {
   }
 }
 
+function injectSplitterFallback() {
+  const domHelpers = window.TotleadsDOMHelpers;
+  if (document.getElementById('totleads-splitter-btn')) return;
+  domHelpers.findButtonContainer().then(buttonContainer => {
+    if (buttonContainer) {
+      const resultsContainer = domHelpers.findResultsCountElement(buttonContainer);
+      if (resultsContainer) {
+        const resultsSpan = resultsContainer.querySelector('span');
+        addSplitUrlButton(resultsContainer, resultsSpan);
+      } else {
+        addSplitUrlButton(buttonContainer, null);
+      }
+    }
+  });
+}
+
+/**
+ * Add the Split URL button to the interface
+ */
+function addSplitUrlButton(buttonContainer, resultsSpan) {
+  const domHelpers = window.TotleadsDOMHelpers;
+
+  if (document.getElementById('totleads-splitter-btn')) return;
+
+  const splitterButton = domHelpers.createStyledButton({
+    id: 'totleads-splitter-btn',
+    text: 'Split URL (Adaptive)',
+    onClick: () => {
+      // Opens the Splitter UI Window
+      window.postMessage({ type: 'LINKEDIN_SPLITTER', action: 'SHOW_WINDOW' }, '*');
+    },
+    labelRole: 'splitter-button-label'
+  });
+
+  // Apply secondary styling so it differs from the main export button
+  splitterButton.style.background = 'linear-gradient(135deg, #6c757d 0%, #5a6268 100%)';
+  splitterButton.style.border = '1px solid #6c757d';
+
+  if (resultsSpan) {
+    buttonContainer.insertBefore(splitterButton, resultsSpan);
+    splitterButton.style.setProperty('margin-right', '10px', 'important');
+  } else {
+    buttonContainer.appendChild(splitterButton);
+    splitterButton.style.setProperty('margin-left', '10px', 'important');
+  }
+}
+
 /**
  * Ajoute le bouton d'exportation à l'interface LinkedIn
  * @returns {Promise<boolean>} - true si le bouton a été ajouté avec succès
@@ -90,6 +137,7 @@ async function addExportButton() {
     
     // Vérifier si le bouton existe déjà
     if (buttonExists()) {
+      injectSplitterFallback();
       return false;
     }
     
@@ -107,12 +155,14 @@ async function addExportButton() {
     // Vérifier à nouveau si le bouton existe déjà (dans le conteneur ou ailleurs)
     // Cette vérification supplémentaire évite les duplications en cas de timing
     if (buttonExists()) {
+      injectSplitterFallback();
       return false;
     }
     
     // Vérifier si le bouton existe déjà dans le conteneur trouvé
     const existingButtonInContainer = buttonContainer.querySelector(`#${config.selectors.EXPORT_BUTTON_ID}`);
     if (existingButtonInContainer) {
+      injectSplitterFallback();
       return false;
     }
     
@@ -127,34 +177,6 @@ async function addExportButton() {
       leadsCount: leadsCount
     });
 
-    // Add this helper function below `createStyledButton`
-    function addSplitUrlButton(buttonContainer, resultsSpan) {
-      const config = window.TotleadsConfig;
-      const domHelpers = window.TotleadsDOMHelpers;
-
-      if (document.getElementById('totleads-splitter-btn')) return;
-
-      const splitterButton = domHelpers.createStyledButton({
-        id: 'totleads-splitter-btn',
-        text: 'Split URL (Adaptive)',
-        onClick: () => {
-          // Opens the Splitter UI Window
-          window.postMessage({ type: 'LINKEDIN_SPLITTER', action: 'SHOW_WINDOW' }, '*');
-        },
-        labelRole: 'splitter-button-label'
-      });
-
-      // Apply secondary styling so it differs from the main export button
-      splitterButton.style.background = 'linear-gradient(135deg, #6c757d 0%, #5a6268 100%)';
-      splitterButton.style.border = '1px solid #6c757d';
-
-      if (resultsSpan) {
-        buttonContainer.insertBefore(splitterButton, resultsSpan);
-        splitterButton.style.setProperty('margin-right', '10px', 'important');
-      } else {
-        buttonContainer.appendChild(splitterButton);
-      }
-    }
     
     // Améliorer l'accessibilité du bouton
     const a11y = window.TotleadsA11y;
@@ -186,10 +208,12 @@ async function addExportButton() {
         // Fallback: ajouter au début de la div des résultats
         resultsContainer.prepend(button);
         button.style.setProperty('margin-right', '20px', 'important');
+        addSplitUrlButton(resultsContainer, null);
       }
     } else {
       // Fallback: ajouter à la fin du conteneur principal
       buttonContainer.appendChild(button);
+      addSplitUrlButton(buttonContainer, null);
     }
     
     // Initialiser la gestion responsive du bouton
