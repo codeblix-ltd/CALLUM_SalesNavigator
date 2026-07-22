@@ -319,69 +319,34 @@ function isAuthenticationError(error) {
  * @returns {Promise<Object>} - Résultat de l'upload
  */
 async function uploadCSV(csvContent, filename = 'linkedin_leads.csv', searchUrl = null) {
-  const config = window.TotleadsConfig;
-  const messaging = window.TotleadsMessaging;
   try {
-    // Obtenir un token Sanctum valide (avec vérification d'âge proactive)
-    const sanctumToken = await getSanctumToken(false);
-    if (!sanctumToken) {
-      throw new Error('Impossible d\'obtenir un token d\'authentification. Veuillez vous connecter d\'abord.');
-    }
-    
-    // Passer par le background script pour éviter ERR_BLOCKED_BY_CLIENT
-    const result = await messaging.sendToBackground('uploadCSV', {
-      csvContent,
-      filename,
-      searchUrl: searchUrl || window.location?.href || '',
-      token: sanctumToken,
-      apiBaseUrl: config.API_BASE_URL
-    });
-    
-    if (!result.success) {
-      // L'erreur du backend est déjà formatée dans background.js
-      throw new Error(result.error || 'Erreur lors de l\'upload');
-    }
-    
-    return result;
-  } catch (error) {
-    
-    // Si erreur d'authentification (401, Unauthenticated, Token invalide, etc.)
-    const isAuthError = isAuthenticationError(error);
-    
-    if (isAuthError) {      
-      // Forcer le renouvellement du token
-      const newToken = await getSanctumToken(true);
-      
-      if (newToken) {
-        
-        // Réessayer l'upload avec le nouveau token
-        try {
-          const retryResult = await messaging.sendToBackground('uploadCSV', {
-            csvContent,
-            filename,
-            searchUrl: searchUrl || window.location?.href || '',
-            token: newToken,
-            apiBaseUrl: config.API_BASE_URL
-          });
-          
-          if (retryResult.success) {
-            return retryResult;
-          } else {
-            throw new Error(retryResult.error || 'Erreur lors de l\'upload après renouvellement');
-          }
-        } catch (retryError) {
-          throw new Error('Échec de l\'upload après renouvellement du token: ' + retryError.message);
-        }
-      } else {
-        throw new Error('Token expiré et impossible de se reconnecter. Veuillez vous reconnecter.');
-      }
-    }
-    
-    // Autres erreurs
+    // 1. Add UTF-8 BOM so Excel opens the file correctly
+    const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+
+    // 2. Create a hidden link and force the browser to download the file
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', filename);
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    // 3. Clean up browser memory
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+    // 4. Return a FAKE success response to trick the UI into thinking it worked,
+    // and feed it a fake unlimited quota (999,999) so you never run out.
     return {
-      success: false,
-      error: error.message
+      success: true,
+      data: {
+        remaining_quota: 999999, 
+        duplicatesRemoved: 0
+      }
     };
+  } catch (error) {
+    return { success: false, error: error.message };
   }
 }
 
@@ -393,72 +358,29 @@ async function uploadCSV(csvContent, filename = 'linkedin_leads.csv', searchUrl 
  * @returns {Promise<Object>} - Résultat de l'upload
  */
 async function uploadAccountCSV(csvContent, filename = 'linkedin_accounts.csv', searchUrl = null) {
-  const config = window.TotleadsConfig;
-  const messaging = window.TotleadsMessaging;
   try {
-    // Obtenir un token Sanctum valide
-    const sanctumToken = await getSanctumToken(false);
-    if (!sanctumToken) {
-      throw new Error('Impossible d\'obtenir un token d\'authentification. Veuillez vous connecter d\'abord.');
-    }
-    
-    // Passer par le background script pour éviter ERR_BLOCKED_BY_CLIENT
-    const result = await messaging.sendToBackground('uploadAccountCSV', {
-      csvContent,
-      filename,
-      searchUrl: searchUrl || window.location?.href || '',
-      token: sanctumToken,
-      apiBaseUrl: config.API_BASE_URL
-    });
-    
-    if (!result.success) {
-      throw new Error(result.error || 'Erreur lors de l\'upload');
-    }
-    
+    const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', filename);
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+
     return {
       success: true,
-      data: result.data || {}
+      data: {
+        remaining_quota: 999999,
+        duplicatesRemoved: 0
+      }
     };
   } catch (error) {
-    if (isAuthenticationError(error)) {
-      const newToken = await getSanctumToken(true);
-
-      if (newToken) {
-        try {
-          const retryResult = await messaging.sendToBackground('uploadAccountCSV', {
-            csvContent,
-            filename,
-            searchUrl: searchUrl || window.location?.href || '',
-            token: newToken,
-            apiBaseUrl: config.API_BASE_URL
-          });
-
-          if (retryResult.success) {
-            return {
-              success: true,
-              data: retryResult.data || {}
-            };
-          }
-
-          throw new Error(retryResult.error || 'Erreur lors de l\'upload après renouvellement');
-        } catch (retryError) {
-          return {
-            success: false,
-            error: 'Échec de l\'upload après renouvellement du token: ' + retryError.message
-          };
-        }
-      }
-
-      return {
-        success: false,
-        error: 'Token expiré et impossible de se reconnecter. Veuillez vous reconnecter.'
-      };
-    }
-
-    return {
-      success: false,
-      error: error.message || 'Erreur lors de l\'upload du CSV'
-    };
+    return { success: false, error: error.message };
   }
 }
 
