@@ -75,53 +75,50 @@ function transformLeadToCSVRow(element) {
     const currentPosition = positions[0];
     const companyInfo = currentPosition?.companyUrnResolutionResult;
     
-    // Construire les URLs d'images
-    const profileImageUrl = parser.buildProfileImageUrl(element.profilePictureDisplayImage);
-    const companyLogoUrl = parser.buildCompanyLogoUrl(companyInfo);
+    // Extract IDs to build real URLs
+    const profileId = parser.extractProviderProfileId(element.entityUrn || '');
+    const linkedinUrl = profileId ? `https://linkedin.com/in/${profileId}` : '';
     
-    // Formater la date de début (première position)
-    const startDate = parser.formatStartDate(currentPosition?.startedOn);
-    
-    // Construire le tableau JSON de toutes les positions
-    const positionsForJson = positions.map((position) => {
-      const posCompanyInfo = position?.companyUrnResolutionResult;
-      const posLogoUrl = parser.buildCompanyLogoUrl(posCompanyInfo);
-      return {
-        companyName: cleanContent(position?.companyName),
-        title: cleanContent(position?.title),
-        startedOn: parser.formatStartDate(position?.startedOn),
-        description: cleanContent(position?.description),
-        companyUrn: parser.extractProviderProfileId(position?.companyUrn || ''),
-        companyLocation: cleanContent(posCompanyInfo?.location),
-        companyIndustry: cleanContent(posCompanyInfo?.industry),
-        companyLogoUrl: parser.optimizeImageUrl(posLogoUrl),
-      };
-    });
-    const positionsJson = JSON.stringify(positionsForJson);
-    const positionsCsvCell = `"${positionsJson.replace(/"/g, '""')}"`;
+    const companyId = parser.extractProviderProfileId(currentPosition?.companyUrn || '');
+    const companyLinkedinUrl = companyId ? `https://www.linkedin.com/company/${companyId}` : '';
 
+    // Map fields matching the desired output
+    const fullName = sanitizeContent(element.fullName);
+    const firstName = sanitizeContent(element.firstName);
+    const lastName = sanitizeContent(element.lastName);
+    const domain = ''; // SN lead search doesn't return website domain
+    const companyName = sanitizeContent(currentPosition?.companyName);
+    const currentTitle = sanitizeContent(currentPosition?.title);
+    const geoRegion = sanitizeContent(element.geoRegion);
+    const companyIndustry = sanitizeContent(companyInfo?.industry);
+    const companySize = sanitizeContent(companyInfo?.employeeCountRange || ''); 
+    const employeeCount = ''; 
+    const companyLocation = sanitizeContent(companyInfo?.location);
+    const foundedYear = ''; 
+    const connectionDegree = element.degree || '';
+    const premium = element.premium ? '1' : '0'; // Translates boolean to 1 or 0
+    const companyDescription = sanitizeContent(currentPosition?.description);
+    const summary = sanitizeContent(element.summary);
     
     return [
-      `"${sanitizeContent(element.fullName || '')}"`,
-      `"${sanitizeContent(element.firstName || '')}"`,
-      `"${sanitizeContent(element.lastName || '')}"`,
-      `"${parser.extractUrnId(element.objectUrn || '')}"`,
-      `"${parser.extractProviderProfileId(element.entityUrn || '')}"`,
-      `"${sanitizeContent(element.summary || '')}"`,
-      `"${sanitizeContent(element.geoRegion || '')}"`,
-      element.premium ? 'true' : 'false',
-      element.openLink ? 'true' : 'false',
-      element.degree || '',
-      `"${parser.optimizeImageUrl(profileImageUrl)}"`,
-      `"${sanitizeContent(currentPosition?.companyName || '')}"`,
-      `"${sanitizeContent(currentPosition?.title || '')}"`,
-      `"${startDate}"`,
-      `"${sanitizeContent(currentPosition?.description || '')}"`,
-      `"${parser.extractProviderProfileId(currentPosition?.companyUrn || '')}"`,
-      `"${sanitizeContent(companyInfo?.location || '')}"`,
-      `"${sanitizeContent(companyInfo?.industry || '')}"`,
-      `"${parser.optimizeImageUrl(companyLogoUrl)}"`,
-      positionsCsvCell,
+      `"${fullName}"`,
+      `"${firstName}"`,
+      `"${lastName}"`,
+      `"${domain}"`,
+      `"${companyName}"`,
+      `"${currentTitle}"`,
+      `"${linkedinUrl}"`,
+      `"${geoRegion}"`,
+      `"${companyIndustry}"`,
+      `"${companySize}"`,
+      `"${companyLinkedinUrl}"`,
+      `"${employeeCount}"`,
+      `"${companyLocation}"`,
+      `"${foundedYear}"`,
+      `"${connectionDegree}"`,
+      `"${premium}"`,
+      `"${companyDescription}"`,
+      `"${summary}"`
     ].join(',');
   } catch (error) {
     return '';
@@ -170,13 +167,20 @@ function generateCSVFromApiData(apiElements, maxLeads = null) {
   
   const config = window.TotleadsConfig;  
   try {
-    // Limiter le nombre de leads si spécifié
     const limit = maxLeads || config.MAX_LEADS_TO_PROCESS;
     const limitedElements = apiElements.slice(0, limit);
     
+    // NEW CUSTOM HEADERS
+    const NEW_HEADERS = [
+      'FullName', 'FirstName', 'LastName', 'Domain', 'CompanyName', 
+      'CurrentTitle', 'LinkedinURL', 'GeographicRegion', 'CompanyIndustry', 
+      'CompanySize', 'CompanyLinkedin', 'EmployeeCount', 'CompanyLocation', 
+      'FoundedYear', 'ConnectionDegree', 'Premium', 'CompanyDescription', 'Summary'
+    ];
+    
     // Générer le CSV
     const csvRows = [
-      config.CSV_HEADERS.join(','),
+      NEW_HEADERS.join(','),
       ...limitedElements
         .map(transformLeadToCSVRow)
         .filter(row => row !== '') // Filtrer les lignes vides (erreurs)
