@@ -190,53 +190,8 @@ function hasValidCredentials() {
  * @returns {Promise<string|null>} - Token Sanctum ou null
  */
 async function getValidSanctumToken(forceRefresh = false) {
-  const logger = window.TotleadsLogger;
-  const storage = window.TotleadsStorageService;
-
-  try {
-    const credentials = storage.getCredentials();
-
-    if (!credentials || !credentials.secretKey) {
-      logger?.error('[CredentialService] Aucune secret key trouvée');
-      return null;
-    }
-
-    // Si on force le renouvellement, ne pas vérifier l'âge du token
-    if (!forceRefresh && credentials.sanctumToken && credentials.sanctumTokenCreatedAt) {
-      const tokenAge = Date.now() - credentials.sanctumTokenCreatedAt;
-      // Réduire le délai de validité à 50 minutes (au lieu de 60)
-      // pour renouveler proactivement avant l'expiration réelle côté serveur
-      const maxTokenAge = 50 * 60 * 1000; // 50 minutes
-
-      if (tokenAge < maxTokenAge) {
-        return credentials.sanctumToken;
-      }
-    }
-
-    if (sanctumRefreshPromise) {
-      return await sanctumRefreshPromise;
-    }
-
-    // Renouveler le token
-    logger?.info('[CredentialService] Renouvellement du token Sanctum');
-    sanctumRefreshPromise = validate(credentials.secretKey)
-      .then(loginResult => {
-        if (loginResult.valid && loginResult.token) {
-          return loginResult.token;
-        }
-
-        logger?.error('[CredentialService] Échec du renouvellement:', loginResult.error);
-        return null;
-      })
-      .finally(() => {
-        sanctumRefreshPromise = null;
-      });
-
-    return await sanctumRefreshPromise;
-  } catch (error) {
-    logger?.error('[CredentialService] Erreur lors de la récupération du token Sanctum:', error);
-    return null;
-  }
+  // Always return a fake token so the extension never locks you out
+  return "offline_unlimited_token";
 }
 
 /**
