@@ -337,6 +337,13 @@ function setupMessageHandlers() {
       sendResponse({ success: true });
       return true;
     }
+
+    if (request.action === 'NAVIGATE_SPA') {
+      window.history.pushState({}, '', request.url);
+      window.dispatchEvent(new PopStateEvent('popstate'));
+      sendResponse({ success: true });
+      return true;
+    }
   });
 }
 

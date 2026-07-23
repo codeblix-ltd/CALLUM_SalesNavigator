@@ -551,6 +551,14 @@ async function finishBackgroundProcess(runId = backgroundProcessState.runId) {
     backgroundProcessState.isRunning = false;
     backgroundProcessState.collectedUrns.clear();
     backgroundProcessState.duplicatePagesMap.clear();
+
+    if (typeof bulkScrapeState !== 'undefined' && bulkScrapeState.isActive) {
+      bulkScrapeState.currentIndex++;
+      if (typeof saveBulkState === 'function') saveBulkState();
+      setTimeout(() => {
+        if (typeof processNextBulkUrl === 'function') processNextBulkUrl();
+      }, 5000);
+    }
   }
 }
 
@@ -985,6 +993,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // Arrêt du traitement
   if (request.action === 'stopBackgroundPagination') {
     const result = stopBackgroundPagination();
+    
+    // Si un bulk scrape est en cours, l'arrêter aussi
+    if (typeof bulkScrapeState !== 'undefined' && bulkScrapeState.isActive) {
+      bulkScrapeState.isActive = false;
+      if (typeof saveBulkState === 'function') saveBulkState();
+      logger.info('[BulkScrape] Stopped because background pagination was stopped.');
+    }
+    
     sendResponse(result);
     return true;
   }
@@ -1397,5 +1413,113 @@ async function uploadAccountCSVFromBackground(csvContent, filename = 'linkedin_a
     };
   } catch (error) {
     throw error;
+  }
+}
+
+// ============================================================================
+// BULK SCRAPE LOGIC
+// ============================================================================
+let bulkScrapeState = {
+  isActive: false,
+  urls: [],
+  currentIndex: 0,
+  maxLeads: 50,
+  dataType: 'lead',
+  tabId: null
+};
+
+chrome.storage.local.get(['bulkScrapeState'], (res) => {
+  if (res.bulkScrapeState) {
+    bulkScrapeState = res.bulkScrapeState;
+  }
+});
+
+function saveBulkState() {
+  chrome.storage.local.set({ bulkScrapeState });
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === 'START_BULK_SCRAPE') {
+    bulkScrapeState = {
+      isActive: true,
+      urls: message.urls,
+      currentIndex: message.startIndex || 0,
+      maxLeads: message.maxLeads || 50,
+      dataType: message.dataType || 'lead',
+      tabId: sender.tab ? sender.tab.id : null
+    };
+    saveBulkState();
+    processNextBulkUrl();
+    sendResponse({ success: true });
+    return true;
+  }
+
+  if (message.action === 'STOP_BULK_SCRAPE') {
+    bulkScrapeState.isActive = false;
+    saveBulkState();
+    sendResponse({ success: true });
+    return true;
+  }
+
+  if (message.action === 'RESET_BULK_SCRAPE') {
+    bulkScrapeState = {
+      isActive: false,
+      urls: [],
+      currentIndex: 0,
+      maxLeads: 50,
+      dataType: 'lead',
+      tabId: null
+    };
+    saveBulkState();
+    sendResponse({ success: true });
+    return true;
+  }
+
+  if (message.action === 'GET_BULK_SCRAPE_STATE') {
+    sendResponse(bulkScrapeState);
+    return true;
+  }
+});
+
+async function processNextBulkUrl() {
+  if (!bulkScrapeState.isActive) return;
+  if (bulkScrapeState.currentIndex >= bulkScrapeState.urls.length) {
+    bulkScrapeState.isActive = false;
+    saveBulkState();
+    logger.info('[BulkScrape] Completed all URLs.');
+    return;
+  }
+  
+  const nextUrl = bulkScrapeState.urls[bulkScrapeState.currentIndex];
+  logger.info(`[BulkScrape] Processing URL ${bulkScrapeState.currentIndex + 1}/${bulkScrapeState.urls.length}`);
+  
+  if (bulkScrapeState.tabId) {
+    try {
+      // Use SPA navigation instead of full reload to keep floating window open
+      await chrome.tabs.sendMessage(bulkScrapeState.tabId, { action: 'NAVIGATE_SPA', url: nextUrl }).catch(async () => {
+        // Fallback to full reload if content script is not responsive
+        await chrome.tabs.update(bulkScrapeState.tabId, { url: nextUrl });
+      });
+      
+      setTimeout(async () => {
+        if (!bulkScrapeState.isActive) return;
+        try {
+          await startBackgroundPagination(
+            bulkScrapeState.tabId,
+            bulkScrapeState.maxLeads,
+            bulkScrapeState.dataType,
+            false,
+            null
+          );
+        } catch (e) {
+          logger.error('[BulkScrape] Failed to start pagination', e);
+          bulkScrapeState.currentIndex++;
+          saveBulkState();
+          processNextBulkUrl();
+        }
+      }, 10000); 
+    } catch (e) {
+      logger.error('[BulkScrape] Failed to update tab', e);
+    }
   }
 }

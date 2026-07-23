@@ -33,7 +33,8 @@
       "content-script.js", 
       "floating-window.js", 
       "list-floating-window.js",
-      "splitter-floating-window.js"
+      "splitter-floating-window.js",
+      "bulk-floating-window.js"
    ],
       "matches": [ "*://*.linkedin.com/*" ],
       "run_at": "document_start"

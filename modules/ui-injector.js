@@ -114,6 +114,37 @@ function addSplitUrlButton(buttonContainer, resultsSpan) {
 }
 
 /**
+ * Add the Bulk Scrape button to the interface
+ */
+function addBulkScrapeButton(buttonContainer, resultsSpan) {
+  const domHelpers = window.TotleadsDOMHelpers;
+
+  if (document.getElementById('totleads-bulk-btn')) return;
+
+  const bulkButton = domHelpers.createStyledButton({
+    id: 'totleads-bulk-btn',
+    text: 'Bulk Extract URLs',
+    onClick: () => {
+      // Opens the Bulk UI Window
+      window.postMessage({ type: 'LINKEDIN_BULK', action: 'SHOW_WINDOW' }, '*');
+    },
+    labelRole: 'bulk-button-label'
+  });
+
+  // Apply secondary styling so it differs from the main export button
+  bulkButton.style.background = 'linear-gradient(135deg, #0f172a 0%, #1e293b 100%)';
+  bulkButton.style.border = '1px solid #0f172a';
+
+  if (resultsSpan) {
+    buttonContainer.insertBefore(bulkButton, resultsSpan);
+    bulkButton.style.setProperty('margin-right', '10px', 'important');
+  } else {
+    buttonContainer.appendChild(bulkButton);
+    bulkButton.style.setProperty('margin-left', '10px', 'important');
+  }
+}
+
+/**
  * Ajoute le bouton d'exportation à l'interface LinkedIn
  * @returns {Promise<boolean>} - true si le bouton a été ajouté avec succès
  */
@@ -204,16 +235,19 @@ async function addExportButton() {
         // Ajouter un margin-right pour espacer du span
         button.style.setProperty('margin-right', '10px', 'important'); // reduced from 20px
         addSplitUrlButton(resultsContainer, resultsSpan); // <--- INJECT NEW BUTTON HERE
+        addBulkScrapeButton(resultsContainer, resultsSpan);
       } else {
         // Fallback: ajouter au début de la div des résultats
         resultsContainer.prepend(button);
         button.style.setProperty('margin-right', '20px', 'important');
         addSplitUrlButton(resultsContainer, null);
+        addBulkScrapeButton(resultsContainer, null);
       }
     } else {
       // Fallback: ajouter à la fin du conteneur principal
       buttonContainer.appendChild(button);
       addSplitUrlButton(buttonContainer, null);
+      addBulkScrapeButton(buttonContainer, null);
     }
     
     // Initialiser la gestion responsive du bouton
