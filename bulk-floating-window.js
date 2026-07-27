@@ -59,7 +59,7 @@ function createBulkFloatingWindow() {
       <div id="bulkStatus" style="padding:15px; background:#f8f9fa; border-radius:8px; display:none; margin-bottom:15px; font-weight:bold; color:#00a86b; font-size:13px; line-height:1.5;"></div>
 
       <button id="startBulkBtn" class="button" style="width:100%; padding:12px; background:linear-gradient(135deg, #11AF7B 0%, #08835F 100%); color:white; border:none; border-radius:8px; cursor:pointer; font-weight:bold; margin-bottom:10px;">Start Bulk Scrape</button>
-      <button id="stopBulkBtn" class="button" style="width:100%; padding:12px; background:linear-gradient(135deg, #dc3545 0%, #c82333 100%); color:white; border:none; border-radius:8px; cursor:pointer; font-weight:bold; display:none;">Stop Bulk Scrape</button>
+      <button id="pauseBulkBtn" class="button" style="width:100%; padding:12px; background:linear-gradient(135deg, #dc3545 0%, #c82333 100%); color:white; border:none; border-radius:8px; cursor:pointer; font-weight:bold; display:none;">Pause Bulk Scrape</button>
       <button id="skipBulkBtn" class="button" style="width:100%; padding:12px; background:linear-gradient(135deg, #f59e0b 0%, #d97706 100%); color:white; border:none; border-radius:8px; cursor:pointer; font-weight:bold; display:none; margin-top:10px;">Skip This URL &amp; Continue</button>
       <button id="resetBulkBtn" class="button" style="width:100%; padding:12px; background:#6c757d; color:white; border:none; border-radius:8px; cursor:pointer; font-weight:bold; display:none; margin-top:10px;">Reset Progress</button>
     </div>
@@ -77,7 +77,7 @@ function createBulkFloatingWindow() {
   const urlsInput = document.getElementById('bulkUrlsInput');
   const countLabel = document.getElementById('bulkUrlsCount');
   const startBtn = document.getElementById('startBulkBtn');
-  const stopBtn = document.getElementById('stopBulkBtn');
+  const pauseBtn = document.getElementById('pauseBulkBtn');
   const skipBtn = document.getElementById('skipBulkBtn');
   const resetBtn = document.getElementById('resetBulkBtn');
   const statusEl = document.getElementById('bulkStatus');
@@ -113,7 +113,7 @@ function createBulkFloatingWindow() {
     statusEl.style.color = '#b91c1c';
     statusEl.style.border = '1px solid #fecaca';
     statusEl.textContent = 'The extension was reloaded. Refresh this LinkedIn tab to reconnect it.';
-    [startBtn, stopBtn, skipBtn, resetBtn, urlsInput, maxLeadsInput].forEach(element => {
+    [startBtn, pauseBtn, skipBtn, resetBtn, urlsInput, maxLeadsInput].forEach(element => {
       element.disabled = true;
     });
   };
@@ -148,19 +148,37 @@ function createBulkFloatingWindow() {
           urlsInput.value = state.urls.join('\n');
           updateCount();
         }
+        if (Number(state.maxLeads) > 0) {
+          maxLeadsInput.value = state.maxLeads;
+        }
         
         statusEl.style.display = 'block';
-        if (state.isActive) {
+        if (state.isPausing) {
+          statusEl.style.background = '#fffbeb';
+          statusEl.style.color = '#92400e';
+          statusEl.style.border = '1px solid #fde68a';
+          statusEl.textContent = 'Pausing safely after the current step… Your leads are being checkpointed. No CSV will be downloaded.';
+
+          startBtn.style.display = 'none';
+          pauseBtn.style.display = 'none';
+          skipBtn.style.display = 'none';
+          resetBtn.style.display = 'none';
+          urlsInput.disabled = true;
+          maxLeadsInput.disabled = true;
+        } else if (state.isActive) {
           statusEl.style.background = '#f0fdf4';
           statusEl.style.color = '#15803d';
           statusEl.style.border = '1px solid #bbf7d0';
           statusEl.innerHTML = `Processing URL ${state.currentIndex + 1} of ${state.urls.length}...<br><span style="font-size:11px; color:#6b7280; word-break:break-all;">${state.urls[state.currentIndex]}</span>`;
           
           startBtn.style.display = 'none';
-          stopBtn.style.display = 'block';
+          pauseBtn.style.display = 'block';
+          pauseBtn.disabled = false;
+          pauseBtn.textContent = 'Pause Bulk Scrape';
           skipBtn.style.display = 'none';
           resetBtn.style.display = 'none';
           urlsInput.disabled = true;
+          maxLeadsInput.disabled = true;
         } else {
           statusEl.style.background = '#f8f9fa';
           statusEl.style.color = '#4b5563';
@@ -181,9 +199,21 @@ function createBulkFloatingWindow() {
             statusEl.style.border = '1px solid #fed7aa';
             statusEl.textContent = `Paused at URL ${state.currentIndex + 1} of ${state.urls.length}: ${errorMessage}${punctuation}${partialMessage}`;
             skipBtn.style.display = 'block';
-          } else {
-            statusEl.innerHTML = `Stopped at URL ${state.currentIndex + 1} of ${state.urls.length}.`;
+            resetBtn.style.display = 'block';
+          } else if (state.isPaused) {
+            const progress = state.pausedProgress || {};
+            const page = Number(progress.currentPage) || 1;
+            const leadCount = Number(progress.collectedCount) || 0;
+            statusEl.style.background = '#eff6ff';
+            statusEl.style.color = '#1d4ed8';
+            statusEl.style.border = '1px solid #bfdbfe';
+            statusEl.textContent = `Paused at URL ${state.currentIndex + 1} of ${state.urls.length} — page ${page}, ${leadCount} leads safely kept. Resume will continue from this checkpoint. No CSV was downloaded.`;
             skipBtn.style.display = 'block';
+            resetBtn.style.display = 'block';
+          } else {
+            statusEl.innerHTML = `Ready at URL ${state.currentIndex + 1} of ${state.urls.length}.`;
+            skipBtn.style.display = 'block';
+            resetBtn.style.display = 'block';
           }
           
           startBtn.style.display = 'block';
@@ -192,8 +222,9 @@ function createBulkFloatingWindow() {
           } else {
             startBtn.style.display = 'none';
           }
-          stopBtn.style.display = 'none';
-          urlsInput.disabled = false;
+          pauseBtn.style.display = 'none';
+          urlsInput.disabled = state.isPaused === true;
+          maxLeadsInput.disabled = state.isPaused === true;
         }
       }
     });
@@ -232,8 +263,16 @@ function createBulkFloatingWindow() {
     });
   };
 
-  stopBtn.onclick = () => {
-    sendMessage({ action: 'STOP_BULK_SCRAPE' }, () => {
+  pauseBtn.onclick = () => {
+    pauseBtn.disabled = true;
+    pauseBtn.textContent = 'Pausing safely...';
+    sendMessage({ action: 'PAUSE_BULK_SCRAPE' }, res => {
+      if (!res?.success) {
+        pauseBtn.disabled = false;
+        pauseBtn.textContent = 'Pause Bulk Scrape';
+        alert(res?.error || 'Bulk scrape could not be paused.');
+        return;
+      }
       syncState();
     });
   };
@@ -259,9 +298,11 @@ function createBulkFloatingWindow() {
       statusEl.style.display = 'none';
       startBtn.style.display = 'block';
       startBtn.textContent = 'Start Bulk Scrape';
+      pauseBtn.style.display = 'none';
       skipBtn.style.display = 'none';
       resetBtn.style.display = 'none';
       urlsInput.disabled = false;
+      maxLeadsInput.disabled = false;
     });
   };
 
