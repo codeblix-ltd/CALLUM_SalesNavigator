@@ -292,7 +292,26 @@ async function collectCurrentPageForBackground(afterTimestamp = 0, dataType = 'l
           config.delays.API_DATA_POLL
         );
     
-    if (freshData && freshData.elements) {
+    if (freshData?.error) {
+      return {
+        success: false,
+        reason: 'api_error',
+        apiError: freshData.error,
+        statusCode: freshData.statusCode,
+        leads: []
+      };
+    }
+
+    if (freshData && Array.isArray(freshData.elements)) {
+      if (freshData.elements.length === 0) {
+        return {
+          success: false,
+          reason: 'empty_results',
+          leads: [],
+          metadata: freshData.metadata
+        };
+      }
+
       return {
         success: true,
         leads: freshData.elements,
@@ -302,11 +321,13 @@ async function collectCurrentPageForBackground(afterTimestamp = 0, dataType = 'l
     
     return {
       success: false,
+      reason: 'api_timeout',
       leads: []
     };
   } catch (error) {
     return {
       success: false,
+      reason: 'collection_error',
       error: error.message,
       leads: []
     };
@@ -365,9 +386,10 @@ async function goToNextPageForBackground() {
  * @param {Array} leads - Tableau des leads/accounts à exporter
  * @param {number} maxLeads - Nombre maximum de leads/accounts (optionnel, pour éviter la limitation)
  * @param {string} dataType - Type de données ('lead' ou 'account')
+ * @param {Object|null} bulkContext - Numéro de l'URL dans une extraction en lot
  * @returns {Promise<Object>} - Résultat de l'opération
  */
-async function generateAndUploadCSV(leads, maxLeads = null, dataType = 'lead') {
+async function generateAndUploadCSV(leads, maxLeads = null, dataType = 'lead', bulkContext = null) {
   const csvGenerator = window.TotleadsCSVGenerator;
   
   try {
@@ -381,9 +403,19 @@ async function generateAndUploadCSV(leads, maxLeads = null, dataType = 'lead') {
     
     // Uploader sur le serveur
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const totalUrls = Number.isInteger(bulkContext?.totalUrls) && bulkContext.totalUrls > 0
+      ? bulkContext.totalUrls
+      : null;
+    const urlNumber = Number.isInteger(bulkContext?.urlNumber) && bulkContext.urlNumber > 0
+      ? bulkContext.urlNumber
+      : null;
+    const numberWidth = totalUrls ? String(totalUrls).length : 1;
+    const bulkSuffix = urlNumber && totalUrls
+      ? `_url_${String(urlNumber).padStart(numberWidth, '0')}_of_${totalUrls}`
+      : '';
     const filename = dataType === 'account' 
-      ? `linkedin_accounts_${timestamp}.csv`
-      : `linkedin_leads_${timestamp}.csv`;
+      ? `linkedin_accounts${bulkSuffix}_${timestamp}.csv`
+      : `linkedin_leads${bulkSuffix}_${timestamp}.csv`;
     
     const uploadResult = dataType === 'account'
       ? await csvGenerator.uploadAccountCSV(csvContent, filename, searchUrl)

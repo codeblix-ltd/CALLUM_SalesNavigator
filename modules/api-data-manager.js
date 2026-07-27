@@ -21,7 +21,7 @@ const pendingAccountPromises = [];
  * @param {Object} data - Données API à mettre en cache
  */
 function setLastApiResponse(data) {
-  if (!data || !data.elements || !Array.isArray(data.elements) || data.elements.length === 0) {
+  if (!data || (!Array.isArray(data.elements) && !data.error)) {
     return;
   }
   
@@ -31,33 +31,30 @@ function setLastApiResponse(data) {
   lastApiResponse = {
     url: data.url,
     method: data.method || 'GET',
-    elements: data.elements,
-    elementsCount: data.elementsCount || data.elements.length,
-    statusCode: data.statusCode || 200,
+    elements: Array.isArray(data.elements) ? data.elements : [],
+    elementsCount: data.elementsCount ?? (Array.isArray(data.elements) ? data.elements.length : 0),
+    statusCode: data.statusCode ?? 0,
     headers: data.headers || {},
     metadata: data.metadata,
+    error: data.error || null,
     timestamp: timestamp
   };
   
   // Résoudre toutes les promesses en attente
-  while (pendingPromises.length > 0) {
-    const { resolve, afterTimestamp, interval } = pendingPromises.shift();
-    
-    // Nettoyer l'interval si présent
-    if (interval) {
-      clearInterval(interval);
-    }
-    
+  const promisesToCheck = pendingPromises.splice(0);
+  promisesToCheck.forEach(({ resolve, afterTimestamp, interval }) => {
     // Vérifier si cette réponse correspond au critère
     // Utiliser >= pour gérer le cas où timestamp est exactement égal
     if (afterTimestamp === 0 || lastApiResponse.timestamp >= afterTimestamp) {
+      if (interval) {
+        clearInterval(interval);
+      }
       resolve(lastApiResponse);
     } else {
-      // Remettre la promesse en attente si elle ne correspond pas encore
-      // (ne devrait pas arriver car on vient de mettre à jour avec la dernière réponse)
-      pendingPromises.push({ resolve, afterTimestamp, interval: null });
+      // Conserver la promesse et son timeout si cette réponse est trop ancienne.
+      pendingPromises.push({ resolve, afterTimestamp, interval });
     }
-  }
+  });
 }
 
 
@@ -66,7 +63,7 @@ function setLastApiResponse(data) {
  * @param {Object} data - Données API à mettre en cache
  */
 function setLastAccountApiResponse(data) {
-  if (!data || !data.elements || !Array.isArray(data.elements) || data.elements.length === 0) {
+  if (!data || (!Array.isArray(data.elements) && !data.error)) {
     return;
   }
   
@@ -76,31 +73,28 @@ function setLastAccountApiResponse(data) {
   lastAccountApiResponse = {
     url: data.url,
     method: data.method || 'GET',
-    elements: data.elements,
-    elementsCount: data.elementsCount || data.elements.length,
-    statusCode: data.statusCode || 200,
+    elements: Array.isArray(data.elements) ? data.elements : [],
+    elementsCount: data.elementsCount ?? (Array.isArray(data.elements) ? data.elements.length : 0),
+    statusCode: data.statusCode ?? 0,
     headers: data.headers || {},
     metadata: data.metadata,
+    error: data.error || null,
     timestamp: timestamp
   };
   
   // Résoudre toutes les promesses en attente (accounts)
-  while (pendingAccountPromises.length > 0) {
-    const { resolve, afterTimestamp, interval } = pendingAccountPromises.shift();
-    
-    // Nettoyer l'interval si présent
-    if (interval) {
-      clearInterval(interval);
-    }
-    
+  const promisesToCheck = pendingAccountPromises.splice(0);
+  promisesToCheck.forEach(({ resolve, afterTimestamp, interval }) => {
     // Vérifier si cette réponse correspond au critère
     if (afterTimestamp === 0 || lastAccountApiResponse.timestamp >= afterTimestamp) {
+      if (interval) {
+        clearInterval(interval);
+      }
       resolve(lastAccountApiResponse);
     } else {
-      // Remettre la promesse en attente si elle ne correspond pas encore
-      pendingAccountPromises.push({ resolve, afterTimestamp, interval: null });
+      pendingAccountPromises.push({ resolve, afterTimestamp, interval });
     }
-  }
+  });
 }
 
 /**

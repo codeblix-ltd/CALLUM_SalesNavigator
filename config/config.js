@@ -47,8 +47,10 @@ const COMMON_CONFIG = {
   STOP_REASONS: {
     COMPLETE_MAX_REACHED: 'complete_max_reached',             // max demandé par l'utilisateur atteint (complet)
     COMPLETE_ALL_RESULTS: 'complete_all_results',             // toutes les pages dispo épuisées (dernière page LinkedIn), < max mais complet
-    CUT_NO_RESULTS_FIRST_PAGE: 'cut_no_results_first_page',   // page 1 sans donnée API : recherche vide OU interception cassée
+    CUT_NO_RESULTS_FIRST_PAGE: 'cut_no_results_first_page',   // page 1 sans aucune réponse API fraîche avant le timeout
     CUT_API_TIMEOUT: 'cut_api_timeout',                       // page > 1 : navigation OK mais pas de réponse API fraîche à temps
+    CUT_API_ERROR: 'cut_api_error',                           // API LinkedIn en erreur (HTTP, réseau ou payload invalide)
+    CUT_EMPTY_RESULTS: 'cut_empty_results',                   // réponse API valide mais aucun résultat ; vérification manuelle requise en bulk
     CUT_NEXT_BUTTON_MISSING: 'cut_next_button_missing',       // bouton "Suivant" introuvable (ni actif ni désactivé) : DOM/sélecteur cassé
     CUT_TAB_CLOSED: 'cut_tab_closed',                         // onglet fermé pendant l'extraction
     CUT_USER_STOPPED: 'cut_user_stopped',                     // arrêt manuel par l'utilisateur
@@ -301,4 +303,3 @@ if (typeof self !== 'undefined' && self.importScripts) {
   self.TotleadsConfig = config;
   self.TotleadsLogger = Logger;
 }
-

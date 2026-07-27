@@ -22,74 +22,164 @@
     }
     // ─────────────────────────────────────────────────────────────────────────
 
+    const SEARCH_ENDPOINTS = [
+      {
+        endpoint: 'salesApiLeadSearch',
+        messageType: 'LINKEDIN_API_CAPTURED',
+        dataType: 'lead'
+      },
+      {
+        endpoint: 'salesApiAccountSearch',
+        messageType: 'LINKEDIN_ACCOUNTS_API_CAPTURED',
+        dataType: 'account'
+      }
+    ];
+
+    function getSearchDescriptor(urlString) {
+      if (!urlString) return null;
+      return SEARCH_ENDPOINTS.find(item => String(urlString).includes(item.endpoint)) || null;
+    }
+
+    function getAbsoluteLinkedInUrl(urlString) {
+      if (!urlString) return '';
+      return String(urlString).startsWith('http')
+        ? String(urlString)
+        : `https://www.linkedin.com${urlString}`;
+    }
+
+    function getApiErrorMessage(data, fallback) {
+      if (!data || typeof data !== 'object') return fallback;
+      const candidate = data.message || data.errorMessage || data.error || data.code;
+      if (typeof candidate === 'string' || typeof candidate === 'number') {
+        return String(candidate);
+      }
+      return fallback;
+    }
+
+    function postSearchResult(descriptor, details) {
+      if (!descriptor) return;
+
+      const elements = Array.isArray(details.data?.elements)
+        ? details.data.elements
+        : [];
+
+      if (descriptor.dataType === 'account' && !details.error) {
+        totleadsDiagAccount(details.source, details.data, details.url);
+      }
+
+      window.postMessage({
+        type: descriptor.messageType,
+        data: {
+          url: details.url,
+          method: details.method || 'GET',
+          elements,
+          elementsCount: elements.length,
+          statusCode: Number.isFinite(details.status) ? details.status : 0,
+          fullResponse: details.data || null,
+          metadata: details.data?.metadata,
+          error: details.error || null,
+          timestamp: Date.now()
+        }
+      }, '*');
+    }
+
+    function postSearchError(descriptor, details) {
+      postSearchResult(descriptor, {
+        ...details,
+        data: details.data || null,
+        error: {
+          kind: details.kind || 'api_error',
+          status: Number.isFinite(details.status) ? details.status : 0,
+          message: details.message || 'LinkedIn search API returned an invalid response'
+        }
+      });
+    }
+
+    function processSearchPayload(descriptor, details) {
+      const { data } = details;
+
+      if (!Array.isArray(data?.elements)) {
+        postSearchError(descriptor, {
+          ...details,
+          kind: 'invalid_payload',
+          message: getApiErrorMessage(
+            data,
+            'LinkedIn search API response did not contain a results array'
+          )
+        });
+        return;
+      }
+
+      postSearchResult(descriptor, details);
+    }
+
     const originalFetch = window.fetch;
     window.fetch = async function(...args) {
-      const response = await originalFetch.apply(this, args);
-      const urlString = typeof args[0] === 'string' ? args[0] : args[0].url;
-      
-      if (urlString && urlString.includes('salesApiLeadSearch')) {
-        try {
-          const clonedResponse = response.clone();
-          const contentType = response.headers.get('content-type');
-          
-          if (contentType && contentType.includes('application/json')) {
-            const data = await clonedResponse.json();
-            
-            if (data.elements && Array.isArray(data.elements)) {
+      const request = args[0];
+      const urlString = typeof request === 'string'
+        ? request
+        : (request?.url || request?.href || '');
+      const descriptor = getSearchDescriptor(urlString);
+      const method = args[1]?.method || request?.method || 'GET';
+      let response;
 
-              window.postMessage({
-                type: 'LINKEDIN_API_CAPTURED',
-                data: {
-                  url: urlString,
-                  method: args[1]?.method || 'GET',
-                  elements: data.elements,
-                  elementsCount: data.elements.length,
-                  statusCode: response.status,
-                  fullResponse: data,
-                  metadata: data.metadata,
-                  timestamp: Date.now()
-                }
-              }, '*');
-            }
-          }
-        } catch (error) {
-          // Erreur silencieuse
+      try {
+        response = await originalFetch.apply(this, args);
+      } catch (error) {
+        if (descriptor) {
+          postSearchError(descriptor, {
+            url: getAbsoluteLinkedInUrl(urlString),
+            method,
+            status: 0,
+            source: 'fetch',
+            kind: 'network_error',
+            message: error?.message || 'LinkedIn search API request failed'
+          });
         }
+        throw error;
       }
 
-      // Intercepter salesApiAccountSearch pour les companies
-      if (urlString && urlString.includes('salesApiAccountSearch')) {
-        try {
-          const clonedResponse = response.clone();
-          const contentType = response.headers.get('content-type');
-
-          if (contentType && contentType.includes('application/json')) {
-            const data = await clonedResponse.json();
-
-            totleadsDiagAccount('fetch', data, urlString);
-
-            if (data.elements && Array.isArray(data.elements)) {
-
-              window.postMessage({
-                type: 'LINKEDIN_ACCOUNTS_API_CAPTURED',
-                data: {
-                  url: urlString,
-                  method: args[1]?.method || 'GET',
-                  elements: data.elements,
-                  elementsCount: data.elements.length,
-                  statusCode: response.status,
-                  fullResponse: data,
-                  metadata: data.metadata,
-                  timestamp: Date.now()
-                }
-              }, '*');
-            }
-          }
-        } catch (error) {
-          // Erreur silencieuse
-        }
+      if (!descriptor) {
+        return response;
       }
-      
+
+      const details = {
+        url: getAbsoluteLinkedInUrl(urlString),
+        method,
+        status: response.status,
+        source: 'fetch'
+      };
+
+      if (!response.ok) {
+        postSearchError(descriptor, {
+          ...details,
+          kind: 'http_error',
+          message: `LinkedIn search API returned HTTP ${response.status}`
+        });
+        return response;
+      }
+
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.toLowerCase().includes('json')) {
+        postSearchError(descriptor, {
+          ...details,
+          kind: 'invalid_content_type',
+          message: `LinkedIn search API returned ${contentType || 'a non-JSON response'}`
+        });
+        return response;
+      }
+
+      try {
+        const data = await response.clone().json();
+        processSearchPayload(descriptor, { ...details, data });
+      } catch (error) {
+        postSearchError(descriptor, {
+          ...details,
+          kind: 'invalid_json',
+          message: error?.message || 'LinkedIn search API returned invalid JSON'
+        });
+      }
+
       return response;
     };
     
@@ -102,9 +192,81 @@
       this._url = url;
       return originalXHROpen.apply(this, [method, url, ...args]);
     };
+
+    async function inspectSearchXhr(xhr, descriptor) {
+      if (!descriptor || xhr.__totleadsSearchHandled) return;
+      xhr.__totleadsSearchHandled = true;
+
+      const details = {
+        url: getAbsoluteLinkedInUrl(xhr._url),
+        method: xhr._method || 'GET',
+        status: xhr.status,
+        source: xhr.responseType === 'blob' ? 'xhr-blob' : 'xhr-text'
+      };
+
+      if (xhr.status < 200 || xhr.status >= 300) {
+        postSearchError(descriptor, {
+          ...details,
+          kind: 'http_error',
+          message: `LinkedIn search API returned HTTP ${xhr.status || 0}`
+        });
+        return;
+      }
+
+      try {
+        let data;
+        if (xhr.responseType === 'json') {
+          data = xhr.response;
+        } else if (xhr.responseType === 'blob') {
+          const responseText = await xhr.response.text();
+          data = JSON.parse(responseText);
+        } else {
+          data = JSON.parse(xhr.responseText);
+        }
+
+        processSearchPayload(descriptor, { ...details, data });
+      } catch (error) {
+        postSearchError(descriptor, {
+          ...details,
+          kind: 'invalid_json',
+          message: error?.message || 'LinkedIn search API returned invalid JSON'
+        });
+      }
+    }
     
     XMLHttpRequest.prototype.send = function(data) {
       const xhr = this;
+      const searchDescriptor = getSearchDescriptor(xhr._url);
+
+      if (searchDescriptor) {
+        xhr.addEventListener('load', function() {
+          inspectSearchXhr(xhr, searchDescriptor);
+        });
+        xhr.addEventListener('error', function() {
+          if (xhr.__totleadsSearchHandled) return;
+          xhr.__totleadsSearchHandled = true;
+          postSearchError(searchDescriptor, {
+            url: getAbsoluteLinkedInUrl(xhr._url),
+            method: xhr._method || 'GET',
+            status: xhr.status || 0,
+            source: 'xhr',
+            kind: 'network_error',
+            message: 'LinkedIn search API request failed'
+          });
+        });
+        xhr.addEventListener('timeout', function() {
+          if (xhr.__totleadsSearchHandled) return;
+          xhr.__totleadsSearchHandled = true;
+          postSearchError(searchDescriptor, {
+            url: getAbsoluteLinkedInUrl(xhr._url),
+            method: xhr._method || 'GET',
+            status: xhr.status || 0,
+            source: 'xhr',
+            kind: 'network_timeout',
+            message: 'LinkedIn search API request timed out'
+          });
+        });
+      }
       
       xhr.addEventListener('load', function() {
         // Capturer salesApiNavChrome pour extraire le member URN
@@ -151,151 +313,6 @@
                   type: 'LINKEDIN_MEMBER_CAPTURED',
                   data: {
                     member: data.member,
-                    timestamp: Date.now()
-                  }
-                }, '*');
-              }
-            }
-          } catch (error) {
-            // Erreur silencieuse
-          }
-        }
-        
-        if (xhr._url && xhr._url.includes('salesApiLeadSearch')) {
-          try {
-            if (xhr.responseType === 'blob') {
-              // Lire le blob de manière asynchrone
-              xhr.response.text().then(responseText => {
-                if (!responseText || responseText.length === 0) {
-                  return;
-                }
-                
-                try {
-                  const data = JSON.parse(responseText);
-                  
-                  if (data.elements && Array.isArray(data.elements)) {
-                    // Construire l'URL complète
-                    const fullUrl = xhr._url.startsWith('http') ? xhr._url : `https://www.linkedin.com${xhr._url}`;
-
-                    window.postMessage({
-                      type: 'LINKEDIN_API_CAPTURED',
-                      data: {
-                        url: fullUrl,
-                        method: xhr._method || 'GET',
-                        elements: data.elements,
-                        elementsCount: data.elements.length,
-                        statusCode: xhr.status,
-                        fullResponse: data,
-                        metadata: data.metadata,
-                        timestamp: Date.now()
-                      }
-                    }, '*');
-                  }
-                } catch (parseError) {
-                  // Erreur silencieuse
-                }
-              }).catch(() => {
-                // Erreur silencieuse
-              });
-
-              return;
-            } else {
-              const responseData = xhr.responseText;
-
-              if (!responseData || responseData.length === 0) {
-                return;
-              }
-
-              const data = JSON.parse(responseData);
-
-              if (data.elements && Array.isArray(data.elements)) {
-                const fullUrl = xhr._url.startsWith('http') ? xhr._url : `https://www.linkedin.com${xhr._url}`;
-
-                window.postMessage({
-                  type: 'LINKEDIN_API_CAPTURED',
-                  data: {
-                    url: fullUrl,
-                    method: xhr._method || 'GET',
-                    elements: data.elements,
-                    elementsCount: data.elements.length,
-                    statusCode: xhr.status,
-                    fullResponse: data,
-                    metadata: data.metadata,
-                    timestamp: Date.now()
-                  }
-                }, '*');
-              }
-            }
-          } catch (error) {
-            // Erreur silencieuse
-          }
-        }
-
-        // Capturer salesApiAccountSearch pour les companies
-        if (xhr._url && xhr._url.includes('salesApiAccountSearch')) {
-          try {
-            if (xhr.responseType === 'blob') {
-              // Lire le blob de manière asynchrone
-              xhr.response.text().then(responseText => {
-                if (!responseText || responseText.length === 0) {
-                  return;
-                }
-                
-                try {
-                  const data = JSON.parse(responseText);
-                  
-                  if (data.elements && Array.isArray(data.elements)) {
-                    // Construire l'URL complète
-                    const fullUrl = xhr._url.startsWith('http') ? xhr._url : `https://www.linkedin.com${xhr._url}`;
-
-                    totleadsDiagAccount('xhr', data, fullUrl);
-
-                    window.postMessage({
-                      type: 'LINKEDIN_ACCOUNTS_API_CAPTURED',
-                      data: {
-                        url: fullUrl,
-                        method: xhr._method || 'GET',
-                        elements: data.elements,
-                        elementsCount: data.elements.length,
-                        statusCode: xhr.status,
-                        fullResponse: data,
-                        metadata: data.metadata,
-                        timestamp: Date.now()
-                      }
-                    }, '*');
-                  }
-                } catch (parseError) {
-                  // Erreur silencieuse
-                }
-              }).catch(() => {
-                // Erreur silencieuse
-              });
-
-              return;
-            } else {
-              const responseData = xhr.responseText;
-
-              if (!responseData || responseData.length === 0) {
-                return;
-              }
-
-              const data = JSON.parse(responseData);
-
-              if (data.elements && Array.isArray(data.elements)) {
-                const fullUrl = xhr._url.startsWith('http') ? xhr._url : `https://www.linkedin.com${xhr._url}`;
-
-                totleadsDiagAccount('xhr-text', data, fullUrl);
-
-                window.postMessage({
-                  type: 'LINKEDIN_ACCOUNTS_API_CAPTURED',
-                  data: {
-                    url: fullUrl,
-                    method: xhr._method || 'GET',
-                    elements: data.elements,
-                    elementsCount: data.elements.length,
-                    statusCode: xhr.status,
-                    fullResponse: data,
-                    metadata: data.metadata,
                     timestamp: Date.now()
                   }
                 }, '*');

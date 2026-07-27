@@ -18,6 +18,11 @@ const BACKGROUND_CONFIG = {
   DEFAULT_MAX_LEADS: 50,
   PAGE_LOAD_DELAY: 4000,
   RETRY_DELAY: 5000,
+  PAGE_RETRY_LIMIT: 1,
+  NEXT_BUTTON_RETRY_LIMIT: 1,
+  BULK_PAGE_READY_DELAY: 2000,
+  BULK_NAVIGATION_TIMEOUT: 45000,
+  BULK_BETWEEN_URL_DELAY: 5000,
   // URL de l'API - doit correspondre à config.js
   API_BASE_URL: self.TotleadsConfig?.API_BASE_URL || 'https://app.totleads.com',
 };
@@ -221,7 +226,10 @@ let backgroundProcessState = {
   duplicatesRemoved: 0, // Nombre de doublons retirés
   filters: null, // Filters de la recherche (metadata.filters)
   dataType: 'lead', // Type de données: 'lead' ou 'account'
-  stopReason: null // Raison de l'arrêt: 'limit_reached', 'no_more_pages', 'api_timeout', 'tab_closed', 'error'
+  stopReason: null, // Raison de l'arrêt: 'limit_reached', 'no_more_pages', 'api_timeout', 'tab_closed', 'error'
+  pageRetryCount: 0,
+  failureDetails: null,
+  bulkContext: null
 };
 
 let nextBackgroundRunId = 1;
@@ -237,9 +245,17 @@ function isCurrentBackgroundRun(runId) {
  * @param {string} dataType - Type de données ('lead' ou 'account')
  * @param {boolean} [addToList] - Si true, ajouter chaque page à la liste sélectionnée
  * @param {string|null} [listName] - Nom de la liste cible (si addToList)
+ * @param {Object|null} [bulkContext] - Position de l'URL pour une extraction en lot
  * @returns {Promise<Object>} - Résultat du démarrage
  */
-async function startBackgroundPagination(tabId, maxLeads = BACKGROUND_CONFIG.DEFAULT_MAX_LEADS, dataType = 'lead', addToList = false, listName = null) {
+async function startBackgroundPagination(
+  tabId,
+  maxLeads = BACKGROUND_CONFIG.DEFAULT_MAX_LEADS,
+  dataType = 'lead',
+  addToList = false,
+  listName = null,
+  bulkContext = null
+) {
   if (backgroundProcessState.isRunning) {
     return { success: false, error: 'Un traitement est déjà en cours' };
   }
@@ -263,12 +279,18 @@ async function startBackgroundPagination(tabId, maxLeads = BACKGROUND_CONFIG.DEF
     dataType: dataType, // Type de données: 'lead' ou 'account'
     stopReason: null, // Raison de l'arrêt
     addToList: addToList === true && listName,
-    listName: listName || null
+    listName: listName || null,
+    pageRetryCount: 0,
+    failureDetails: null,
+    bulkContext: bulkContext
   };
 
   try {
     await processNextPage(runId);
-    return { success: true };
+    return {
+      success: backgroundProcessState.runId === runId && backgroundProcessState.stopReason !== config.STOP_REASONS.CUT_TAB_CLOSED,
+      stopReason: backgroundProcessState.runId === runId ? backgroundProcessState.stopReason : null
+    };
   } catch (error) {
     if (backgroundProcessState.runId === runId) {
       backgroundProcessState.isRunning = false;
@@ -311,6 +333,9 @@ async function processNextPage(runId = backgroundProcessState.runId) {
     }
 
     if (response?.success && response.leads?.length > 0) {
+      backgroundProcessState.pageRetryCount = 0;
+      backgroundProcessState.failureDetails = null;
+
       // Fixer le timestamp APRÈS la collecte réussie pour marquer le point de référence
       // pour la prochaine page
       backgroundProcessState.lastCollectTimestamp = Date.now();
@@ -402,10 +427,22 @@ async function processNextPage(runId = backgroundProcessState.runId) {
         return;
       }
 
-      // Naviguer vers la page suivante
-      const navResponse = await chrome.tabs.sendMessage(tabId, {
-        action: 'goToNextPage'
-      });
+      // Naviguer vers la page suivante. Si le bouton n'est pas encore rendu,
+      // refaire une seule détection sans recollecter la page courante.
+      let navResponse = null;
+      for (let attempt = 0; attempt <= BACKGROUND_CONFIG.NEXT_BUTTON_RETRY_LIMIT; attempt += 1) {
+        navResponse = await chrome.tabs.sendMessage(tabId, {
+          action: 'goToNextPage'
+        });
+
+        if (navResponse?.success || navResponse?.reason !== 'next_button_missing') {
+          break;
+        }
+
+        if (attempt < BACKGROUND_CONFIG.NEXT_BUTTON_RETRY_LIMIT) {
+          await sleep(BACKGROUND_CONFIG.RETRY_DELAY);
+        }
+      }
 
       if (!isCurrentBackgroundRun(runId)) {
         return;
@@ -422,14 +459,50 @@ async function processNextPage(runId = backgroundProcessState.runId) {
         backgroundProcessState.stopReason = navResponse?.reason === 'next_button_missing'
           ? config.STOP_REASONS.CUT_NEXT_BUTTON_MISSING
           : config.STOP_REASONS.COMPLETE_ALL_RESULTS;
+        if (navResponse?.reason === 'next_button_missing') {
+          backgroundProcessState.failureDetails = {
+            reason: 'next_button_missing',
+            message: navResponse?.error || 'The Next button could not be found',
+            page: currentPage
+          };
+        }
         await finishBackgroundProcess(runId);
       }
     } else {
-      // Aucune donnée API collectée : distinguer la page 1 (recherche vide ou
-      // interception cassée) d'un timeout sur une page suivante
-      backgroundProcessState.stopReason = currentPage === 1
-        ? config.STOP_REASONS.CUT_NO_RESULTS_FIRST_PAGE
-        : config.STOP_REASONS.CUT_API_TIMEOUT;
+      const failureReason = response?.reason || 'api_timeout';
+      const isRetryable = failureReason === 'api_timeout' || failureReason === 'collection_error';
+
+      if (isRetryable && backgroundProcessState.pageRetryCount < BACKGROUND_CONFIG.PAGE_RETRY_LIMIT) {
+        backgroundProcessState.pageRetryCount++;
+        logger.warn('[Background] Page collection failed; retrying once', {
+          page: currentPage,
+          reason: failureReason
+        });
+        setTimeout(() => processNextPage(runId), BACKGROUND_CONFIG.RETRY_DELAY);
+        return;
+      }
+
+      if (failureReason === 'api_error') {
+        backgroundProcessState.stopReason = config.STOP_REASONS.CUT_API_ERROR;
+      } else if (failureReason === 'empty_results') {
+        backgroundProcessState.stopReason = config.STOP_REASONS.CUT_EMPTY_RESULTS;
+      } else {
+        backgroundProcessState.stopReason = currentPage === 1
+          ? config.STOP_REASONS.CUT_NO_RESULTS_FIRST_PAGE
+          : config.STOP_REASONS.CUT_API_TIMEOUT;
+      }
+
+      backgroundProcessState.failureDetails = {
+        reason: failureReason,
+        message: response?.apiError?.message || response?.error || (
+          failureReason === 'empty_results'
+            ? 'LinkedIn returned zero results'
+            : 'No fresh LinkedIn search data was received before the timeout'
+        ),
+        status: response?.apiError?.status ?? response?.statusCode ?? null,
+        kind: response?.apiError?.kind || null,
+        page: currentPage
+      };
       await finishBackgroundProcess(runId);
     }
   } catch (error) {
@@ -438,12 +511,29 @@ async function processNextPage(runId = backgroundProcessState.runId) {
     }
 
     // Si l'onglet est fermé
-    if (error.message?.includes('Could not establish connection')) {
+    const connectionLost = error.message?.includes('Could not establish connection') ||
+      error.message?.includes('Receiving end does not exist') ||
+      error.message?.includes('No tab with id');
+
+    if (connectionLost) {
       backgroundProcessState.stopReason = config.STOP_REASONS.CUT_TAB_CLOSED;
-      backgroundProcessState.isRunning = false;
-    } else {
-      // Réessayer une fois
+      backgroundProcessState.failureDetails = {
+        reason: 'tab_connection_lost',
+        message: error.message,
+        page: backgroundProcessState.currentPage
+      };
+      await finishBackgroundProcess(runId);
+    } else if (backgroundProcessState.pageRetryCount < BACKGROUND_CONFIG.PAGE_RETRY_LIMIT) {
+      backgroundProcessState.pageRetryCount++;
       setTimeout(() => processNextPage(runId), BACKGROUND_CONFIG.RETRY_DELAY);
+    } else {
+      backgroundProcessState.stopReason = config.STOP_REASONS.CUT_ERROR;
+      backgroundProcessState.failureDetails = {
+        reason: 'unexpected_error',
+        message: error.message || String(error),
+        page: backgroundProcessState.currentPage
+      };
+      await finishBackgroundProcess(runId);
     }
   }
 }
@@ -461,8 +551,18 @@ async function finishBackgroundProcess(runId = backgroundProcessState.runId) {
     collectedLeads,
     duplicatePagesMap,
     maxLeads,
-    dataType
+    dataType,
+    stopReason,
+    failureDetails,
+    bulkContext
   } = backgroundProcessState;
+  const isNormalCompletion = stopReason === config.STOP_REASONS.COMPLETE_MAX_REACHED ||
+    stopReason === config.STOP_REASONS.COMPLETE_ALL_RESULTS;
+  const isBulkRun = Boolean(
+    bulkContext &&
+    Number.isInteger(bulkContext.urlIndex) &&
+    Number.isInteger(bulkContext.urlNumber)
+  );
 
   // Calculer le total de doublons retirés (leads qui apparaissent sur plusieurs pages)
   let duplicatesRemoved = 0;
@@ -501,63 +601,121 @@ async function finishBackgroundProcess(runId = backgroundProcessState.runId) {
   // Stocker le nombre de doublons dans backgroundProcessState pour l'upload CSV
   backgroundProcessState.duplicatesRemoved = duplicatesRemoved;
 
-  // Demander au content script de générer et uploader le CSV
-  try {
-    const uploadResult = await chrome.tabs.sendMessage(tabId, {
-      action: 'generateAndUploadCSV',
-      leads: collectedLeads,
-      maxLeads: maxLeads,
-      dataType: dataType
-    });
+  let uploadSucceeded = false;
+  let uploadError = null;
 
-    if (!isCurrentBackgroundRun(runId)) {
-      return;
-    }
-
-    if (uploadResult && uploadResult.success) {
-      // Envoyer un message de succès à la fenêtre flottante avec les données de l'upload
-      await chrome.tabs.sendMessage(tabId, {
-        action: 'showUploadSuccess',
-        data: {
-          ...(uploadResult.data || {}),
-          duplicatesRemoved: duplicatesRemoved
-        }
-      });
-    } else {
-      // Envoyer un message à la fenêtre flottante pour afficher l'erreur
-      await chrome.tabs.sendMessage(tabId, {
-        action: 'showUploadError',
-        error: uploadResult?.error || 'Erreur inconnue lors de l\'upload'
-      });
-    }
-  } catch (error) {
-    if (!isCurrentBackgroundRun(runId)) {
-      return;
-    }
-
-    // Envoyer un message à la fenêtre flottante pour afficher l'erreur
+  // Ne jamais créer/uploader un CSV vide. Une page 1 sans données est ambiguë
+  // (vraie recherche vide, limitation, challenge ou interception cassée).
+  if (collectedLeads.length === 0) {
+    uploadError = failureDetails?.message || 'No LinkedIn data was collected; no blank CSV was created.';
     try {
       await chrome.tabs.sendMessage(tabId, {
         action: 'showUploadError',
-        error: error.message || 'Erreur lors de l\'upload du CSV'
+        error: uploadError
       });
     } catch (msgError) {
-      // Erreur silencieuse
+      // L'onglet peut être fermé ou en cours de navigation.
+    }
+  } else {
+    // Demander au content script de générer et uploader le CSV.
+    // Lors d'un arrêt anormal après plusieurs pages, ce CSV contient les données
+    // partielles déjà collectées, mais le bulk reste en pause sur la même URL.
+    try {
+      const uploadResult = await chrome.tabs.sendMessage(tabId, {
+        action: 'generateAndUploadCSV',
+        leads: collectedLeads,
+        maxLeads: maxLeads,
+        dataType: dataType,
+        bulkContext: isBulkRun ? bulkContext : null
+      });
+
+      if (backgroundProcessState.runId !== runId) {
+        return;
+      }
+
+      if (uploadResult?.success) {
+        uploadSucceeded = true;
+        try {
+          await chrome.tabs.sendMessage(tabId, {
+            action: 'showUploadSuccess',
+            data: {
+              ...(uploadResult.data || {}),
+              duplicatesRemoved: duplicatesRemoved,
+              partial: !isNormalCompletion,
+              filename: uploadResult.filename
+            }
+          });
+        } catch (msgError) {
+          // L'upload a réussi même si la notification UI n'a pas pu être affichée.
+        }
+      } else {
+        uploadError = uploadResult?.error || 'Erreur inconnue lors de l\'upload';
+        try {
+          await chrome.tabs.sendMessage(tabId, {
+            action: 'showUploadError',
+            error: uploadError
+          });
+        } catch (msgError) {
+          // Erreur silencieuse
+        }
+      }
+    } catch (error) {
+      if (backgroundProcessState.runId !== runId) {
+        return;
+      }
+
+      uploadError = error.message || 'Erreur lors de l\'upload du CSV';
+      try {
+        await chrome.tabs.sendMessage(tabId, {
+          action: 'showUploadError',
+          error: uploadError
+        });
+      } catch (msgError) {
+        // Erreur silencieuse
+      }
     }
   }
 
   // Réinitialiser l'état
   if (backgroundProcessState.runId === runId) {
     backgroundProcessState.isRunning = false;
+    backgroundProcessState.collectedLeads = [];
     backgroundProcessState.collectedUrns.clear();
     backgroundProcessState.duplicatePagesMap.clear();
 
-    if (typeof bulkScrapeState !== 'undefined' && bulkScrapeState.isActive) {
-      bulkScrapeState.currentIndex++;
-      if (typeof saveBulkState === 'function') saveBulkState();
-      setTimeout(() => {
-        if (typeof processNextBulkUrl === 'function') processNextBulkUrl();
-      }, 5000);
+    if (isBulkRun && typeof bulkScrapeState !== 'undefined') {
+      const sameBulkUrl = bulkScrapeState.currentIndex === bulkContext.urlIndex;
+      const canAdvance = bulkScrapeState.isActive &&
+        sameBulkUrl &&
+        isNormalCompletion &&
+        uploadSucceeded;
+
+      if (canAdvance) {
+        bulkScrapeState.currentIndex++;
+        bulkScrapeState.lastError = null;
+        if (typeof saveBulkState === 'function') saveBulkState();
+        setTimeout(() => {
+          if (typeof processNextBulkUrl === 'function') processNextBulkUrl();
+        }, BACKGROUND_CONFIG.BULK_BETWEEN_URL_DELAY);
+      } else if (bulkScrapeState.isActive && sameBulkUrl) {
+        bulkScrapeState.isActive = false;
+        bulkScrapeState.lastError = {
+          reason: collectedLeads.length > 0 && uploadError
+            ? 'upload_failed'
+            : (failureDetails?.reason || stopReason || 'incomplete'),
+          message: uploadError || failureDetails?.message || 'The URL did not complete normally.',
+          status: failureDetails?.status ?? null,
+          page: failureDetails?.page || backgroundProcessState.currentPage,
+          urlIndex: bulkContext.urlIndex,
+          urlNumber: bulkContext.urlNumber,
+          url: bulkContext.url,
+          collectedCount: collectedLeads.length,
+          partialExported: uploadSucceeded,
+          timestamp: Date.now()
+        };
+        if (typeof saveBulkState === 'function') saveBulkState();
+        logger.warn('[BulkScrape] Paused on incomplete URL', bulkScrapeState.lastError);
+      }
     }
   }
 }
@@ -1425,12 +1583,24 @@ let bulkScrapeState = {
   currentIndex: 0,
   maxLeads: 50,
   dataType: 'lead',
-  tabId: null
+  tabId: null,
+  lastError: null
 };
+let bulkUrlStartInProgress = false;
 
 chrome.storage.local.get(['bulkScrapeState'], (res) => {
   if (res.bulkScrapeState) {
-    bulkScrapeState = res.bulkScrapeState;
+    bulkScrapeState = {
+      ...bulkScrapeState,
+      ...res.bulkScrapeState,
+      lastError: res.bulkScrapeState.lastError || null
+    };
+
+    // Un service worker MV3 peut être suspendu pendant un long bulk. Reprendre
+    // l'URL enregistrée avec une navigation complète évite un état "actif" bloqué.
+    if (bulkScrapeState.isActive) {
+      processNextBulkUrl();
+    }
   }
 });
 
@@ -1440,13 +1610,30 @@ function saveBulkState() {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'START_BULK_SCRAPE') {
+    const urls = Array.isArray(message.urls)
+      ? message.urls.map(url => String(url).trim()).filter(Boolean)
+      : [];
+    const tabId = sender.tab ? sender.tab.id : null;
+
+    if (urls.length === 0 || !tabId) {
+      sendResponse({ success: false, error: 'A valid LinkedIn tab and at least one URL are required.' });
+      return true;
+    }
+
+    if (backgroundProcessState.isRunning) {
+      sendResponse({ success: false, error: 'An extraction is already running.' });
+      return true;
+    }
+
+    const requestedStartIndex = Number.isInteger(message.startIndex) ? message.startIndex : 0;
     bulkScrapeState = {
       isActive: true,
-      urls: message.urls,
-      currentIndex: message.startIndex || 0,
+      urls,
+      currentIndex: Math.max(0, Math.min(requestedStartIndex, urls.length - 1)),
       maxLeads: message.maxLeads || 50,
       dataType: message.dataType || 'lead',
-      tabId: sender.tab ? sender.tab.id : null
+      tabId,
+      lastError: null
     };
     saveBulkState();
     processNextBulkUrl();
@@ -1456,6 +1643,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.action === 'STOP_BULK_SCRAPE') {
     bulkScrapeState.isActive = false;
+    bulkScrapeState.lastError = {
+      reason: 'user_stopped',
+      message: 'Bulk scrape stopped by the user.',
+      urlIndex: bulkScrapeState.currentIndex,
+      urlNumber: bulkScrapeState.currentIndex + 1,
+      url: bulkScrapeState.urls[bulkScrapeState.currentIndex] || null,
+      timestamp: Date.now()
+    };
+    if (backgroundProcessState.isRunning && backgroundProcessState.bulkContext) {
+      backgroundProcessState.stopReason = config.STOP_REASONS.CUT_USER_STOPPED;
+      stopBackgroundPagination();
+      backgroundProcessState.collectedLeads = [];
+      backgroundProcessState.collectedUrns.clear();
+      backgroundProcessState.duplicatePagesMap.clear();
+    }
     saveBulkState();
     sendResponse({ success: true });
     return true;
@@ -1468,8 +1670,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       currentIndex: 0,
       maxLeads: 50,
       dataType: 'lead',
-      tabId: null
+      tabId: null,
+      lastError: null
     };
+    if (backgroundProcessState.isRunning && backgroundProcessState.bulkContext) {
+      backgroundProcessState.stopReason = config.STOP_REASONS.CUT_USER_STOPPED;
+      stopBackgroundPagination();
+      backgroundProcessState.collectedLeads = [];
+      backgroundProcessState.collectedUrns.clear();
+      backgroundProcessState.duplicatePagesMap.clear();
+    }
     saveBulkState();
     sendResponse({ success: true });
     return true;
@@ -1481,45 +1691,140 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
+function navigateBulkTab(tabId, url) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+
+    const cleanup = () => {
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      clearTimeout(timeoutId);
+    };
+
+    const finish = (error, tab = null) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) {
+        reject(error);
+      } else {
+        resolve(tab);
+      }
+    };
+
+    const onUpdated = (updatedTabId, changeInfo, tab) => {
+      if (updatedTabId === tabId && changeInfo.status === 'complete') {
+        finish(null, tab);
+      }
+    };
+
+    const timeoutId = setTimeout(() => {
+      finish(new Error(`LinkedIn page did not finish loading within ${BACKGROUND_CONFIG.BULK_NAVIGATION_TIMEOUT / 1000} seconds`));
+    }, BACKGROUND_CONFIG.BULK_NAVIGATION_TIMEOUT);
+
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs.update(tabId, { url })
+      .then(tab => {
+        if (tab?.status === 'complete') {
+          finish(null, tab);
+        }
+      })
+      .catch(error => finish(error));
+  });
+}
+
+function pauseBulkBeforePagination(reason, message, details = {}) {
+  bulkScrapeState.isActive = false;
+  bulkScrapeState.lastError = {
+    reason,
+    message,
+    urlIndex: bulkScrapeState.currentIndex,
+    urlNumber: bulkScrapeState.currentIndex + 1,
+    url: bulkScrapeState.urls[bulkScrapeState.currentIndex] || null,
+    timestamp: Date.now(),
+    ...details
+  };
+  saveBulkState();
+  logger.warn('[BulkScrape] Paused before pagination', bulkScrapeState.lastError);
+}
+
 async function processNextBulkUrl() {
   if (!bulkScrapeState.isActive) return;
-  if (bulkScrapeState.currentIndex >= bulkScrapeState.urls.length) {
-    bulkScrapeState.isActive = false;
-    saveBulkState();
-    logger.info('[BulkScrape] Completed all URLs.');
-    return;
-  }
-  
-  const nextUrl = bulkScrapeState.urls[bulkScrapeState.currentIndex];
-  logger.info(`[BulkScrape] Processing URL ${bulkScrapeState.currentIndex + 1}/${bulkScrapeState.urls.length}`);
-  
-  if (bulkScrapeState.tabId) {
-    try {
-      // Use SPA navigation instead of full reload to keep floating window open
-      await chrome.tabs.sendMessage(bulkScrapeState.tabId, { action: 'NAVIGATE_SPA', url: nextUrl }).catch(async () => {
-        // Fallback to full reload if content script is not responsive
-        await chrome.tabs.update(bulkScrapeState.tabId, { url: nextUrl });
-      });
-      
-      setTimeout(async () => {
-        if (!bulkScrapeState.isActive) return;
-        try {
-          await startBackgroundPagination(
-            bulkScrapeState.tabId,
-            bulkScrapeState.maxLeads,
-            bulkScrapeState.dataType,
-            false,
-            null
-          );
-        } catch (e) {
-          logger.error('[BulkScrape] Failed to start pagination', e);
-          bulkScrapeState.currentIndex++;
-          saveBulkState();
-          processNextBulkUrl();
-        }
-      }, 10000); 
-    } catch (e) {
-      logger.error('[BulkScrape] Failed to update tab', e);
+  if (bulkUrlStartInProgress || backgroundProcessState.isRunning) return;
+
+  bulkUrlStartInProgress = true;
+  try {
+    if (bulkScrapeState.currentIndex >= bulkScrapeState.urls.length) {
+      bulkScrapeState.isActive = false;
+      saveBulkState();
+      logger.info('[BulkScrape] Completed all URLs.');
+      return;
     }
+
+    const urlIndex = bulkScrapeState.currentIndex;
+    const nextUrl = bulkScrapeState.urls[urlIndex];
+    const totalUrls = bulkScrapeState.urls.length;
+    const currentDataType = nextUrl.includes('/sales/search/company')
+      ? 'account'
+      : (nextUrl.includes('/sales/search/people') ? 'lead' : bulkScrapeState.dataType);
+    const bulkContext = {
+      urlIndex,
+      urlNumber: urlIndex + 1,
+      totalUrls,
+      url: nextUrl
+    };
+    logger.info(`[BulkScrape] Processing URL ${bulkContext.urlNumber}/${totalUrls}`);
+
+    if (!bulkScrapeState.tabId) {
+      pauseBulkBeforePagination('tab_missing', 'The LinkedIn tab is no longer available.');
+      return;
+    }
+
+    try {
+      // A full document navigation clears LinkedIn's accumulated SPA/React heap and
+      // also guarantees that API caches from the previous URL cannot be reused.
+      await navigateBulkTab(bulkScrapeState.tabId, nextUrl);
+
+      if (!bulkScrapeState.isActive || bulkScrapeState.currentIndex !== urlIndex) {
+        return;
+      }
+
+      await sleep(BACKGROUND_CONFIG.BULK_PAGE_READY_DELAY);
+
+      if (!bulkScrapeState.isActive || bulkScrapeState.currentIndex !== urlIndex) {
+        return;
+      }
+
+      // La navigation complète détruit le DOM précédent. Restaurer la fenêtre
+      // de progression avant de lancer la collecte sur la nouvelle page.
+      await chrome.tabs.sendMessage(bulkScrapeState.tabId, {
+        action: 'showBulkWindow'
+      });
+
+      const result = await startBackgroundPagination(
+        bulkScrapeState.tabId,
+        bulkScrapeState.maxLeads,
+        currentDataType,
+        false,
+        null,
+        bulkContext
+      );
+
+      if (!result?.success && bulkScrapeState.isActive && bulkScrapeState.currentIndex === urlIndex) {
+        pauseBulkBeforePagination(
+          'pagination_start_failed',
+          result?.error || 'Pagination could not be started.'
+        );
+      }
+    } catch (error) {
+      logger.error('[BulkScrape] Failed to load URL', error);
+      if (bulkScrapeState.isActive && bulkScrapeState.currentIndex === urlIndex) {
+        pauseBulkBeforePagination(
+          'navigation_failed',
+          error.message || 'The LinkedIn URL could not be loaded.'
+        );
+      }
+    }
+  } finally {
+    bulkUrlStartInProgress = false;
   }
 }

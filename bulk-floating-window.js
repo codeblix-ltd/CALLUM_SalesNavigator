@@ -87,6 +87,14 @@ function createBulkFloatingWindow() {
           if (state.currentIndex >= state.urls.length) {
             statusEl.innerHTML = `🎉 Bulk Scrape Complete! (${state.urls.length} URLs processed)`;
             resetBtn.style.display = 'block';
+          } else if (state.lastError) {
+            const partialMessage = state.lastError.partialExported
+              ? ` Partial CSV saved with ${state.lastError.collectedCount || 0} rows.`
+              : '';
+            statusEl.style.background = '#fff7ed';
+            statusEl.style.color = '#9a3412';
+            statusEl.style.border = '1px solid #fed7aa';
+            statusEl.textContent = `Paused at URL ${state.currentIndex + 1} of ${state.urls.length}: ${state.lastError.message || state.lastError.reason}.${partialMessage}`;
           } else {
             statusEl.innerHTML = `Stopped at URL ${state.currentIndex + 1} of ${state.urls.length}.`;
           }
@@ -128,6 +136,10 @@ function createBulkFloatingWindow() {
         dataType: dataType,
         startIndex: startIndex
       }, (res) => {
+        if (!res?.success) {
+          alert(res?.error || 'Bulk scrape could not be started.');
+          return;
+        }
         syncState();
       });
     });

@@ -54,25 +54,37 @@ function waitForNavigationComplete(maxWait = 10000) {
   return new Promise((resolve) => {
     const initialUrl = window.location.href;
     let navigationDetected = false;
-    
+    let settled = false;
+    let urlCheckInterval = null;
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      if (urlCheckInterval) {
+        clearInterval(urlCheckInterval);
+      }
+      clearTimeout(timeout);
+      resolve(result);
+    };
+
     const timeout = setTimeout(() => {
       if (!navigationDetected) {
         logger?.warn('[EventDetector] Timeout navigation');
-        resolve(false);
+        finish(false);
       }
     }, maxWait);
     
     // Observer les changements d'URL (SPA)
-    const urlCheckInterval = setInterval(() => {
-      if (window.location.href !== initialUrl) {
+    urlCheckInterval = setInterval(() => {
+      if (!navigationDetected && window.location.href !== initialUrl) {
         navigationDetected = true;
+        clearInterval(urlCheckInterval);
+        urlCheckInterval = null;
         logger?.debug('[EventDetector] Navigation détectée');
         
         // Attendre que le contenu se charge
         waitForContentLoad().then(() => {
-          clearInterval(urlCheckInterval);
-          clearTimeout(timeout);
-          resolve(true);
+          finish(true);
         });
       }
     }, 100);
@@ -92,16 +104,28 @@ function waitForContentLoad(maxWait = 5000) {
     const startTime = Date.now();
     let lastMutationTime = startTime;
     let mutationCount = 0;
+    let settled = false;
+    let checkStability = null;
     
     const observer = new MutationObserver(() => {
       lastMutationTime = Date.now();
       mutationCount++;
     });
 
-    const timeout = setTimeout(() => {
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (checkStability) {
+        clearInterval(checkStability);
+      }
+      clearTimeout(timeout);
       observer.disconnect();
-      logger?.debug('[EventDetector] Timeout contenu, résolution');
       resolve();
+    };
+
+    const timeout = setTimeout(() => {
+      logger?.debug('[EventDetector] Timeout contenu, résolution');
+      finish();
     }, maxWait);
     
     // Nœud sécurisé : document.body s'il existe, sinon document.documentElement
@@ -112,15 +136,12 @@ function waitForContentLoad(maxWait = 5000) {
     });
     
     // Vérifier périodiquement si le DOM est stable
-    const checkStability = setInterval(() => {
+    checkStability = setInterval(() => {
       const timeSinceLastMutation = Date.now() - lastMutationTime;
       
       // Si pas de mutation depuis 500ms, le DOM est stable
       if (timeSinceLastMutation > 500 && mutationCount > 0) {
-        clearInterval(checkStability);
-        clearTimeout(timeout);
-        observer.disconnect();
-        resolve();
+        finish();
       }
     }, 100);
   });

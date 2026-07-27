@@ -294,7 +294,12 @@ function setupMessageHandlers() {
 
     // Générer et uploader le CSV sur le serveur
     if (request.action === config.actions.GENERATE_AND_UPLOAD_CSV) {
-      paginationManager.generateAndUploadCSV(request.leads, request.maxLeads, request.dataType || 'lead')
+      paginationManager.generateAndUploadCSV(
+        request.leads,
+        request.maxLeads,
+        request.dataType || 'lead',
+        request.bulkContext || null
+      )
         .then(result => sendResponse(result))
         .catch(error => sendResponse({ success: false, error: error.message }));
       return true;
@@ -317,6 +322,13 @@ function setupMessageHandlers() {
     // Afficher un message de succès d'upload dans la fenêtre flottante
     if (request.action === 'showUploadSuccess') {
       messaging.postToWindow(config.messages.LINKEDIN_EXTRACTOR, 'showUploadSuccess', { data: request.data || {} });
+      sendResponse({ success: true });
+      return true;
+    }
+
+    // Restaurer la fenêtre de statut après la navigation complète entre deux URLs bulk.
+    if (request.action === 'showBulkWindow') {
+      window.postMessage({ type: 'LINKEDIN_BULK', action: 'SHOW_WINDOW' }, '*');
       sendResponse({ success: true });
       return true;
     }
