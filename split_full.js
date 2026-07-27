@@ -1,7 +1,7 @@
 const fs = require('fs');
 
 // 1. YOUR ORIGINAL BASE URL
-const BASE_URL = "https://www.linkedin.com/sales/search/people?query=(recentSearchParam%3A(id%3A5752546450%2CdoLogHistory%3Atrue)%2Cfilters%3AList((type%3AGEOGRAPHY%2Cvalues%3AList((id%3A103537801%2CselectionType%3AINCLUDED)))%2C(type%3AFOLLOWS_YOUR_COMPANY%2Cvalues%3AList((id%3ACF%2Ctext%3AFollowing%2520your%2520company%2CselectionType%3AINCLUDED)))))&sessionId=l983kbKUSf6ju6gNrFklJQ%3D%3D&viewAllFilters=true";
+const BASE_URL = "https://www.linkedin.com/sales/search/people?query=(recentSearchParam%3A(doLogHistory%3Atrue)%2Cfilters%3AList((type%3AFOLLOWS_YOUR_COMPANY%2Cvalues%3AList((id%3ACF%2CselectionType%3AINCLUDED)))))&sessionId=rZT%2F3cgVQXKwDkjXXUWmfw%3D%3D&viewAllFilters=true";
 
 // 2. FACETS DIVIDED INTO CHUNKS
 // Grouped into chunks to keep the URLs a reasonable length.
