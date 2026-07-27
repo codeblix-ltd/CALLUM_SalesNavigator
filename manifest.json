@@ -51,9 +51,9 @@
    "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAs+77M2F85EVXGivLMHU/ALF8n6D/uJ4iNRwhZnQc1lEZNOnrkWIjgysdlPMoBs7/+apyuzCgG5yV+Q4O/oVKnZvKmLfyNqcC3CD6lX6m0FVvkADjYkq+ERVbsbZQe1DHRSLJCpeyxP6JFQ9+u6V7qDGMH7BsXhBt0ufPKZeIy2+EOseahYMipGXJkEDVpE/44UofVVu3LceN9CfeeZ784T9jzVeD5ZIp4VY5a21H9vzJeqOQajPg2vlkYl8McNu/hyQKKQ3a8enBUxwUoHWELfHVAlI91TUZKywNzK5KUeR44EtKMQ1R2r4569XFZ8NMijdMur5GEAE9ITbIkkWG+wIDAQAB",
    "manifest_version": 3,
    "name": "TotLeads",
-   "permissions": [ "activeTab", "storage", "scripting" ],
+   "permissions": [ "activeTab", "storage", "scripting", "offscreen" ],
    "update_url": "https://clients2.google.com/service/update2/crx",
-   "version": "1.1.10",
+   "version": "1.1.11",
    "web_accessible_resources": [ {
       "matches": [ "*://*.linkedin.com/*" ],
       "resources": [ "inject.js", "locales/*.json" ]

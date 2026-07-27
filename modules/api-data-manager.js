@@ -36,6 +36,7 @@ function setLastApiResponse(data) {
     statusCode: data.statusCode ?? 0,
     headers: data.headers || {},
     metadata: data.metadata,
+    paging: data.fullResponse?.paging || data.paging || null,
     error: data.error || null,
     timestamp: timestamp
   };
@@ -78,6 +79,7 @@ function setLastAccountApiResponse(data) {
     statusCode: data.statusCode ?? 0,
     headers: data.headers || {},
     metadata: data.metadata,
+    paging: data.fullResponse?.paging || data.paging || null,
     error: data.error || null,
     timestamp: timestamp
   };

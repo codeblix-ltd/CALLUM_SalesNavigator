@@ -308,14 +308,16 @@ async function collectCurrentPageForBackground(afterTimestamp = 0, dataType = 'l
           success: false,
           reason: 'empty_results',
           leads: [],
-          metadata: freshData.metadata
+          metadata: freshData.metadata,
+          paging: freshData.paging
         };
       }
 
       return {
         success: true,
         leads: freshData.elements,
-        metadata: freshData.metadata
+        metadata: freshData.metadata,
+        paging: freshData.paging
       };
     }
     

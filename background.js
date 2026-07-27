@@ -53,6 +53,75 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+let offscreenDocumentCreation = null;
+
+async function hasOffscreenDocument() {
+  if (!chrome.offscreen) return false;
+  if (typeof chrome.offscreen.hasDocument === 'function') {
+    return chrome.offscreen.hasDocument();
+  }
+
+  if (typeof clients !== 'undefined' && typeof clients.matchAll === 'function') {
+    const offscreenUrl = chrome.runtime.getURL('offscreen.html');
+    const extensionClients = await clients.matchAll();
+    return extensionClients.some(client => client.url === offscreenUrl);
+  }
+
+  return false;
+}
+
+async function ensureOffscreenDocument() {
+  if (!chrome.offscreen?.createDocument) return false;
+  if (await hasOffscreenDocument()) return true;
+
+  if (!offscreenDocumentCreation) {
+    offscreenDocumentCreation = chrome.offscreen.createDocument({
+      url: 'offscreen.html',
+      reasons: ['AUDIO_PLAYBACK'],
+      justification: 'Play an audible alert when an extraction needs user attention.'
+    }).finally(() => {
+      offscreenDocumentCreation = null;
+    });
+  }
+
+  await offscreenDocumentCreation;
+  return true;
+}
+
+async function playExtractionErrorAlert(tabId = null) {
+  try {
+    if (await ensureOffscreenDocument()) {
+      let lastSoundError = null;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          await chrome.runtime.sendMessage({
+            target: 'totleads-offscreen',
+            action: 'PLAY_EXTRACTION_ERROR_SOUND'
+          });
+          return;
+        } catch (error) {
+          lastSoundError = error;
+          if (attempt === 0) await sleep(100);
+        }
+      }
+      throw lastSoundError;
+    }
+  } catch (error) {
+    logger.warn('[Background] Offscreen error sound unavailable', error);
+  }
+
+  // Fallback for Chrome versions without the offscreen API.
+  if (tabId) {
+    try {
+      await chrome.tabs.sendMessage(tabId, {
+        action: 'playExtractionErrorSound'
+      });
+    } catch (error) {
+      // The tab may be closed; error alerts must never break the queue state.
+    }
+  }
+}
+
 async function fetchWithRetry(url, options = {}, retryOptions = {}) {
   const attempts = retryOptions.attempts || 2;
   const retryDelay = retryOptions.delay || 700;
@@ -427,6 +496,17 @@ async function processNextPage(runId = backgroundProcessState.runId) {
         return;
       }
 
+      // LinkedIn does not render pagination at all when every result fits on one
+      // page. Prefer the API total over DOM assumptions so a 2-result URL is
+      // completed normally instead of being paused as "Next button missing".
+      const reportedTotal = Number(response.paging?.total);
+      const hasReportedTotal = Number.isFinite(reportedTotal) && reportedTotal > 0;
+      if (hasReportedTotal && totalCollected >= reportedTotal) {
+        backgroundProcessState.stopReason = config.STOP_REASONS.COMPLETE_ALL_RESULTS;
+        await finishBackgroundProcess(runId);
+        return;
+      }
+
       // Naviguer vers la page suivante. Si le bouton n'est pas encore rendu,
       // refaire une seule détection sans recollecter la page courante.
       let navResponse = null;
@@ -456,10 +536,16 @@ async function processNextPage(runId = backgroundProcessState.runId) {
       } else {
         // Pas de page suivante : distinguer la dernière page légitime (toutes les
         // pages dispo ont été collectées) d'un bouton "Suivant" introuvable (anomalie DOM)
-        backgroundProcessState.stopReason = navResponse?.reason === 'next_button_missing'
+        const nextButtonMissing = navResponse?.reason === 'next_button_missing';
+        const apiReportsMoreResults = hasReportedTotal && reportedTotal > totalCollected;
+        const shortFinalPage = !apiReportsMoreResults &&
+          response.leads.length < (config.LEADS_PER_PAGE || 25);
+        const unexpectedMissingButton = nextButtonMissing && !shortFinalPage;
+
+        backgroundProcessState.stopReason = unexpectedMissingButton
           ? config.STOP_REASONS.CUT_NEXT_BUTTON_MISSING
           : config.STOP_REASONS.COMPLETE_ALL_RESULTS;
-        if (navResponse?.reason === 'next_button_missing') {
+        if (unexpectedMissingButton) {
           backgroundProcessState.failureDetails = {
             reason: 'next_button_missing',
             message: navResponse?.error || 'The Next button could not be found',
@@ -716,6 +802,12 @@ async function finishBackgroundProcess(runId = backgroundProcessState.runId) {
         if (typeof saveBulkState === 'function') saveBulkState();
         logger.warn('[BulkScrape] Paused on incomplete URL', bulkScrapeState.lastError);
       }
+    }
+
+    const shouldPlayErrorAlert = stopReason !== config.STOP_REASONS.CUT_USER_STOPPED &&
+      (!isNormalCompletion || !uploadSucceeded);
+    if (shouldPlayErrorAlert) {
+      void playExtractionErrorAlert(tabId);
     }
   }
 }
@@ -1663,6 +1755,41 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.action === 'SKIP_BULK_URL') {
+    if (bulkScrapeState.isActive || backgroundProcessState.isRunning) {
+      sendResponse({ success: false, error: 'Wait until the current URL is paused before skipping it.' });
+      return true;
+    }
+
+    if (
+      !Array.isArray(bulkScrapeState.urls) ||
+      bulkScrapeState.currentIndex >= bulkScrapeState.urls.length
+    ) {
+      sendResponse({ success: false, error: 'There is no URL left to skip.' });
+      return true;
+    }
+
+    const skippedIndex = bulkScrapeState.currentIndex;
+    bulkScrapeState.currentIndex++;
+    bulkScrapeState.lastError = null;
+    bulkScrapeState.isActive = bulkScrapeState.currentIndex < bulkScrapeState.urls.length;
+    saveBulkState();
+
+    if (bulkScrapeState.isActive) {
+      // A failure can finish while processNextBulkUrl still owns its short-lived
+      // start lock, so schedule the continuation just after the message returns.
+      setTimeout(() => processNextBulkUrl(), 250);
+    }
+
+    sendResponse({
+      success: true,
+      skippedIndex,
+      currentIndex: bulkScrapeState.currentIndex,
+      completed: !bulkScrapeState.isActive
+    });
+    return true;
+  }
+
   if (message.action === 'RESET_BULK_SCRAPE') {
     bulkScrapeState = {
       isActive: false,
@@ -1745,6 +1872,7 @@ function pauseBulkBeforePagination(reason, message, details = {}) {
   };
   saveBulkState();
   logger.warn('[BulkScrape] Paused before pagination', bulkScrapeState.lastError);
+  void playExtractionErrorAlert(bulkScrapeState.tabId);
 }
 
 async function processNextBulkUrl() {

@@ -1,3 +1,33 @@
+function sendBulkRuntimeMessage(message, callback) {
+  try {
+    if (
+      typeof chrome === 'undefined' ||
+      !chrome.runtime ||
+      !chrome.runtime.id
+    ) {
+      throw new Error('Extension context invalidated. Refresh the LinkedIn tab.');
+    }
+
+    chrome.runtime.sendMessage(message, response => {
+      let runtimeError = null;
+      try {
+        runtimeError = chrome.runtime.lastError;
+      } catch (error) {
+        runtimeError = error;
+      }
+
+      if (runtimeError) {
+        callback(null, new Error(runtimeError.message || String(runtimeError)));
+        return;
+      }
+
+      callback(response, null);
+    });
+  } catch (error) {
+    callback(null, error);
+  }
+}
+
 function createBulkFloatingWindow() {
   if (document.getElementById('linkedin-bulk-window')) return;
 
@@ -30,6 +60,7 @@ function createBulkFloatingWindow() {
 
       <button id="startBulkBtn" class="button" style="width:100%; padding:12px; background:linear-gradient(135deg, #11AF7B 0%, #08835F 100%); color:white; border:none; border-radius:8px; cursor:pointer; font-weight:bold; margin-bottom:10px;">Start Bulk Scrape</button>
       <button id="stopBulkBtn" class="button" style="width:100%; padding:12px; background:linear-gradient(135deg, #dc3545 0%, #c82333 100%); color:white; border:none; border-radius:8px; cursor:pointer; font-weight:bold; display:none;">Stop Bulk Scrape</button>
+      <button id="skipBulkBtn" class="button" style="width:100%; padding:12px; background:linear-gradient(135deg, #f59e0b 0%, #d97706 100%); color:white; border:none; border-radius:8px; cursor:pointer; font-weight:bold; display:none; margin-top:10px;">Skip This URL &amp; Continue</button>
       <button id="resetBulkBtn" class="button" style="width:100%; padding:12px; background:#6c757d; color:white; border:none; border-radius:8px; cursor:pointer; font-weight:bold; display:none; margin-top:10px;">Reset Progress</button>
     </div>
   `;
@@ -43,15 +74,65 @@ function createBulkFloatingWindow() {
   
   document.body.appendChild(floatingWindow);
 
-  document.getElementById('closeBulkBtn').onclick = () => floatingWindow.remove();
-  
   const urlsInput = document.getElementById('bulkUrlsInput');
   const countLabel = document.getElementById('bulkUrlsCount');
   const startBtn = document.getElementById('startBulkBtn');
   const stopBtn = document.getElementById('stopBulkBtn');
+  const skipBtn = document.getElementById('skipBulkBtn');
   const resetBtn = document.getElementById('resetBulkBtn');
   const statusEl = document.getElementById('bulkStatus');
   const maxLeadsInput = document.getElementById('bulkMaxLeadsInput');
+  let syncInterval = null;
+  let contextInvalidated = false;
+
+  const handleRuntimeError = error => {
+    const message = error?.message || String(error || '');
+    const isInvalidated = /extension context invalidated|context invalidated/i.test(message) ||
+      typeof chrome === 'undefined' ||
+      !chrome.runtime?.id;
+
+    if (!isInvalidated) {
+      statusEl.style.display = 'block';
+      statusEl.style.background = '#fef2f2';
+      statusEl.style.color = '#b91c1c';
+      statusEl.style.border = '1px solid #fecaca';
+      statusEl.textContent = `Could not contact the extension: ${message}`;
+      skipBtn.disabled = false;
+      skipBtn.textContent = 'Skip This URL & Continue';
+      return;
+    }
+
+    contextInvalidated = true;
+    if (syncInterval) {
+      clearInterval(syncInterval);
+      syncInterval = null;
+    }
+
+    statusEl.style.display = 'block';
+    statusEl.style.background = '#fef2f2';
+    statusEl.style.color = '#b91c1c';
+    statusEl.style.border = '1px solid #fecaca';
+    statusEl.textContent = 'The extension was reloaded. Refresh this LinkedIn tab to reconnect it.';
+    [startBtn, stopBtn, skipBtn, resetBtn, urlsInput, maxLeadsInput].forEach(element => {
+      element.disabled = true;
+    });
+  };
+
+  const sendMessage = (message, onSuccess) => {
+    if (contextInvalidated) return;
+    sendBulkRuntimeMessage(message, (response, error) => {
+      if (error) {
+        handleRuntimeError(error);
+        return;
+      }
+      onSuccess?.(response);
+    });
+  };
+
+  document.getElementById('closeBulkBtn').onclick = () => {
+    if (syncInterval) clearInterval(syncInterval);
+    floatingWindow.remove();
+  };
 
   const updateCount = () => {
     const urls = urlsInput.value.split('\n').map(u => u.trim()).filter(u => u.length > 0);
@@ -61,7 +142,7 @@ function createBulkFloatingWindow() {
 
   // Sync state with background
   function syncState() {
-    chrome.runtime.sendMessage({ action: 'GET_BULK_SCRAPE_STATE' }, (state) => {
+    sendMessage({ action: 'GET_BULK_SCRAPE_STATE' }, state => {
       if (state && state.urls && state.urls.length > 0) {
         if (!urlsInput.value) {
           urlsInput.value = state.urls.join('\n');
@@ -77,6 +158,7 @@ function createBulkFloatingWindow() {
           
           startBtn.style.display = 'none';
           stopBtn.style.display = 'block';
+          skipBtn.style.display = 'none';
           resetBtn.style.display = 'none';
           urlsInput.disabled = true;
         } else {
@@ -86,17 +168,22 @@ function createBulkFloatingWindow() {
           
           if (state.currentIndex >= state.urls.length) {
             statusEl.innerHTML = `🎉 Bulk Scrape Complete! (${state.urls.length} URLs processed)`;
+            skipBtn.style.display = 'none';
             resetBtn.style.display = 'block';
           } else if (state.lastError) {
             const partialMessage = state.lastError.partialExported
               ? ` Partial CSV saved with ${state.lastError.collectedCount || 0} rows.`
               : '';
+            const errorMessage = state.lastError.message || state.lastError.reason;
+            const punctuation = /[.!?]$/.test(errorMessage) ? '' : '.';
             statusEl.style.background = '#fff7ed';
             statusEl.style.color = '#9a3412';
             statusEl.style.border = '1px solid #fed7aa';
-            statusEl.textContent = `Paused at URL ${state.currentIndex + 1} of ${state.urls.length}: ${state.lastError.message || state.lastError.reason}.${partialMessage}`;
+            statusEl.textContent = `Paused at URL ${state.currentIndex + 1} of ${state.urls.length}: ${errorMessage}${punctuation}${partialMessage}`;
+            skipBtn.style.display = 'block';
           } else {
             statusEl.innerHTML = `Stopped at URL ${state.currentIndex + 1} of ${state.urls.length}.`;
+            skipBtn.style.display = 'block';
           }
           
           startBtn.style.display = 'block';
@@ -123,19 +210,19 @@ function createBulkFloatingWindow() {
     // Determine dataType from the first URL
     const dataType = urls[0].includes('/sales/search/company') ? 'account' : 'lead';
 
-    chrome.runtime.sendMessage({ action: 'GET_BULK_SCRAPE_STATE' }, (state) => {
+    sendMessage({ action: 'GET_BULK_SCRAPE_STATE' }, state => {
       let startIndex = 0;
       if (state && state.urls && state.urls.join('\n') === urlsInput.value && state.currentIndex < state.urls.length) {
         startIndex = state.currentIndex;
       }
 
-      chrome.runtime.sendMessage({ 
+      sendMessage({
         action: 'START_BULK_SCRAPE', 
         urls: urls,
         maxLeads: maxLeads,
         dataType: dataType,
         startIndex: startIndex
-      }, (res) => {
+      }, res => {
         if (!res?.success) {
           alert(res?.error || 'Bulk scrape could not be started.');
           return;
@@ -146,18 +233,33 @@ function createBulkFloatingWindow() {
   };
 
   stopBtn.onclick = () => {
-    chrome.runtime.sendMessage({ action: 'STOP_BULK_SCRAPE' }, () => {
+    sendMessage({ action: 'STOP_BULK_SCRAPE' }, () => {
+      syncState();
+    });
+  };
+
+  skipBtn.onclick = () => {
+    skipBtn.disabled = true;
+    skipBtn.textContent = 'Skipping...';
+    sendMessage({ action: 'SKIP_BULK_URL' }, res => {
+      skipBtn.disabled = false;
+      skipBtn.textContent = 'Skip This URL & Continue';
+      if (!res?.success) {
+        alert(res?.error || 'This URL could not be skipped.');
+        return;
+      }
       syncState();
     });
   };
 
   resetBtn.onclick = () => {
-    chrome.runtime.sendMessage({ action: 'RESET_BULK_SCRAPE' }, () => {
+    sendMessage({ action: 'RESET_BULK_SCRAPE' }, () => {
       urlsInput.value = '';
       updateCount();
       statusEl.style.display = 'none';
       startBtn.style.display = 'block';
       startBtn.textContent = 'Start Bulk Scrape';
+      skipBtn.style.display = 'none';
       resetBtn.style.display = 'none';
       urlsInput.disabled = false;
     });
@@ -166,17 +268,18 @@ function createBulkFloatingWindow() {
   syncState();
   
   // Refresh state periodically
-  const interval = setInterval(() => {
+  syncInterval = setInterval(() => {
     if (document.getElementById('linkedin-bulk-window')) {
       syncState();
     } else {
-      clearInterval(interval);
+      clearInterval(syncInterval);
+      syncInterval = null;
     }
   }, 2000);
 }
 
 window.addEventListener('message', (event) => {
-  if (event.data.type === 'LINKEDIN_BULK' && event.data.action === 'SHOW_WINDOW') {
+  if (event.data?.type === 'LINKEDIN_BULK' && event.data.action === 'SHOW_WINDOW') {
     createBulkFloatingWindow();
   }
 });

@@ -90,6 +90,41 @@ function injectInterceptor() {
   }
 }
 
+let lastPageErrorAlertAt = 0;
+
+async function playExtractionErrorSoundInPage() {
+  const now = Date.now();
+  if (now - lastPageErrorAlertAt < 1500) return;
+  lastPageErrorAlertAt = now;
+
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return;
+
+  const audioContext = new AudioContextClass();
+  if (audioContext.state === 'suspended') {
+    await audioContext.resume();
+  }
+
+  const oscillator = audioContext.createOscillator();
+  const gain = audioContext.createGain();
+  const startAt = audioContext.currentTime + 0.02;
+  const endAt = startAt + 0.7;
+
+  oscillator.type = 'sine';
+  oscillator.frequency.setValueAtTime(880, startAt);
+  oscillator.frequency.setValueAtTime(660, startAt + 0.25);
+  oscillator.frequency.setValueAtTime(880, startAt + 0.5);
+  gain.gain.setValueAtTime(0.0001, startAt);
+  gain.gain.exponentialRampToValueAtTime(0.25, startAt + 0.03);
+  gain.gain.exponentialRampToValueAtTime(0.0001, endAt);
+
+  oscillator.connect(gain);
+  gain.connect(audioContext.destination);
+  oscillator.start(startAt);
+  oscillator.stop(endAt);
+  oscillator.addEventListener('ended', () => audioContext.close().catch(() => {}), { once: true });
+}
+
 /**
  * Configure les gestionnaires de messages
  */
@@ -330,6 +365,13 @@ function setupMessageHandlers() {
     if (request.action === 'showBulkWindow') {
       window.postMessage({ type: 'LINKEDIN_BULK', action: 'SHOW_WINDOW' }, '*');
       sendResponse({ success: true });
+      return true;
+    }
+
+    if (request.action === 'playExtractionErrorSound') {
+      playExtractionErrorSoundInPage()
+        .then(() => sendResponse({ success: true }))
+        .catch(error => sendResponse({ success: false, error: error.message }));
       return true;
     }
 
