@@ -53,7 +53,7 @@ function createBulkFloatingWindow() {
 
       <div style="margin: 15px 0;">
         <label style="display:block; font-size:14px; font-weight:bold; margin-bottom:8px;">Max Leads per URL</label>
-        <input type="number" id="bulkMaxLeadsInput" value="50" style="width:100%; padding:10px; border-radius:8px; border:1px solid #ccc;">
+        <input type="number" id="bulkMaxLeadsInput" value="2500" style="width:100%; padding:10px; border-radius:8px; border:1px solid #ccc;">
       </div>
 
       <div id="bulkStatus" style="padding:15px; background:#f8f9fa; border-radius:8px; display:none; margin-bottom:15px; font-weight:bold; color:#00a86b; font-size:13px; line-height:1.5;"></div>
@@ -192,12 +192,15 @@ function createBulkFloatingWindow() {
             const partialMessage = state.lastError.partialExported
               ? ` Partial CSV saved with ${state.lastError.collectedCount || 0} rows.`
               : '';
+            const resumeMessage = state.lastError.resumeAvailable
+              ? ` Resume will continue from page ${state.lastError.checkpointPage || state.pausedProgress?.currentPage || 1}.`
+              : '';
             const errorMessage = state.lastError.message || state.lastError.reason;
             const punctuation = /[.!?]$/.test(errorMessage) ? '' : '.';
             statusEl.style.background = '#fff7ed';
             statusEl.style.color = '#9a3412';
             statusEl.style.border = '1px solid #fed7aa';
-            statusEl.textContent = `Paused at URL ${state.currentIndex + 1} of ${state.urls.length}: ${errorMessage}${punctuation}${partialMessage}`;
+            statusEl.textContent = `Paused at URL ${state.currentIndex + 1} of ${state.urls.length}: ${errorMessage}${punctuation}${partialMessage}${resumeMessage}`;
             skipBtn.style.display = 'block';
             resetBtn.style.display = 'block';
           } else if (state.isPaused) {
@@ -236,7 +239,7 @@ function createBulkFloatingWindow() {
       alert("Please enter at least one URL.");
       return;
     }
-    const maxLeads = parseInt(maxLeadsInput.value, 10) || 50;
+    const maxLeads = parseInt(maxLeadsInput.value, 10) || 2500;
     
     // Determine dataType from the first URL
     const dataType = urls[0].includes('/sales/search/company') ? 'account' : 'lead';
@@ -298,6 +301,7 @@ function createBulkFloatingWindow() {
       statusEl.style.display = 'none';
       startBtn.style.display = 'block';
       startBtn.textContent = 'Start Bulk Scrape';
+      maxLeadsInput.value = 2500;
       pauseBtn.style.display = 'none';
       skipBtn.style.display = 'none';
       resetBtn.style.display = 'none';

@@ -53,7 +53,7 @@
    "name": "TotLeads",
    "permissions": [ "activeTab", "storage", "scripting", "offscreen", "unlimitedStorage" ],
    "update_url": "https://clients2.google.com/service/update2/crx",
-   "version": "1.1.12",
+   "version": "1.1.13",
    "web_accessible_resources": [ {
       "matches": [ "*://*.linkedin.com/*" ],
       "resources": [ "inject.js", "locales/*.json" ]

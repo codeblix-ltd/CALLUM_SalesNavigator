@@ -382,25 +382,49 @@ async function startBackgroundPagination(
   }
 }
 
-async function pauseBackgroundRunAtSafePoint(runId) {
-  if (
-    !isCurrentBackgroundRun(runId) ||
-    !backgroundProcessState.bulkContext ||
-    !backgroundProcessState.pauseRequested
-  ) {
-    return false;
-  }
+function normalizeBulkCheckpointPageUrl(url, currentPage) {
+  try {
+    const parsedUrl = new URL(url);
+    if (
+      !parsedUrl.hostname.endsWith('linkedin.com') ||
+      !parsedUrl.pathname.includes('/sales/search/')
+    ) {
+      return url;
+    }
 
-  const state = backgroundProcessState;
-  let pageUrl = state.bulkContext.url;
+    const page = String(Math.max(1, Number(currentPage) || 1));
+    if (/[?&]page=[^&#]*/i.test(url)) {
+      return url.replace(/([?&])page=[^&#]*/i, `$1page=${page}`);
+    }
+
+    const hashIndex = url.indexOf('#');
+    const beforeHash = hashIndex >= 0 ? url.slice(0, hashIndex) : url;
+    const hash = hashIndex >= 0 ? url.slice(hashIndex) : '';
+    const separator = beforeHash.includes('?')
+      ? (beforeHash.endsWith('?') || beforeHash.endsWith('&') ? '' : '&')
+      : '?';
+    return `${beforeHash}${separator}page=${page}${hash}`;
+  } catch (error) {
+    return url;
+  }
+}
+
+async function buildBulkScrapeCheckpoint(state = backgroundProcessState) {
+  let pageUrl = normalizeBulkCheckpointPageUrl(
+    state.bulkContext.url,
+    state.currentPage
+  );
   try {
     const tab = await chrome.tabs.get(state.tabId);
-    pageUrl = tab?.url || pageUrl;
+    if (tab?.url?.includes('linkedin.com/sales/search/')) {
+      pageUrl = normalizeBulkCheckpointPageUrl(tab.url, state.currentPage);
+    }
   } catch (error) {
-    // The original bulk URL remains a usable fallback.
+    // The URL reconstructed from the bulk search and page number is durable
+    // even when the original tab has already been closed.
   }
 
-  const checkpoint = {
+  return {
     version: 1,
     urlIndex: state.bulkContext.urlIndex,
     urlNumber: state.bulkContext.urlNumber,
@@ -423,9 +447,28 @@ async function pauseBackgroundRunAtSafePoint(runId) {
     startTime: state.startTime,
     savedAt: Date.now()
   };
+}
+
+async function persistBulkScrapeCheckpoint(state = backgroundProcessState) {
+  const checkpoint = await buildBulkScrapeCheckpoint(state);
+  await chrome.storage.local.set({ bulkScrapeCheckpoint: checkpoint });
+  return checkpoint;
+}
+
+async function pauseBackgroundRunAtSafePoint(runId) {
+  if (
+    !isCurrentBackgroundRun(runId) ||
+    !backgroundProcessState.bulkContext ||
+    !backgroundProcessState.pauseRequested
+  ) {
+    return false;
+  }
+
+  const state = backgroundProcessState;
+  let checkpoint;
 
   try {
-    await chrome.storage.local.set({ bulkScrapeCheckpoint: checkpoint });
+    checkpoint = await persistBulkScrapeCheckpoint(state);
   } catch (error) {
     state.isRunning = false;
     state.pauseRequested = false;
@@ -435,10 +478,10 @@ async function pauseBackgroundRunAtSafePoint(runId) {
     bulkScrapeState.lastError = {
       reason: 'checkpoint_save_failed',
       message: `Pause failed because progress could not be saved: ${error.message || error}`,
-      urlIndex: checkpoint.urlIndex,
-      urlNumber: checkpoint.urlNumber,
-      url: checkpoint.url,
-      collectedCount: checkpoint.collectedLeads.length,
+      urlIndex: state.bulkContext.urlIndex,
+      urlNumber: state.bulkContext.urlNumber,
+      url: state.bulkContext.url,
+      collectedCount: state.collectedLeads.length,
       timestamp: Date.now()
     };
     await saveBulkState();
@@ -939,6 +982,34 @@ async function finishBackgroundProcess(runId = backgroundProcessState.runId) {
     }
   }
 
+  // An incomplete bulk URL must remain resumable even after its partial CSV is
+  // exported. Persist the accumulated rows and exact page before clearing the
+  // in-memory run. This also covers a completed scrape whose final upload failed.
+  let resumableCheckpoint = null;
+  let checkpointSaveError = null;
+  const shouldPreserveCheckpoint = isBulkRun &&
+    collectedLeads.length > 0 &&
+    (!isNormalCompletion || !uploadSucceeded);
+  if (shouldPreserveCheckpoint) {
+    try {
+      resumableCheckpoint = await persistBulkScrapeCheckpoint(backgroundProcessState);
+    } catch (error) {
+      checkpointSaveError = error;
+      logger.error('[BulkScrape] Failed to preserve error checkpoint', error);
+
+      // A checkpoint from an earlier resume point is still safer than
+      // restarting the URL from page 1.
+      try {
+        const stored = await chrome.storage.local.get(['bulkScrapeCheckpoint']);
+        if (isCheckpointForBulkPosition(stored.bulkScrapeCheckpoint)) {
+          resumableCheckpoint = stored.bulkScrapeCheckpoint;
+        }
+      } catch (storageError) {
+        // The original extraction error remains the primary UI error.
+      }
+    }
+  }
+
   // Réinitialiser l'état
   if (backgroundProcessState.runId === runId) {
     backgroundProcessState.isFinishing = false;
@@ -948,7 +1019,6 @@ async function finishBackgroundProcess(runId = backgroundProcessState.runId) {
     backgroundProcessState.duplicatePagesMap.clear();
 
     if (isBulkRun && typeof bulkScrapeState !== 'undefined') {
-      chrome.storage.local.remove(['bulkScrapeCheckpoint']).catch(() => {});
       const sameBulkUrl = bulkScrapeState.currentIndex === bulkContext.urlIndex;
       const canAdvance = bulkScrapeState.isActive &&
         sameBulkUrl &&
@@ -956,6 +1026,7 @@ async function finishBackgroundProcess(runId = backgroundProcessState.runId) {
         uploadSucceeded;
 
       if (canAdvance) {
+        chrome.storage.local.remove(['bulkScrapeCheckpoint']).catch(() => {});
         bulkScrapeState.currentIndex++;
         bulkScrapeState.lastError = null;
         bulkScrapeState.isPaused = false;
@@ -967,9 +1038,19 @@ async function finishBackgroundProcess(runId = backgroundProcessState.runId) {
         }, BACKGROUND_CONFIG.BULK_BETWEEN_URL_DELAY);
       } else if (bulkScrapeState.isActive && sameBulkUrl) {
         bulkScrapeState.isActive = false;
-        bulkScrapeState.isPaused = false;
+        bulkScrapeState.isPaused = Boolean(resumableCheckpoint);
         bulkScrapeState.isPausing = false;
-        bulkScrapeState.pausedProgress = null;
+        bulkScrapeState.pausedProgress = resumableCheckpoint
+          ? {
+            currentPage: resumableCheckpoint.currentPage,
+            collectedCount: resumableCheckpoint.collectedLeads.length,
+            resumePhase: resumableCheckpoint.resumePhase,
+            savedAt: resumableCheckpoint.savedAt
+          }
+          : null;
+        if (!resumableCheckpoint && !checkpointSaveError) {
+          chrome.storage.local.remove(['bulkScrapeCheckpoint']).catch(() => {});
+        }
         bulkScrapeState.lastError = {
           reason: collectedLeads.length > 0 && uploadError
             ? 'upload_failed'
@@ -982,6 +1063,9 @@ async function finishBackgroundProcess(runId = backgroundProcessState.runId) {
           url: bulkContext.url,
           collectedCount: collectedLeads.length,
           partialExported: uploadSucceeded,
+          resumeAvailable: Boolean(resumableCheckpoint),
+          checkpointPage: resumableCheckpoint?.currentPage || null,
+          checkpointSaveError: checkpointSaveError?.message || null,
           timestamp: Date.now()
         };
         if (typeof saveBulkState === 'function') saveBulkState();
@@ -1853,13 +1937,14 @@ async function uploadAccountCSVFromBackground(csvContent, filename = 'linkedin_a
 // ============================================================================
 // BULK SCRAPE LOGIC
 // ============================================================================
+const BULK_DEFAULT_MAX_LEADS = 2500;
 let bulkScrapeState = {
   isActive: false,
   isPaused: false,
   isPausing: false,
   urls: [],
   currentIndex: 0,
-  maxLeads: 50,
+  maxLeads: BULK_DEFAULT_MAX_LEADS,
   dataType: 'lead',
   tabId: null,
   lastError: null,
@@ -1936,12 +2021,58 @@ async function startBulkScrape(message, sender) {
 
   const requestedStartIndex = Number.isInteger(message.startIndex) ? message.startIndex : 0;
   const currentIndex = Math.max(0, Math.min(requestedStartIndex, urls.length - 1));
+  const previousBulkState = bulkScrapeState;
   const stored = await chrome.storage.local.get(['bulkScrapeCheckpoint']);
-  const checkpoint = stored.bulkScrapeCheckpoint;
-  const canResumeCheckpoint = isCheckpointForBulkPosition(checkpoint, urls, currentIndex);
+  let checkpoint = stored.bulkScrapeCheckpoint;
+  let canResumeCheckpoint = isCheckpointForBulkPosition(checkpoint, urls, currentIndex);
+  let legacyContinuation = false;
 
   if (!canResumeCheckpoint && checkpoint) {
     await chrome.storage.local.remove(['bulkScrapeCheckpoint']);
+    checkpoint = null;
+  }
+
+  // Versions before resumable error checkpoints still stored the failed page
+  // and partial-export count in bulkScrapeState. Use that information to avoid
+  // restarting an already-exported URL from page 1. The continuation CSV will
+  // contain rows from the failed page onward.
+  const legacyErrorPage = Number(previousBulkState.lastError?.page);
+  const canResumeLegacyPartial = !canResumeCheckpoint &&
+    previousBulkState.currentIndex === currentIndex &&
+    previousBulkState.urls?.[currentIndex] === urls[currentIndex] &&
+    previousBulkState.lastError?.partialExported === true &&
+    Number.isInteger(legacyErrorPage) &&
+    legacyErrorPage > 1;
+  if (canResumeLegacyPartial) {
+    const checkpointDataType = previousBulkState.dataType ||
+      (urls[currentIndex].includes('/sales/search/company') ? 'account' : 'lead');
+    checkpoint = {
+      version: 1,
+      urlIndex: currentIndex,
+      urlNumber: currentIndex + 1,
+      totalUrls: urls.length,
+      url: urls[currentIndex],
+      pageUrl: normalizeBulkCheckpointPageUrl(urls[currentIndex], legacyErrorPage),
+      currentPage: legacyErrorPage,
+      collectedLeads: [],
+      collectedUrns: [],
+      duplicatePages: [],
+      maxLeads: Number(previousBulkState.maxLeads) || message.maxLeads || BULK_DEFAULT_MAX_LEADS,
+      dataType: checkpointDataType,
+      filters: null,
+      duplicatesRemoved: 0,
+      addToList: false,
+      listName: null,
+      resumePhase: 'collect_current_page',
+      lastPageLeadCount: 0,
+      reportedTotal: null,
+      startTime: Date.now(),
+      savedAt: Date.now(),
+      legacyPartialExportedRows: Number(previousBulkState.lastError.collectedCount) || 0
+    };
+    await chrome.storage.local.set({ bulkScrapeCheckpoint: checkpoint });
+    canResumeCheckpoint = true;
+    legacyContinuation = true;
   }
 
   bulkScrapeState = {
@@ -1951,8 +2082,8 @@ async function startBulkScrape(message, sender) {
     urls,
     currentIndex,
     maxLeads: canResumeCheckpoint
-      ? (Number(checkpoint.maxLeads) || message.maxLeads || 50)
-      : (message.maxLeads || 50),
+      ? (Number(checkpoint.maxLeads) || message.maxLeads || BULK_DEFAULT_MAX_LEADS)
+      : (message.maxLeads || BULK_DEFAULT_MAX_LEADS),
     dataType: canResumeCheckpoint
       ? (checkpoint.dataType || message.dataType || 'lead')
       : (message.dataType || 'lead'),
@@ -1969,7 +2100,11 @@ async function startBulkScrape(message, sender) {
     void processNextBulkUrl();
   }
 
-  return { success: true, resumedFromCheckpoint: canResumeCheckpoint };
+  return {
+    success: true,
+    resumedFromCheckpoint: canResumeCheckpoint,
+    legacyContinuation
+  };
 }
 
 async function requestBulkPause() {
@@ -2080,7 +2215,7 @@ async function resetBulkScrape() {
     isPausing: false,
     urls: [],
     currentIndex: 0,
-    maxLeads: 50,
+    maxLeads: BULK_DEFAULT_MAX_LEADS,
     dataType: 'lead',
     tabId: null,
     lastError: null,
