@@ -12,6 +12,7 @@
     "db:schema": "node --env-file=.env.local scripts/apply-schema.mjs",
     "db:import": "node --env-file=.env.local scripts/import-leads.mjs",
     "db:reset": "node --env-file=.env.local scripts/reset-db.mjs",
+    "db:delete-niche": "node --env-file=.env.local scripts/delete-niche.mjs",
     "setup:secrets": "node scripts/configure-secrets.mjs",
     "extension:config": "node scripts/sync-extension-config.mjs",
     "smoke": "node --env-file=.env.local scripts/smoke-test.mjs",
