@@ -1,9 +1,12 @@
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import path from "node:path";
+import { finished } from "node:stream/promises";
 import { parse } from "csv-parse";
 import pg from "pg";
+import { from as copyFrom } from "pg-copy-streams";
 
 const EXPECTED_HEADERS = [
   "FullName",
@@ -71,15 +74,39 @@ const pool = new pg.Pool({
   connectionTimeoutMillis: 20_000,
 });
 
-try {
-  for (const file of args.files) {
-    await importFile(path.resolve(file), args.niche, args.batchSize, args.force);
-  }
-} finally {
-  await pool.end();
+if (args.deferSearchIndex) {
+  await dropSearchIndex();
 }
 
-async function importFile(filePath, niche, batchSize, force) {
+try {
+  for (const file of args.files) {
+    await importFile(
+      path.resolve(file),
+      args.niche,
+      args.batchSize,
+      args.copyChunkSize,
+      args.mode,
+      args.force,
+    );
+  }
+} finally {
+  try {
+    if (args.deferSearchIndex) {
+      await restoreSearchIndex();
+    }
+  } finally {
+    await pool.end();
+  }
+}
+
+async function importFile(
+  filePath,
+  niche,
+  batchSize,
+  copyChunkSize,
+  mode,
+  force,
+) {
   const fileStat = await stat(filePath);
   const digest = await hashFile(filePath);
   const sourceFile = path.basename(filePath);
@@ -112,48 +139,38 @@ async function importFile(filePath, niche, batchSize, force) {
   );
   const importId = importResult.rows[0].id;
   let processedRows = 0;
-  let sourceRow = 1;
-  let batch = [];
-
-  console.log(`Importing ${sourceFile} into niche "${niche}"...`);
+  console.log(
+    `Importing ${sourceFile} into niche "${niche}" using ${mode === "copy" ? "fast COPY" : "batched UPSERT"} mode...`,
+  );
 
   try {
-    const parser = createReadStream(filePath).pipe(
-      parse({
-        bom: true,
-        columns: (headers) => {
-          const missing = EXPECTED_HEADERS.filter((header) => !headers.includes(header));
-          if (missing.length > 0) {
-            throw new Error(`CSV is missing columns: ${missing.join(", ")}`);
+    if (mode === "copy") {
+      await clearStaging(importId);
+      processedRows = await copyAndMergeFile(
+        filePath,
+        sourceFile,
+        importId,
+        niche,
+        copyChunkSize,
+      );
+    } else {
+      let batch = [];
+      for await (const lead of readLeads(filePath, sourceFile)) {
+        batch.push(lead);
+        if (batch.length >= batchSize) {
+          await upsertBatch(batch, niche, importId);
+          processedRows += batch.length;
+          batch = [];
+          if (processedRows % (batchSize * 10) === 0) {
+            await recordProgress(importId, processedRows);
+            console.log(`  ${processedRows.toLocaleString()} rows processed`);
           }
-          return headers;
-        },
-        skip_empty_lines: true,
-        relax_column_count: true,
-        trim: false,
-      }),
-    );
-
-    for await (const row of parser) {
-      sourceRow += 1;
-      const lead = mapLead(row, sourceFile, sourceRow);
-      if (!lead) continue;
-      batch.push(lead);
-
-      if (batch.length >= batchSize) {
-        await upsertBatch(batch, niche, importId);
-        processedRows += batch.length;
-        batch = [];
-        if (processedRows % (batchSize * 10) === 0) {
-          await recordProgress(importId, processedRows);
-          console.log(`  ${processedRows.toLocaleString()} rows processed`);
         }
       }
-    }
-
-    if (batch.length > 0) {
-      await upsertBatch(batch, niche, importId);
-      processedRows += batch.length;
+      if (batch.length > 0) {
+        await upsertBatch(batch, niche, importId);
+        processedRows += batch.length;
+      }
     }
 
     await refreshStats(niche);
@@ -173,6 +190,147 @@ async function importFile(filePath, niche, batchSize, force) {
     );
     throw error;
   }
+}
+
+async function copyAndMergeFile(
+  filePath,
+  sourceFile,
+  importId,
+  niche,
+  copyChunkSize,
+) {
+  let chunk = [];
+  let processedRows = 0;
+  let mergedProfiles = 0;
+
+  for await (const lead of readLeads(filePath, sourceFile)) {
+    chunk.push(lead);
+    if (chunk.length < copyChunkSize) continue;
+
+    await copyChunkToStaging(chunk, importId);
+    mergedProfiles += await mergeStagedChunk(importId, niche);
+    processedRows += chunk.length;
+    chunk = [];
+    await clearStaging(importId);
+    await recordProgress(importId, processedRows);
+    console.log(
+      `  ${processedRows.toLocaleString()} rows processed / ${mergedProfiles.toLocaleString()} profile merges`,
+    );
+  }
+
+  if (chunk.length > 0) {
+    await copyChunkToStaging(chunk, importId);
+    mergedProfiles += await mergeStagedChunk(importId, niche);
+    processedRows += chunk.length;
+    await clearStaging(importId);
+    await recordProgress(importId, processedRows);
+    console.log(
+      `  ${processedRows.toLocaleString()} rows processed / ${mergedProfiles.toLocaleString()} profile merges`,
+    );
+  }
+
+  return processedRows;
+}
+
+async function copyChunkToStaging(leads, importId) {
+  const client = await pool.connect();
+  const copyColumns = ["import_id", ...LEAD_COLUMNS];
+  let copyStream;
+
+  try {
+    copyStream = client.query(
+      copyFrom(
+        `COPY lead_import_staging (${copyColumns.join(", ")})
+         FROM STDIN WITH (FORMAT CSV, NULL '\\N')`,
+      ),
+    );
+
+    for (const lead of leads) {
+      const row = [
+        importId,
+        ...LEAD_COLUMNS.map((column) => lead[column]),
+      ];
+      if (!copyStream.write(`${row.map(toCsvValue).join(",")}\n`)) {
+        await once(copyStream, "drain");
+      }
+    }
+    copyStream.end();
+    await finished(copyStream);
+  } catch (error) {
+    copyStream?.destroy(error);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function mergeStagedChunk(importId, niche) {
+  const updates = LEAD_COLUMNS
+    .filter((column) => !["profile_key", "source_row"].includes(column))
+    .map((column) => `${column} = excluded.${column}`)
+    .join(",\n       ");
+
+  const upsertResult = await pool.query(
+    `WITH ranked AS (
+       SELECT
+         ${LEAD_COLUMNS.map((column) => `s.${column}`).join(",\n         ")},
+         row_number() OVER (
+           PARTITION BY s.profile_key
+           ORDER BY s.source_row DESC
+         ) AS duplicate_rank
+       FROM lead_import_staging AS s
+       WHERE s.import_id = $1
+     )
+     INSERT INTO leads (${LEAD_COLUMNS.join(", ")})
+     SELECT ${LEAD_COLUMNS.join(", ")}
+       FROM ranked
+      WHERE duplicate_rank = 1
+     ON CONFLICT (profile_key) DO UPDATE SET
+       ${updates},
+       updated_at = now()
+     RETURNING profile_key`,
+    [importId],
+  );
+
+  await pool.query(
+    `WITH batch_keys AS (
+       SELECT profile_key
+         FROM lead_import_staging
+        WHERE import_id = $1
+        GROUP BY profile_key
+     )
+     INSERT INTO lead_niches (niche, lead_id, first_seen_import_id)
+     SELECT $2, l.id, $1
+       FROM leads AS l
+       INNER JOIN batch_keys AS b ON b.profile_key = l.profile_key
+     ON CONFLICT (niche, lead_id) DO NOTHING`,
+    [importId, niche],
+  );
+
+  return upsertResult.rowCount ?? 0;
+}
+
+async function clearStaging(importId) {
+  await pool.query(
+    "DELETE FROM lead_import_staging WHERE import_id = $1",
+    [importId],
+  );
+}
+
+async function dropSearchIndex() {
+  console.log("Temporarily deferring the lead search index for bulk loading...");
+  await pool.query(
+    "DROP INDEX IF EXISTS leads@leads_search_text_trgm_idx",
+  );
+}
+
+async function restoreSearchIndex() {
+  console.log("Rebuilding the lead search index...");
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS leads_search_text_trgm_idx
+       ON leads USING GIN (search_text gin_trgm_ops)`,
+  );
+  console.log("Lead search index is ready.");
 }
 
 async function upsertBatch(leads, niche, importId) {
@@ -222,6 +380,38 @@ async function upsertBatch(leads, niche, importId) {
   } finally {
     client.release();
   }
+}
+
+async function* readLeads(filePath, sourceFile) {
+  let sourceRow = 1;
+  const parser = createReadStream(filePath).pipe(
+    parse({
+      bom: true,
+      columns: (headers) => {
+        const missing = EXPECTED_HEADERS.filter((header) => !headers.includes(header));
+        if (missing.length > 0) {
+          throw new Error(`CSV is missing columns: ${missing.join(", ")}`);
+        }
+        return headers;
+      },
+      skip_empty_lines: true,
+      relax_column_count: true,
+      trim: false,
+    }),
+  );
+
+  for await (const row of parser) {
+    sourceRow += 1;
+    const lead = mapLead(row, sourceFile, sourceRow);
+    if (lead) yield lead;
+  }
+}
+
+function toCsvValue(value) {
+  if (value === null || value === undefined) return "\\N";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number") return String(value);
+  return `"${String(value).replaceAll('"', '""')}"`;
 }
 
 async function refreshStats(niche) {
@@ -345,13 +535,34 @@ function hashFile(filePath) {
 }
 
 function parseArguments(argv) {
-  const result = { files: [], niche: "", batchSize: 200, force: false };
+  const result = {
+    files: [],
+    niche: "",
+    batchSize: 200,
+    copyChunkSize: 2_000,
+    mode: "copy",
+    deferSearchIndex: false,
+    force: false,
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
     if (value === "--niche") {
       result.niche = clean(argv[++index]).slice(0, 120);
     } else if (value === "--batch-size") {
       result.batchSize = Math.max(25, Math.min(500, Number(argv[++index]) || 200));
+    } else if (value === "--copy-chunk-size") {
+      result.copyChunkSize = Math.max(
+        250,
+        Math.min(5_000, Number(argv[++index]) || 2_000),
+      );
+    } else if (value === "--mode") {
+      const mode = clean(argv[++index]).toLowerCase();
+      if (!["copy", "batched"].includes(mode)) {
+        throw new Error('--mode must be either "copy" or "batched".');
+      }
+      result.mode = mode;
+    } else if (value === "--defer-search-index") {
+      result.deferSearchIndex = true;
     } else if (value === "--force") {
       result.force = true;
     } else {

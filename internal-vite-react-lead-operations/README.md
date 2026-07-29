@@ -54,7 +54,7 @@ Run the import once for each niche. It streams the input in bounded batches and
 deduplicates by normalized LinkedIn URL:
 
 ```powershell
-npm run db:import -- --niche "Medical devices" "C:\exports\medical-1.csv" "C:\exports\medical-2.csv"
+npm run db:import -- --niche "Institute of Directors" --copy-chunk-size 2000 --defer-search-index "C:\Users\My PC\Downloads\instituate of directors\institute of directors.csv"
 ```
 
 ## Reset DB
@@ -65,7 +65,11 @@ npm run db:reset
 
 Useful options:
 
-- `--batch-size 200` controls SQL transaction size (25–500).
+- Fast `COPY` staging is the default and is recommended for large files.
+- `--copy-chunk-size 2000` controls each COPY-and-merge commit (250–5000).
+- `--defer-search-index` drops the trigram search index for the bulk load and
+  automatically rebuilds it afterward. Use this for initial large imports.
+- `--mode batched --batch-size 200` enables the slower legacy fallback.
 - `--force` reprocesses a file that was already completed.
 - Interrupted imports can safely be rerun; lead and niche writes are idempotent.
 

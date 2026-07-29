@@ -12,6 +12,40 @@ CREATE TABLE IF NOT EXISTS lead_imports (
   UNIQUE (sha256, niche)
 );
 
+-- COPY lands normalized rows here before chunked, idempotent merges. Keeping the
+-- staging table separate avoids maintaining the expensive lead search index
+-- while the local CSV is still streaming over the network.
+CREATE TABLE IF NOT EXISTS lead_import_staging (
+  import_id UUID NOT NULL,
+  profile_key STRING NOT NULL,
+  full_name STRING NULL,
+  first_name STRING NULL,
+  last_name STRING NULL,
+  domain STRING NULL,
+  company_name STRING NULL,
+  current_title STRING NULL,
+  linkedin_url STRING NOT NULL,
+  geographic_region STRING NULL,
+  company_industry STRING NULL,
+  company_size STRING NULL,
+  company_linkedin STRING NULL,
+  employee_count INT8 NULL,
+  company_location STRING NULL,
+  founded_year INT4 NULL,
+  connection_degree STRING NULL,
+  premium BOOL NULL,
+  company_description STRING NULL,
+  summary STRING NULL,
+  search_text STRING NOT NULL,
+  source_file STRING NOT NULL,
+  source_row INT8 NOT NULL
+);
+
+-- Staging is deliberately unindexed. Fast mode keeps only one small COPY chunk
+-- here at a time, so an index would add write amplification without helping the
+-- merge enough to justify it.
+DROP INDEX IF EXISTS lead_import_staging@lead_import_staging_by_import_id_and_profile_key;
+
 CREATE TABLE IF NOT EXISTS leads (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   profile_key STRING NOT NULL UNIQUE,
