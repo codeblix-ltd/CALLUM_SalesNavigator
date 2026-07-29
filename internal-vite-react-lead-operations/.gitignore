@@ -12,6 +12,8 @@ dist
 dist-ssr
 *.local
 .secrets
+.codex-gateway/
+.env.gateway
 
 .devlogs/
 

@@ -184,5 +184,17 @@ CREATE INDEX IF NOT EXISTS lead_assignment_events_by_operator_id_and_created_at
 CREATE INDEX IF NOT EXISTS lead_assignment_events_by_lead_id_and_created_at
   ON lead_assignment_events (lead_id, created_at DESC);
 
+-- The VPS gateway keeps the live Codex session in a private Docker volume and
+-- mirrors auth.json here only after encrypting it with a gateway-only key.
+CREATE TABLE IF NOT EXISTS codex_gateway_auth (
+  id STRING PRIMARY KEY,
+  encrypted_auth BYTES NOT NULL,
+  nonce BYTES NOT NULL,
+  auth_tag BYTES NOT NULL,
+  plaintext_sha256 STRING NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT codex_gateway_auth_singleton CHECK (id = 'primary')
+);
+
 UPSERT INTO lead_stats (key, total_count, updated_at)
 SELECT 'all', count(*), now() FROM leads;

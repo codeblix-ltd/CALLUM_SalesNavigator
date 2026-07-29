@@ -7,11 +7,11 @@ Manifest V3 Chrome extension for scouts.
   settings, status history, errors, and collected email addresses.
 - Convex provides authentication and the extension's authenticated server API.
 - The Chrome extension shows each scout only their assigned queue and counts.
-- OpenAI's Responses API with `gpt-5.6-luna` creates reviewable comment drafts
-  from post text.
+- A private VPS gateway runs the official Codex app-server with
+  `gpt-5.6-luna` to create reviewable comment drafts from post text.
 
 The browser never receives the CockroachDB connection string, the scout
-provisioning key, or the OpenAI API key.
+provisioning key, the gateway secret, or the ChatGPT session tokens.
 
 ## One-time setup
 
@@ -21,9 +21,6 @@ The repository is linked to its existing Convex development deployment.
 # Only needed when COCKROACH_DATABASE_URL is not already in .env.local:
 $env:CRDB_PASSWORD="<CockroachDB SQL password>"
 
-# Optional, required for GPT comment drafts:
-$env:OPENAI_API_KEY="<OpenAI API key>"
-
 npm run setup:secrets
 npx @convex-dev/auth --skip-git-check --web-server-url http://localhost:5173
 npm run db:schema
@@ -31,9 +28,47 @@ npm run convex:push
 npm run extension:config
 ```
 
-`setup:secrets` generates the server-only scout provisioning key and copies
-the configured secrets to Convex. A ChatGPT subscription is not an API
-credential; comment drafting requires a platform API key.
+`setup:secrets` generates the server-only scout provisioning key, the gateway
+shared secret, and a 32-byte credential-encryption key. It copies only the
+secrets Convex needs to the linked deployment.
+
+## Run the Codex gateway on a VPS
+
+The gateway is the one persistent process used by all scouts. Convex calls it;
+the extension never connects to it directly.
+
+1. Copy the repository to the VPS.
+2. Copy `.env.gateway.example` to `.env.gateway`.
+3. Copy `COCKROACH_DATABASE_URL`, `CODEX_GATEWAY_SHARED_SECRET`, and
+   `CODEX_AUTH_ENCRYPTION_KEY` from the local `.env.local` into
+   `.env.gateway`.
+4. Start the container:
+
+```bash
+docker compose -f gateway/docker-compose.example.yml up -d --build
+```
+
+5. Put Caddy, nginx, or another TLS reverse proxy in front of
+   `127.0.0.1:8787`. Only `/healthz` is public; all `/v1/*` routes require the
+   shared bearer secret. `gateway/Caddyfile.example` is a minimal Caddy
+   configuration; replace its hostname with your VPS domain.
+6. Point Convex at that HTTPS address from the local machine:
+
+```powershell
+$env:CODEX_GATEWAY_URL="https://codex-gateway.example.com"
+npm run setup:secrets
+npm run convex:push
+```
+
+Open the React admin app, unlock it, choose **Access settings**, and select
+**Connect ChatGPT subscription**. The app displays the official OpenAI device
+URL and one-time code. After approval, the gateway stores the live Codex
+session in its private Docker volume and mirrors an AES-256-GCM encrypted
+backup to `codex_gateway_auth` in CockroachDB.
+
+Keep exactly one gateway replica running. Draft requests are intentionally
+serialized through that process so one managed ChatGPT session has only one
+writer.
 
 ## Create scouts
 

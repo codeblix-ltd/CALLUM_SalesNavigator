@@ -4,7 +4,10 @@ import { useAction } from "convex/react";
 import {
   ArrowLeft,
   ArrowRight,
+  Bot,
   Building2,
+  CheckCircle2,
+  Copy,
   Database,
   ExternalLink,
   KeyRound,
@@ -46,11 +49,30 @@ type Lead = {
   premium: boolean | null;
 };
 
+type CodexStatus = {
+  connected: boolean;
+  account: { email: string | null; planType: string } | null;
+  model: string;
+  queuedDrafts: number;
+};
+
+type DeviceLogin = {
+  loginId: string;
+  verificationUrl: string;
+  userCode: string;
+};
+
 const TOKEN_STORAGE_KEY = "callum-leads-access-token";
 
 function App() {
   const getStats = useAction(api.leads.getStats);
   const listLeads = useAction(api.leads.list);
+  const getCodexStatus = useAction(api.codexGateway.getStatus);
+  const startCodexLogin = useAction(api.codexGateway.startDeviceLogin);
+  const getCodexLoginStatus = useAction(
+    api.codexGateway.getDeviceLoginStatus,
+  );
+  const logoutCodex = useAction(api.codexGateway.logout);
   const [stats, setStats] = useState<Stats | null>(null);
   const [statsError, setStatsError] = useState("");
   const [accessToken, setAccessToken] = useState(
@@ -68,6 +90,10 @@ function App() {
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [codexStatus, setCodexStatus] = useState<CodexStatus | null>(null);
+  const [codexError, setCodexError] = useState("");
+  const [codexBusy, setCodexBusy] = useState(false);
+  const [deviceLogin, setDeviceLogin] = useState<DeviceLogin | null>(null);
 
   const refreshStats = useCallback(async () => {
     try {
@@ -122,9 +148,61 @@ function App() {
     }
   }, [accessToken, cursor, debouncedSearch, listLeads, niche]);
 
+  const refreshCodexStatus = useCallback(async () => {
+    if (!accessToken) {
+      setCodexStatus(null);
+      return;
+    }
+    try {
+      setCodexError("");
+      setCodexStatus(await getCodexStatus({ accessToken }));
+    } catch (error) {
+      setCodexError(readError(error));
+      setCodexStatus(null);
+    }
+  }, [accessToken, getCodexStatus]);
+
   useEffect(() => {
     void loadLeads();
   }, [loadLeads]);
+
+  useEffect(() => {
+    if (settingsOpen && accessToken) void refreshCodexStatus();
+  }, [accessToken, refreshCodexStatus, settingsOpen]);
+
+  useEffect(() => {
+    if (!accessToken || !deviceLogin) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const result = await getCodexLoginStatus({
+          accessToken,
+          loginId: deviceLogin.loginId,
+        });
+        if (cancelled) return;
+        if (result.connected) {
+          setDeviceLogin(null);
+          await refreshCodexStatus();
+        } else if (result.state === "failed") {
+          setCodexError(result.error || "OpenAI authorization failed.");
+          setDeviceLogin(null);
+        }
+      } catch (error) {
+        if (!cancelled) setCodexError(readError(error));
+      }
+    };
+    void poll();
+    const handle = window.setInterval(() => void poll(), 2_500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(handle);
+    };
+  }, [
+    accessToken,
+    deviceLogin,
+    getCodexLoginStatus,
+    refreshCodexStatus,
+  ]);
 
   const currentPage = cursorHistory.length + 1;
   const available = Math.max(0, (stats?.total ?? 0) - (stats?.assigned ?? 0));
@@ -147,7 +225,53 @@ function App() {
     setAccessToken("");
     setTokenDraft("");
     setLeads([]);
+    setCodexStatus(null);
+    setDeviceLogin(null);
     setSettingsOpen(false);
+  }
+
+  async function connectCodex() {
+    if (!accessToken) return;
+    setCodexBusy(true);
+    setCodexError("");
+    try {
+      const result = await startCodexLogin({ accessToken });
+      if (result.connected) {
+        setDeviceLogin(null);
+        await refreshCodexStatus();
+      } else if (
+        result.loginId &&
+        result.verificationUrl &&
+        result.userCode
+      ) {
+        setDeviceLogin({
+          loginId: result.loginId,
+          verificationUrl: result.verificationUrl,
+          userCode: result.userCode,
+        });
+      } else {
+        throw new Error("The gateway did not return an authorization code.");
+      }
+    } catch (error) {
+      setCodexError(readError(error));
+    } finally {
+      setCodexBusy(false);
+    }
+  }
+
+  async function disconnectCodex() {
+    if (!accessToken) return;
+    setCodexBusy(true);
+    setCodexError("");
+    try {
+      await logoutCodex({ accessToken });
+      setDeviceLogin(null);
+      await refreshCodexStatus();
+    } catch (error) {
+      setCodexError(readError(error));
+    } finally {
+      setCodexBusy(false);
+    }
   }
 
   function nextPage() {
@@ -312,6 +436,77 @@ function App() {
               <button className="primary-button" type="submit">Save and unlock</button>
             </form>
             {accessToken && <button className="danger-button" onClick={lockWorkspace}>Lock this browser</button>}
+
+            <div className="modal-divider" />
+            <div className="codex-heading">
+              <div className="codex-icon"><Bot size={19} /></div>
+              <div>
+                <h3>Codex subscription</h3>
+                <p>Draft with GPT-5.6 Luna</p>
+              </div>
+            </div>
+
+            {!accessToken ? (
+              <p>Save the lead access token first to manage the VPS subscription session.</p>
+            ) : codexStatus?.connected ? (
+              <div className="codex-connected">
+                <div>
+                  <CheckCircle2 size={18} />
+                  <span>
+                    <strong>Connected</strong>
+                    {codexStatus.account?.email || "ChatGPT account"} · {codexStatus.account?.planType}
+                  </span>
+                </div>
+                <p>
+                  Model: {codexStatus.model}
+                  {codexStatus.queuedDrafts > 0
+                    ? ` · ${codexStatus.queuedDrafts} queued`
+                    : ""}
+                </p>
+                <button
+                  className="danger-button codex-disconnect"
+                  onClick={() => void disconnectCodex()}
+                  disabled={codexBusy}
+                >
+                  Disconnect subscription
+                </button>
+              </div>
+            ) : deviceLogin ? (
+              <div className="device-login">
+                <p>Open the official OpenAI device page, then enter this one-time code:</p>
+                <div className="device-code">
+                  <strong>{deviceLogin.userCode}</strong>
+                  <button
+                    type="button"
+                    onClick={() => void navigator.clipboard.writeText(deviceLogin.userCode)}
+                    title="Copy code"
+                  >
+                    <Copy size={16} />
+                  </button>
+                </div>
+                <a
+                  className="primary-button"
+                  href={deviceLogin.verificationUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Open OpenAI authorization <ExternalLink size={15} />
+                </a>
+                <span className="polling-label">
+                  <RefreshCw size={13} className="spin" /> Waiting for approval…
+                </span>
+              </div>
+            ) : (
+              <button
+                className="primary-button codex-connect"
+                onClick={() => void connectCodex()}
+                disabled={codexBusy}
+              >
+                {codexBusy ? <RefreshCw size={15} className="spin" /> : <Bot size={16} />}
+                Connect ChatGPT subscription
+              </button>
+            )}
+            {codexError && <p className="codex-error">{codexError}</p>}
           </div>
         </div>
       )}

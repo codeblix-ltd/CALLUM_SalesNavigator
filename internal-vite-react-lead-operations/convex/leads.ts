@@ -1,9 +1,9 @@
 "use node";
 
-import { timingSafeEqual } from "node:crypto";
 import pg from "pg";
 import { v } from "convex/values";
 import { action } from "./_generated/server";
+import { assertAdminAccess } from "./lib/adminAccess";
 
 const optionalText = v.union(v.string(), v.null());
 
@@ -103,7 +103,7 @@ export const list = action({
     hasMore: v.boolean(),
   }),
   handler: async (_ctx, args) => {
-    assertAccessToken(args.accessToken);
+    assertAdminAccess(args.accessToken);
     const database = getPool();
     const limit = Math.max(1, Math.min(100, Math.trunc(args.limit)));
     const niche = args.niche?.trim().slice(0, 120) || null;
@@ -205,21 +205,6 @@ function validateCursor(cursor: string | null) {
     throw new Error("Invalid pagination cursor.");
   }
   return value;
-}
-
-function assertAccessToken(received: string) {
-  const expected = process.env.LEADS_API_TOKEN;
-  if (!expected) {
-    throw new Error("Lead access is not configured.");
-  }
-  const receivedBytes = Buffer.from(received);
-  const expectedBytes = Buffer.from(expected);
-  if (
-    receivedBytes.length !== expectedBytes.length ||
-    !timingSafeEqual(receivedBytes, expectedBytes)
-  ) {
-    throw new Error("Invalid lead access token.");
-  }
 }
 
 function getPool() {

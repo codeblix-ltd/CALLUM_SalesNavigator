@@ -17,6 +17,9 @@
     "leads:assign": "node --env-file=.env.local scripts/assign-leads.mjs",
     "setup:secrets": "node scripts/configure-secrets.mjs",
     "extension:config": "node scripts/sync-extension-config.mjs",
+    "gateway:start": "node --env-file=.env.gateway gateway/server.mjs",
+    "gateway:dev": "node --env-file=.env.local --watch gateway/server.mjs",
+    "gateway:smoke": "node --env-file=.env.local gateway/smoke-test.mjs",
     "smoke": "node --env-file=.env.local scripts/smoke-test.mjs",
     "lint": "oxlint",
     "preview": "vite preview"
@@ -24,10 +27,10 @@
   "dependencies": {
     "@auth/core": "^0.41.3",
     "@convex-dev/auth": "^0.0.94",
+    "@openai/codex": "^0.146.0",
     "convex": "^1.42.3",
     "csv-parse": "^7.0.1",
     "lucide-react": "^1.27.0",
-    "openai": "^7.1.0",
     "pg": "^8.22.0",
     "pg-copy-streams": "^7.0.0",
     "react": "^19.2.7",

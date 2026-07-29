@@ -1,0 +1,15 @@
+services:
+  codex-gateway:
+    build:
+      context: ..
+      dockerfile: gateway/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../.env.gateway
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - codex-gateway-data:/var/lib/callum-codex
+
+volumes:
+  codex-gateway-data:

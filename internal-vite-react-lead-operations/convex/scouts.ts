@@ -1,10 +1,11 @@
 "use node";
 
-import OpenAI from "openai";
+import { randomUUID } from "node:crypto";
 import { v } from "convex/values";
 import type { PoolClient } from "pg";
 import { internal } from "./_generated/api";
 import { action } from "./_generated/server";
+import { requestCodexGateway } from "./lib/codexGateway";
 import { getPool } from "./lib/cockroach";
 
 type ScoutIdentity = {
@@ -69,11 +70,6 @@ const dashboardValidator = v.object({
   settings: settingsValidator,
   activeLead: v.union(leadValidator, v.null()),
 });
-
-const commentInstructions =
-  "Write one authentic professional LinkedIn comment draft based only on the supplied post text. " +
-  "Use one or two concise sentences. Do not invent personal experience, facts, or familiarity. " +
-  "Do not use hashtags, a sales pitch, a call to connect, or generic praise. Return only the draft.";
 
 export const getDashboard = action({
   args: {},
@@ -394,27 +390,19 @@ export const draftComment = action({
     if (postText.length < 30 || postText.length > 8_000) {
       throw new Error("Post text must be between 30 and 8,000 characters.");
     }
-    if (!process.env.OPENAI_API_KEY) {
-      throw new Error(
-        "The OpenAI API key is not configured on this Convex deployment.",
-      );
-    }
-    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    const response = await client.responses.create({
-      model: "gpt-5.6-luna",
-      instructions: commentInstructions,
-      input: `Draft a comment for this post:\n\n${postText}`,
-      max_output_tokens: 180,
-      reasoning: { effort: "low" },
-      safety_identifier: `scout_${scout.userId}`,
-      store: false,
-      text: { verbosity: "low" },
+    return requestCodexGateway<{
+      draft: string;
+      threadId: string;
+      model: string;
+    }>("/v1/drafts", {
+      method: "POST",
+      timeoutMs: 125_000,
+      body: {
+        requestId: randomUUID(),
+        scoutId: scout.userId,
+        postText,
+      },
     });
-    return {
-      draft: response.output_text.trim(),
-      threadId: response.id,
-      model: "gpt-5.6-luna",
-    };
   },
 });
 
