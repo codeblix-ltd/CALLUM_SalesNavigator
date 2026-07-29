@@ -1,4 +1,5 @@
 importScripts("config.js");
+importScripts("convex-client.js");
 
 const REFRESH_ALARM = "refresh-lead-total";
 
@@ -16,29 +17,29 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type !== "REFRESH_TOTAL") return false;
+  if (message?.type !== "REFRESH_SCOUT_DASHBOARD") return false;
   updateBadge()
-    .then((stats) => sendResponse({ ok: true, stats }))
+    .then((dashboard) => sendResponse({ ok: true, dashboard }))
     .catch((error) => sendResponse({ ok: false, error: String(error) }));
   return true;
 });
 
 async function updateBadge() {
-  const stats = await fetchStats();
-  await chrome.storage.local.set({ leadStats: stats, leadStatsUpdatedAt: Date.now() });
-  await chrome.action.setBadgeBackgroundColor({ color: "#6347D8" });
-  await chrome.action.setBadgeText({ text: compactNumber(stats.total) });
-  return stats;
-}
-
-async function fetchStats() {
-  const siteUrl = globalThis.LEADS_EXTENSION_CONFIG?.CONVEX_SITE_URL;
-  if (!siteUrl || siteUrl.includes("your-deployment")) {
-    throw new Error("Extension is not configured. Run npm run extension:config.");
+  const auth = await ScoutApi.getAuth();
+  if (!auth) {
+    await chrome.action.setBadgeText({ text: "" });
+    return null;
   }
-  const response = await fetch(`${siteUrl}/api/leads/stats`, { cache: "no-store" });
-  if (!response.ok) throw new Error(`Stats request failed (${response.status}).`);
-  return response.json();
+  const dashboard = await ScoutApi.authenticatedAction("scouts:getDashboard");
+  await chrome.storage.local.set({
+    scoutDashboard: dashboard,
+    scoutDashboardUpdatedAt: Date.now(),
+  });
+  await chrome.action.setBadgeBackgroundColor({ color: "#6347D8" });
+  await chrome.action.setBadgeText({
+    text: compactNumber(dashboard.counts.fresh),
+  });
+  return dashboard;
 }
 
 function compactNumber(value) {

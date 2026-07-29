@@ -14,7 +14,7 @@ try {
   await client.connect();
   console.log("Clearing all lead records, niches, imports, and stats...");
   await client.query(`
-    TRUNCATE TABLE lead_assignments, lead_niches, lead_imports, leads, niches CASCADE;
+    TRUNCATE TABLE lead_assignment_events, lead_assignments, operator_settings, lead_niches, lead_imports, leads, niches CASCADE;
     UPSERT INTO lead_stats (key, total_count, updated_at) VALUES ('all', 0, now());
   `);
   console.log("Database reset complete! Total lead count is now 0.");

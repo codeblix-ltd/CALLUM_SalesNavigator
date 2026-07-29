@@ -13,6 +13,8 @@
     "db:import": "node --env-file=.env.local scripts/import-leads.mjs",
     "db:reset": "node --env-file=.env.local scripts/reset-db.mjs",
     "db:delete-niche": "node --env-file=.env.local scripts/delete-niche.mjs",
+    "scout:create": "node --env-file=.env.local scripts/create-scout.mjs",
+    "leads:assign": "node --env-file=.env.local scripts/assign-leads.mjs",
     "setup:secrets": "node scripts/configure-secrets.mjs",
     "extension:config": "node scripts/sync-extension-config.mjs",
     "smoke": "node --env-file=.env.local scripts/smoke-test.mjs",
@@ -20,9 +22,12 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@auth/core": "^0.41.3",
+    "@convex-dev/auth": "^0.0.94",
     "convex": "^1.42.3",
     "csv-parse": "^7.0.1",
     "lucide-react": "^1.27.0",
+    "openai": "^7.1.0",
     "pg": "^8.22.0",
     "pg-copy-streams": "^7.0.0",
     "react": "^19.2.7",

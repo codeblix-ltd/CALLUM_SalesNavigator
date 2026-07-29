@@ -3,33 +3,167 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Callum Leads</title>
+    <title>Callum Scout</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <main>
-      <header>
-        <div class="logo">C</div>
+    <main class="shell">
+      <header class="topbar">
+        <div class="brand-mark">C</div>
         <div>
-          <strong>Callum Leads</strong>
-          <span id="connection"><i></i> Database connected</span>
+          <strong>Callum Scout</strong>
+          <span id="connection"><i></i> Secure lead workspace</span>
         </div>
+        <button id="sign-out" class="text-button" type="button" hidden>Sign out</button>
       </header>
-      <section>
-        <p>Total leads</p>
-        <h1 id="total">—</h1>
-        <div class="meter"><span id="meter"></span></div>
-        <div class="meta">
-          <span id="niches">Loading niches…</span>
-          <span id="updated">Syncing…</span>
-        </div>
+
+      <section id="login-view" class="card login-card">
+        <p class="eyebrow">Scout sign in</p>
+        <h1>Your assigned leads</h1>
+        <p class="muted">
+          Use the username and password created by your operations manager.
+        </p>
+        <form id="login-form">
+          <label>
+            Username
+            <input id="username" name="username" autocomplete="username" required />
+          </label>
+          <label>
+            Password
+            <input id="password" name="password" type="password" autocomplete="current-password" required />
+          </label>
+          <button class="primary" type="submit">Sign in</button>
+        </form>
       </section>
-      <button id="refresh" type="button">
-        <span>↻</span> Refresh total
-      </button>
+
+      <section id="dashboard-view" hidden>
+        <div class="welcome-row">
+          <div>
+            <p class="eyebrow">Signed in as</p>
+            <h1 id="scout-name">Scout</h1>
+          </div>
+          <button id="refresh" class="icon-button" type="button" title="Refresh">↻</button>
+        </div>
+
+        <div class="metrics">
+          <article class="metric metric-fresh">
+            <span>Fresh leads</span>
+            <strong id="fresh-count">—</strong>
+          </article>
+          <article class="metric">
+            <span>Engaged</span>
+            <strong id="engaged-count">—</strong>
+          </article>
+          <article class="metric">
+            <span>Requests sent</span>
+            <strong id="request-count">—</strong>
+          </article>
+          <article class="metric">
+            <span>Accepted</span>
+            <strong id="accepted-count">—</strong>
+          </article>
+          <article class="metric">
+            <span>Emails saved</span>
+            <strong id="email-count">—</strong>
+          </article>
+          <article class="metric">
+            <span>Errors</span>
+            <strong id="failed-count">—</strong>
+          </article>
+        </div>
+
+        <button id="next-lead" class="primary execute" type="button">
+          Open next fresh lead
+        </button>
+
+        <article id="lead-card" class="card lead-card" hidden>
+          <div class="lead-heading">
+            <div>
+              <p class="eyebrow">Current lead</p>
+              <h2 id="lead-name">Lead</h2>
+              <p id="lead-meta" class="muted"></p>
+            </div>
+            <span id="lead-status" class="status-pill">Viewed</span>
+          </div>
+          <div class="link-row">
+            <button id="open-profile" class="secondary" type="button">Open profile</button>
+            <button id="open-contact" class="secondary" type="button">Contact info</button>
+          </div>
+
+          <div id="draft-panel" class="draft-panel">
+            <label for="post-text">Paste post text for a reviewed draft</label>
+            <textarea id="post-text" rows="4" placeholder="Paste the post text here. Nothing is scraped automatically."></textarea>
+            <button id="generate-draft" class="secondary" type="button">Draft with GPT-5.6 Luna</button>
+            <div id="draft-result" class="draft-result" hidden>
+              <p id="draft-text"></p>
+              <button id="copy-draft" class="text-button" type="button">Copy draft</button>
+            </div>
+          </div>
+
+          <div id="email-panel" class="email-panel" hidden>
+            <label for="lead-email">Email found manually</label>
+            <input id="lead-email" type="email" placeholder="name@company.com" />
+          </div>
+
+          <div class="status-actions">
+            <button id="mark-engaged" class="secondary" type="button">Mark engaged</button>
+            <button id="mark-requested" class="secondary" type="button">Connection sent</button>
+            <button id="mark-accepted" class="secondary" type="button">Mark accepted</button>
+            <button id="save-email" class="secondary" type="button">Save email</button>
+            <button id="skip-lead" class="text-button danger-text" type="button">Skip lead</button>
+          </div>
+        </article>
+
+        <div class="utility-row">
+          <button id="open-sent" class="text-button" type="button">Review sent invitations</button>
+          <button id="toggle-settings" class="text-button" type="button">Settings</button>
+        </div>
+
+        <form id="settings-form" class="card settings-card" hidden>
+          <div>
+            <p class="eyebrow">Workflow settings</p>
+            <h2>Scout pacing</h2>
+          </div>
+          <label>
+            Posts to review per lead
+            <input id="post-engagements" type="number" min="1" max="10" required />
+          </label>
+          <div class="duration-field">
+            <label>
+              Review interval
+              <input id="engagement-interval" type="number" min="1" required />
+            </label>
+            <select id="engagement-unit" aria-label="Review interval unit">
+              <option value="1">minutes</option>
+              <option value="60">hours</option>
+              <option value="1440">days</option>
+            </select>
+          </div>
+          <div class="duration-field">
+            <label>
+              Wait before connecting
+              <input id="connection-delay" type="number" min="0" required />
+            </label>
+            <select id="connection-unit" aria-label="Connection delay unit">
+              <option value="1">minutes</option>
+              <option value="60">hours</option>
+              <option value="1440">days</option>
+            </select>
+          </div>
+          <label class="check-row">
+            <input id="include-note" type="checkbox" />
+            Include a note when you send a request
+          </label>
+          <button class="primary" type="submit">Save settings</button>
+        </form>
+      </section>
+
       <p class="error" id="error" hidden></p>
+      <p class="success" id="success" hidden></p>
+      <footer id="updated">Not synced yet</footer>
     </main>
     <script src="config.js"></script>
+    <script src="convex-client.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

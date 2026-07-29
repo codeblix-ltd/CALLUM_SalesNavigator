@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Callum Leads",
-  "description": "Shows the current total number of leads available through Convex and CockroachDB.",
-  "version": "0.1.0",
+  "description": "Secure scout queues, lead status tracking, and human-reviewed engagement drafts.",
+  "version": "0.2.0",
   "action": {
     "default_title": "Callum Leads",
     "default_popup": "popup.html",
@@ -20,6 +20,9 @@
     "48": "icon.png",
     "128": "icon.png"
   },
-  "permissions": ["alarms", "storage"],
-  "host_permissions": ["https://*.convex.site/*"]
+  "permissions": ["alarms", "clipboardWrite", "storage", "tabs"],
+  "host_permissions": [
+    "https://*.convex.cloud/*",
+    "https://*.convex.site/*"
+  ]
 }

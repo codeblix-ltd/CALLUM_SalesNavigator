@@ -8,8 +8,13 @@
  * @module
  */
 
+import type * as auth from "../auth.js";
 import type * as http from "../http.js";
 import type * as leads from "../leads.js";
+import type * as lib_cockroach from "../lib/cockroach.js";
+import type * as scoutAdmin from "../scoutAdmin.js";
+import type * as scoutIdentity from "../scoutIdentity.js";
+import type * as scouts from "../scouts.js";
 
 import type {
   ApiFromModules,
@@ -18,8 +23,13 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  auth: typeof auth;
   http: typeof http;
   leads: typeof leads;
+  "lib/cockroach": typeof lib_cockroach;
+  scoutAdmin: typeof scoutAdmin;
+  scoutIdentity: typeof scoutIdentity;
+  scouts: typeof scouts;
 }>;
 
 /**

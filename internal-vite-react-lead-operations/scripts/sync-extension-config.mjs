@@ -26,6 +26,6 @@ if (siteUrl === convexUrl) {
   throw new Error("VITE_CONVEX_URL is not a standard Convex cloud URL.");
 }
 
-const output = `globalThis.LEADS_EXTENSION_CONFIG = Object.freeze({\n  CONVEX_SITE_URL: ${JSON.stringify(siteUrl)},\n});\n`;
+const output = `globalThis.LEADS_EXTENSION_CONFIG = Object.freeze({\n  CONVEX_URL: ${JSON.stringify(convexUrl)},\n  CONVEX_SITE_URL: ${JSON.stringify(siteUrl)},\n});\n`;
 writeFileSync(path.join(projectRoot, "chrome-extension", "config.js"), output, "utf8");
 console.log(`Extension configured for ${siteUrl}.`);

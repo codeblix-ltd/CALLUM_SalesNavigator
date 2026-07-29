@@ -105,14 +105,84 @@ CREATE TABLE IF NOT EXISTS lead_assignments (
   lead_id UUID PRIMARY KEY REFERENCES leads(id) ON DELETE CASCADE,
   operator_id STRING NOT NULL,
   status STRING NOT NULL DEFAULT 'assigned'
-    CHECK (status IN ('assigned', 'viewed', 'engaged', 'connected', 'skipped', 'failed')),
+    CHECK (status IN (
+      'assigned',
+      'viewed',
+      'engaged',
+      'connected',
+      'connection_requested',
+      'accepted',
+      'email_collected',
+      'skipped',
+      'failed'
+    )),
   assigned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  last_error STRING NULL
+  viewed_at TIMESTAMPTZ NULL,
+  engaged_at TIMESTAMPTZ NULL,
+  connection_requested_at TIMESTAMPTZ NULL,
+  accepted_at TIMESTAMPTZ NULL,
+  email_collected_at TIMESTAMPTZ NULL,
+  email STRING NULL,
+  last_error STRING NULL,
+  last_error_at TIMESTAMPTZ NULL
 );
+
+ALTER TABLE lead_assignments
+  ADD COLUMN IF NOT EXISTS viewed_at TIMESTAMPTZ NULL,
+  ADD COLUMN IF NOT EXISTS engaged_at TIMESTAMPTZ NULL,
+  ADD COLUMN IF NOT EXISTS connection_requested_at TIMESTAMPTZ NULL,
+  ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ NULL,
+  ADD COLUMN IF NOT EXISTS email_collected_at TIMESTAMPTZ NULL,
+  ADD COLUMN IF NOT EXISTS email STRING NULL,
+  ADD COLUMN IF NOT EXISTS last_error_at TIMESTAMPTZ NULL;
+
+ALTER TABLE lead_assignments
+  DROP CONSTRAINT IF EXISTS lead_assignments_status_check;
+
+ALTER TABLE lead_assignments
+  ADD CONSTRAINT lead_assignments_status_check
+  CHECK (status IN (
+    'assigned',
+    'viewed',
+    'engaged',
+    'connected',
+    'connection_requested',
+    'accepted',
+    'email_collected',
+    'skipped',
+    'failed'
+  ));
 
 CREATE INDEX IF NOT EXISTS lead_assignments_by_operator_id_and_status
   ON lead_assignments (operator_id, status, lead_id);
+
+CREATE TABLE IF NOT EXISTS operator_settings (
+  operator_id STRING PRIMARY KEY,
+  post_engagements INT4 NOT NULL DEFAULT 3
+    CHECK (post_engagements BETWEEN 1 AND 10),
+  engagement_interval_minutes INT8 NOT NULL DEFAULT 60
+    CHECK (engagement_interval_minutes BETWEEN 1 AND 43200),
+  connection_delay_minutes INT8 NOT NULL DEFAULT 1440
+    CHECK (connection_delay_minutes BETWEEN 0 AND 43200),
+  include_note BOOL NOT NULL DEFAULT false,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS lead_assignment_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  lead_id UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  operator_id STRING NOT NULL,
+  event_type STRING NOT NULL,
+  details JSONB NOT NULL DEFAULT '{}'::JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS lead_assignment_events_by_operator_id_and_created_at
+  ON lead_assignment_events (operator_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS lead_assignment_events_by_lead_id_and_created_at
+  ON lead_assignment_events (lead_id, created_at DESC);
 
 UPSERT INTO lead_stats (key, total_count, updated_at)
 SELECT 'all', count(*), now() FROM leads;
