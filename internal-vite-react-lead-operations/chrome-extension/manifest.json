@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Callum Leads",
+  "description": "Shows the current total number of leads available through Convex and CockroachDB.",
+  "version": "0.1.0",
+  "action": {
+    "default_title": "Callum Leads",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon.png",
+      "48": "icon.png",
+      "128": "icon.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  },
+  "permissions": ["alarms", "storage"],
+  "host_permissions": ["https://*.convex.site/*"]
+}

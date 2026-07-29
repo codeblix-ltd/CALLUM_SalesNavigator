@@ -1,0 +1,3 @@
+html { scroll-behavior: smooth; }
+a { color: inherit; }
+::selection { color: white; background: #6547d5; }

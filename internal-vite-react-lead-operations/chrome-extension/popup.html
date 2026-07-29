@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Callum Leads</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="logo">C</div>
+        <div>
+          <strong>Callum Leads</strong>
+          <span id="connection"><i></i> Database connected</span>
+        </div>
+      </header>
+      <section>
+        <p>Total leads</p>
+        <h1 id="total">—</h1>
+        <div class="meter"><span id="meter"></span></div>
+        <div class="meta">
+          <span id="niches">Loading niches…</span>
+          <span id="updated">Syncing…</span>
+        </div>
+      </section>
+      <button id="refresh" type="button">
+        <span>↻</span> Refresh total
+      </button>
+      <p class="error" id="error" hidden></p>
+    </main>
+    <script src="config.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

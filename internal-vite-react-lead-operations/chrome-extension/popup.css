@@ -1,0 +1,22 @@
+* { box-sizing: border-box; }
+body { width: 330px; margin: 0; color: #19223b; background: #f6f7fb; font: 13px Inter, system-ui, sans-serif; }
+main { padding: 18px; }
+header { display: flex; align-items: center; gap: 10px; margin-bottom: 17px; }
+.logo { width: 36px; height: 36px; display: grid; place-items: center; color: white; background: linear-gradient(145deg,#7a5df0,#5436c9); border-radius: 11px; font-weight: 800; box-shadow: 0 8px 18px rgba(84,54,201,.23); }
+header strong, header span { display: block; }
+header strong { font-size: 14px; }
+header span { margin-top: 3px; color: #758097; font-size: 10px; }
+header i { display: inline-block; width: 6px; height: 6px; margin-right: 5px; background: #2eb97a; border-radius: 50%; }
+header span.error { color: #ad5050; }
+header span.error i { background: #d55d5d; }
+section { padding: 20px; background: white; border: 1px solid #dadee9; border-radius: 16px; box-shadow: 0 10px 25px rgba(35,43,72,.06); }
+section > p { margin: 0; color: #707b93; font-weight: 600; }
+h1 { margin: 6px 0 14px; font-size: 40px; line-height: 1; letter-spacing: -2px; }
+.meter { height: 5px; overflow: hidden; background: #ece9f8; border-radius: 9px; }
+.meter span { display: block; width: 0; height: 100%; background: linear-gradient(90deg,#7c60ed,#42b98a); border-radius: inherit; transition: width .5s ease; }
+.meta { display: flex; justify-content: space-between; margin-top: 10px; color: #929bae; font-size: 9px; }
+button { width: 100%; min-height: 41px; margin-top: 12px; color: #5941c0; background: #eeeafd; border: 1px solid #d9d0f8; border-radius: 11px; font-weight: 700; cursor: pointer; }
+button:hover { background: #e6e0fb; }
+button:disabled { opacity: .55; cursor: wait; }
+button span { display: inline-block; margin-right: 4px; font-size: 17px; }
+.error { margin: 10px 2px 0; color: #b44e4e; font-size: 10px; line-height: 1.4; }

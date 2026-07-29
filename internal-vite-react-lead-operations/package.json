@@ -1,0 +1,38 @@
+{
+  "name": "internal-vite-react-lead-operations",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "check": "tsc -b && oxlint",
+    "convex:dev": "convex dev",
+    "convex:push": "convex dev --once",
+    "db:schema": "node --env-file=.env.local scripts/apply-schema.mjs",
+    "db:import": "node --env-file=.env.local scripts/import-leads.mjs",
+    "setup:secrets": "node scripts/configure-secrets.mjs",
+    "extension:config": "node scripts/sync-extension-config.mjs",
+    "smoke": "node --env-file=.env.local scripts/smoke-test.mjs",
+    "lint": "oxlint",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "convex": "^1.42.3",
+    "csv-parse": "^7.0.1",
+    "lucide-react": "^1.27.0",
+    "pg": "^8.22.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.2",
+    "@types/pg": "^8.20.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
+    "oxlint": "^1.71.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.1.1"
+  }
+}
