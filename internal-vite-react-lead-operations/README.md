@@ -57,6 +57,12 @@ deduplicates by normalized LinkedIn URL:
 npm run db:import -- --niche "Medical devices" "C:\exports\medical-1.csv" "C:\exports\medical-2.csv"
 ```
 
+## Reset DB
+
+```powershell
+npm run db:reset
+```
+
 Useful options:
 
 - `--batch-size 200` controls SQL transaction size (25–500).
