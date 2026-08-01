@@ -92,6 +92,10 @@ Only a niche and count are required. The command verifies that the username is
 an active scout, chooses any currently unassigned leads from the niche, and
 reports the number assigned and remaining.
 
+### test account for scout01:
+user: scout01
+pass: CaGFfSbA2mw5E7poTRwzLuFZgv7
+
 ```powershell
 npm run leads:assign -- --username scout01 --niche "Institute of Directors" --count 100
 npm run leads:assign -- --username scout01 --niche "Institute of Directors" --count 10000
