@@ -13,6 +13,8 @@ const elements = {
   acceptedCount: document.querySelector("#accepted-count"),
   emailCount: document.querySelector("#email-count"),
   failedCount: document.querySelector("#failed-count"),
+  simulationBatch: document.querySelector("#simulation-batch"),
+  startSimulation: document.querySelector("#start-simulation"),
   nextLead: document.querySelector("#next-lead"),
   leadCard: document.querySelector("#lead-card"),
   leadName: document.querySelector("#lead-name"),
@@ -53,6 +55,7 @@ let activeLead = null;
 elements.loginForm.addEventListener("submit", handleLogin);
 elements.signOut.addEventListener("click", handleSignOut);
 elements.refresh.addEventListener("click", refreshDashboard);
+elements.startSimulation.addEventListener("click", startSimulation);
 elements.nextLead.addEventListener("click", claimNextLead);
 elements.openProfile.addEventListener("click", () => openUrl(activeLead?.linkedinUrl));
 elements.openContact.addEventListener("click", () =>
@@ -161,6 +164,32 @@ async function claimNextLead() {
     showError(error, true);
   } finally {
     setBusy(elements.nextLead, false);
+  }
+}
+
+async function startSimulation() {
+  clearMessages();
+  const batch = Math.max(
+    1,
+    Math.min(10, Math.trunc(Number(elements.simulationBatch.value) || 1)),
+  );
+  elements.simulationBatch.value = String(batch);
+  setBusy(elements.startSimulation, true);
+  try {
+    const simulatorUrl = new URL(
+      "mock-linkedin/simulator.html",
+      chrome.runtime.getURL("/"),
+    );
+    simulatorUrl.searchParams.set("batch", String(batch));
+    simulatorUrl.searchParams.set("auto", "1");
+    await chrome.tabs.create({ url: simulatorUrl.toString() });
+    showSuccess(
+      `Opened the isolated simulator for ${batch} lead${batch === 1 ? "" : "s"}.`,
+    );
+  } catch (error) {
+    showError(error, true);
+  } finally {
+    setBusy(elements.startSimulation, false);
   }
 }
 

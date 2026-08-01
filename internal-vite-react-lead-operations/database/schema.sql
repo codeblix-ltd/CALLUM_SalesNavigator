@@ -184,6 +184,54 @@ CREATE INDEX IF NOT EXISTS lead_assignment_events_by_operator_id_and_created_at
 CREATE INDEX IF NOT EXISTS lead_assignment_events_by_lead_id_and_created_at
   ON lead_assignment_events (lead_id, created_at DESC);
 
+-- Simulation runs are deliberately isolated from lead_assignments. The local
+-- mock LinkedIn workflow may use an assigned lead as a fixture seed, but none
+-- of its reactions, invitations, acceptances, or fixture contact data may
+-- change the production lead lifecycle.
+CREATE TABLE IF NOT EXISTS lead_simulation_runs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  lead_id UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  operator_id STRING NOT NULL,
+  status STRING NOT NULL DEFAULT 'viewed'
+    CHECK (status IN (
+      'viewed',
+      'engaged',
+      'connection_requested',
+      'accepted',
+      'email_collected',
+      'failed'
+    )),
+  posts_engaged INT4 NOT NULL DEFAULT 0
+    CHECK (posts_engaged BETWEEN 0 AND 10),
+  invitation_note STRING NULL,
+  extracted_email STRING NULL,
+  last_error STRING NULL,
+  started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  completed_at TIMESTAMPTZ NULL,
+  UNIQUE (operator_id, lead_id)
+);
+
+CREATE INDEX IF NOT EXISTS lead_simulation_runs_by_operator_id_and_status
+  ON lead_simulation_runs (operator_id, status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS lead_simulation_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  simulation_run_id UUID NOT NULL
+    REFERENCES lead_simulation_runs(id) ON DELETE CASCADE,
+  lead_id UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  operator_id STRING NOT NULL,
+  event_type STRING NOT NULL,
+  details JSONB NOT NULL DEFAULT '{}'::JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS lead_simulation_events_by_run_id_and_created_at
+  ON lead_simulation_events (simulation_run_id, created_at);
+
+CREATE INDEX IF NOT EXISTS lead_simulation_events_by_operator_id_and_created_at
+  ON lead_simulation_events (operator_id, created_at DESC);
+
 -- The VPS gateway keeps the live Codex session in a private Docker volume and
 -- mirrors auth.json here only after encrypting it with a gateway-only key.
 CREATE TABLE IF NOT EXISTS codex_gateway_auth (

@@ -18,6 +18,7 @@ import type * as lib_codexGateway from "../lib/codexGateway.js";
 import type * as scoutAdmin from "../scoutAdmin.js";
 import type * as scoutIdentity from "../scoutIdentity.js";
 import type * as scouts from "../scouts.js";
+import type * as simulations from "../simulations.js";
 
 import type {
   ApiFromModules,
@@ -36,6 +37,7 @@ declare const fullApi: ApiFromModules<{
   scoutAdmin: typeof scoutAdmin;
   scoutIdentity: typeof scoutIdentity;
   scouts: typeof scouts;
+  simulations: typeof simulations;
 }>;
 
 /**

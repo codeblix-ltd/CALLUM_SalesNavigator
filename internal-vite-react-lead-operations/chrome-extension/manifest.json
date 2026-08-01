@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Callum Leads",
-  "description": "Secure scout queues, lead status tracking, and human-reviewed engagement drafts.",
-  "version": "0.2.0",
+  "description": "Secure scout queues, lead status tracking, drafting, and an isolated mock LinkedIn simulator.",
+  "version": "0.3.0",
   "action": {
     "default_title": "Callum Leads",
     "default_popup": "popup.html",

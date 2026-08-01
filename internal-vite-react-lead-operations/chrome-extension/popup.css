@@ -142,6 +142,23 @@ input:focus, select:focus, textarea:focus {
 .metric-fresh span, .metric-fresh strong { color: white; }
 
 .execute { width: 100%; min-height: 46px; margin-top: 10px; }
+.simulator-launch { margin-top: 10px; }
+.simulator-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.simulator-title-row h2 { margin-bottom: 3px; }
+.simulation-badge {
+  padding: 5px 8px;
+  color: #166044;
+  background: #dff7ec;
+  border: 1px solid #b9e8d2;
+  border-radius: 999px;
+  white-space: nowrap;
+  font-size: 8px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: .6px;
+}
+.simulation-controls { display: grid; grid-template-columns: 82px 1fr; gap: 8px; margin-top: 7px; }
+.simulation-controls .primary { min-height: 39px; }
 .lead-card { margin-top: 10px; }
 .lead-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .lead-heading h2 { margin-bottom: 4px; }
