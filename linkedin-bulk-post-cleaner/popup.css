@@ -1,0 +1,72 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+body {
+  margin: 0;
+  width: 390px;
+  background: Canvas;
+  color: CanvasText;
+}
+
+main { padding: 16px; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+.subtitle { margin: 0 0 14px; opacity: .72; font-size: 12px; }
+
+label { display: block; font-size: 12px; font-weight: 650; margin: 10px 0; }
+input[type="text"], input[type="number"] {
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 5px;
+  padding: 8px 9px;
+  border: 1px solid color-mix(in srgb, CanvasText 25%, transparent);
+  border-radius: 7px;
+  background: Canvas;
+  color: CanvasText;
+}
+small { display: block; margin-top: 4px; opacity: .7; font-weight: 400; }
+.grid { display: grid; gap: 10px; }
+.grid.two { grid-template-columns: 1fr 1fr; }
+
+button {
+  box-sizing: border-box;
+  width: 100%;
+  border: 0;
+  border-radius: 999px;
+  padding: 9px 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.secondary { border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; color: CanvasText; }
+button.danger { background: #b42318; color: #fff; }
+
+.notice {
+  padding: 9px 10px;
+  border-radius: 7px;
+  background: color-mix(in srgb, #0a66c2 14%, Canvas);
+  font-size: 12px;
+}
+.notice.error { background: color-mix(in srgb, #b42318 16%, Canvas); }
+.notice.ok { background: color-mix(in srgb, #15803d 15%, Canvas); }
+
+.danger-zone {
+  margin: 12px 0;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, #b42318 45%, transparent);
+  border-radius: 9px;
+}
+.check-row { display: flex; align-items: center; gap: 8px; }
+.check-row input { margin: 0; }
+.controls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+pre {
+  white-space: pre-wrap;
+  max-height: 150px;
+  overflow: auto;
+  padding: 9px;
+  border-radius: 7px;
+  background: color-mix(in srgb, CanvasText 7%, Canvas);
+  font-size: 11px;
+}
+.footnote { font-size: 11px; opacity: .7; margin-bottom: 0; }

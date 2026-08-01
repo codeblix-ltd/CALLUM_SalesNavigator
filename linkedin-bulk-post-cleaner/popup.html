@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LinkedIn Page Post Cleaner</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <h1>Page Post Cleaner</h1>
+    <p class="subtitle">Runs only in the active LinkedIn Page admin tab.</p>
+
+    <div id="pageStatus" class="notice">Checking the active tab…</div>
+
+    <label>
+      Company ID
+      <input id="companyId" type="text" value="75426414" autocomplete="off">
+    </label>
+
+    <label>
+      Author name
+      <input id="authorName" type="text" value="Antish Choolun" autocomplete="off">
+    </label>
+
+    <label>
+      Author profile slug
+      <input id="profileSlug" type="text" value="antish-software-developer" autocomplete="off">
+      <small>From linkedin.com/in/<strong>slug</strong>/</small>
+    </label>
+
+    <div class="grid two">
+      <label>
+        Maximum deletions
+        <input id="maxDeletes" type="number" min="1" max="5000" value="100">
+      </label>
+      <label>
+        Max empty scrolls
+        <input id="maxIdleScrolls" type="number" min="2" max="30" value="8">
+      </label>
+    </div>
+
+    <div class="grid two">
+      <label>
+        Minimum delay (ms)
+        <input id="minDelay" type="number" min="1500" max="60000" value="3500">
+      </label>
+      <label>
+        Maximum delay (ms)
+        <input id="maxDelay" type="number" min="1500" max="60000" value="6500">
+      </label>
+    </div>
+
+    <button id="scan" class="secondary">Scan visible posts</button>
+
+    <section class="danger-zone">
+      <label class="check-row">
+        <input id="permanent" type="checkbox">
+        <span>I understand deletion is permanent.</span>
+      </label>
+      <label>
+        Type <strong>DELETE</strong> to enable
+        <input id="confirmText" type="text" autocomplete="off" spellcheck="false">
+      </label>
+      <button id="start" class="danger" disabled>Start deleting</button>
+    </section>
+
+    <div class="controls">
+      <button id="pause" class="secondary" disabled>Pause</button>
+      <button id="resume" class="secondary" disabled>Resume</button>
+      <button id="stop" class="secondary" disabled>Stop</button>
+    </div>
+
+    <pre id="status">Ready.</pre>
+    <p class="footnote">Keep the tab open. Start with a small maximum and verify the matches.</p>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

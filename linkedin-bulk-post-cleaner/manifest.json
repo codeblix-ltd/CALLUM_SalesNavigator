@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "LinkedIn Page Post Cleaner",
+  "version": "1.0.0",
+  "description": "Carefully scan and delete LinkedIn Page posts matching an exact author name or profile slug.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "action": {
+    "default_title": "LinkedIn Page Post Cleaner",
+    "default_popup": "popup.html"
+  }
+}
