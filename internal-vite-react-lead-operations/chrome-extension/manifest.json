@@ -29,8 +29,7 @@
   "content_scripts": [
     {
       "matches": [
-        "https://*.linkedin.com/*",
-        "chrome-extension://*/*/mock-linkedin/*"
+        "https://*.linkedin.com/*"
       ],
       "js": ["config.js", "convex-client.js", "content.js"],
       "css": ["content.css"],
