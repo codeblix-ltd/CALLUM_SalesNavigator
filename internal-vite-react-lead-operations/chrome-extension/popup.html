@@ -75,18 +75,39 @@
         <section class="card simulator-launch">
           <div class="simulator-title-row">
             <div>
+              <p class="eyebrow">Real LinkedIn Automation</p>
+              <h2>Auto Engage & Connect</h2>
+            </div>
+            <span class="simulation-badge" style="background: #10b981; color: white;">Real Mode</span>
+          </div>
+          <p class="muted">
+            Automatically likes & comments on recent posts using GPT-5.6 Luna, then sends a connection request without a note on LinkedIn.
+          </p>
+          <div class="simulation-controls" style="flex-direction: column; gap: 8px;">
+            <button id="start-auto-lead" class="primary" type="button" style="background: #0a66c2;">
+              ⚡ Run Real Auto-Lead
+            </button>
+            <button id="automate-active-tab" class="secondary" type="button">
+              🎯 Automate Active LinkedIn Tab
+            </button>
+          </div>
+        </section>
+
+        <section class="card simulator-launch">
+          <div class="simulator-title-row">
+            <div>
               <p class="eyebrow">Local training environment</p>
               <h2>Automatic simulation</h2>
             </div>
             <span class="simulation-badge">Mock only</span>
           </div>
           <p class="muted">
-            Runs the full workflow on extension-owned fixture pages. It never opens or changes LinkedIn.
+            Runs the full workflow on extension-owned fixture pages.
           </p>
           <label for="simulation-batch">Leads to simulate</label>
           <div class="simulation-controls">
             <input id="simulation-batch" type="number" min="1" max="10" value="1" />
-            <button id="start-simulation" class="primary" type="button">
+            <button id="start-simulation" class="secondary" type="button">
               Run simulation
             </button>
           </div>
@@ -170,6 +191,10 @@
               <option value="1440">days</option>
             </select>
           </div>
+          <label class="check-row">
+            <input id="validate-comment" type="checkbox" checked />
+            Validate returned GPT-5.6 Luna reply before commenting
+          </label>
           <label class="check-row">
             <input id="include-note" type="checkbox" />
             Include a note when you send a request

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Callum Leads",
-  "description": "Secure scout queues, lead status tracking, drafting, and an isolated mock LinkedIn simulator.",
-  "version": "0.3.0",
+  "description": "Automated LinkedIn lead engagement, post commenting with GPT-5.6 Luna, and connection requests.",
+  "version": "0.4.0",
   "action": {
     "default_title": "Callum Leads",
     "default_popup": "popup.html",
@@ -20,9 +20,27 @@
     "48": "icon.png",
     "128": "icon.png"
   },
-  "permissions": ["alarms", "clipboardWrite", "storage", "tabs"],
+  "permissions": ["alarms", "clipboardWrite", "storage", "tabs", "scripting", "activeTab"],
   "host_permissions": [
     "https://*.convex.cloud/*",
-    "https://*.convex.site/*"
+    "https://*.convex.site/*",
+    "https://*.linkedin.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.linkedin.com/*",
+        "chrome-extension://*/*/mock-linkedin/*"
+      ],
+      "js": ["config.js", "convex-client.js", "content.js"],
+      "css": ["content.css"],
+      "run_at": "document_end"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["icon.png", "content.css"],
+      "matches": ["<all_urls>"]
+    }
   ]
 }

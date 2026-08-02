@@ -1,0 +1,217 @@
+/* Callum Leads LinkedIn Automation Helper Styles */
+
+#callum-scout-overlay {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 999999;
+  width: 380px;
+  max-width: calc(100vw - 48px);
+  background: #ffffff;
+  border: 1px solid #e0e6ed;
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.15);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: #1e293b;
+  overflow: hidden;
+  animation: callum-slide-up 0.3s ease-out;
+}
+
+@keyframes callum-slide-up {
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.callum-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: #0f172a;
+  color: #ffffff;
+}
+
+.callum-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.callum-badge {
+  background: #6347d8;
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+
+.callum-close {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  font-size: 18px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.callum-close:hover {
+  color: #ffffff;
+}
+
+.callum-body {
+  padding: 16px;
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+.callum-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #475569;
+  margin-bottom: 12px;
+}
+
+.callum-pulse {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+  animation: callum-pulse-anim 1.5s infinite;
+}
+
+@keyframes callum-pulse-anim {
+  0% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+  }
+  70% {
+    box-shadow: 0 0 0 6px rgba(16, 185, 129, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+  }
+}
+
+.callum-validation-box {
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 12px;
+  margin-top: 10px;
+}
+
+.callum-validation-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: #6347d8;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+  display: block;
+}
+
+.callum-post-preview {
+  font-size: 12px;
+  color: #64748b;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 8px;
+  max-height: 70px;
+  overflow-y: auto;
+  margin-bottom: 10px;
+  font-style: italic;
+}
+
+.callum-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 8px;
+  border: 1px solid #94a3b8;
+  border-radius: 6px;
+  resize: vertical;
+  min-height: 70px;
+  margin-bottom: 10px;
+}
+
+.callum-textarea:focus {
+  outline: none;
+  border-color: #6347d8;
+  box-shadow: 0 0 0 2px rgba(99, 71, 216, 0.2);
+}
+
+.callum-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.callum-btn {
+  flex: 1;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: background 0.15s ease;
+}
+
+.callum-btn-primary {
+  background: #0a66c2;
+  color: #ffffff;
+}
+
+.callum-btn-primary:hover {
+  background: #004182;
+}
+
+.callum-btn-secondary {
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.callum-btn-secondary:hover {
+  background: #cbd5e1;
+}
+
+.callum-btn-danger {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.callum-btn-danger:hover {
+  background: #fecaca;
+}
+
+.callum-log-list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0 0;
+  max-height: 120px;
+  overflow-y: auto;
+  font-size: 11px;
+}
+
+.callum-log-list li {
+  padding: 4px 0;
+  border-bottom: 1px solid #f1f5f9;
+  color: #475569;
+}
+
+.callum-log-list li strong {
+  color: #0f172a;
+}

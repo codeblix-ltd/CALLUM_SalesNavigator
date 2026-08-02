@@ -13,6 +13,8 @@ const elements = {
   acceptedCount: document.querySelector("#accepted-count"),
   emailCount: document.querySelector("#email-count"),
   failedCount: document.querySelector("#failed-count"),
+  startAutoLead: document.querySelector("#start-auto-lead"),
+  automateActiveTab: document.querySelector("#automate-active-tab"),
   simulationBatch: document.querySelector("#simulation-batch"),
   startSimulation: document.querySelector("#start-simulation"),
   nextLead: document.querySelector("#next-lead"),
@@ -42,6 +44,7 @@ const elements = {
   engagementUnit: document.querySelector("#engagement-unit"),
   connectionDelay: document.querySelector("#connection-delay"),
   connectionUnit: document.querySelector("#connection-unit"),
+  validateComment: document.querySelector("#validate-comment"),
   includeNote: document.querySelector("#include-note"),
   error: document.querySelector("#error"),
   success: document.querySelector("#success"),
@@ -55,6 +58,8 @@ let activeLead = null;
 elements.loginForm.addEventListener("submit", handleLogin);
 elements.signOut.addEventListener("click", handleSignOut);
 elements.refresh.addEventListener("click", refreshDashboard);
+elements.startAutoLead?.addEventListener("click", startRealAutoLead);
+elements.automateActiveTab?.addEventListener("click", startAutomateActiveTab);
 elements.startSimulation.addEventListener("click", startSimulation);
 elements.nextLead.addEventListener("click", claimNextLead);
 elements.openProfile.addEventListener("click", () => openUrl(activeLead?.linkedinUrl));
@@ -242,6 +247,47 @@ async function copyDraft() {
   showSuccess("Draft copied. Review it before posting.");
 }
 
+async function startRealAutoLead() {
+  clearMessages();
+  setBusy(elements.startAutoLead, true);
+  try {
+    showSuccess("Starting real automation workflow on LinkedIn...");
+    const response = await chrome.runtime.sendMessage({
+      type: "START_AUTO_LEAD",
+      leadId: activeLead?.id,
+    });
+    if (!response?.ok) {
+      throw new Error(response?.error || "Auto lead workflow failed.");
+    }
+    showSuccess(`Automation complete! Status: Connection requested.`);
+    await refreshDashboard();
+  } catch (error) {
+    showError(error, true);
+  } finally {
+    setBusy(elements.startAutoLead, false);
+  }
+}
+
+async function startAutomateActiveTab() {
+  clearMessages();
+  setBusy(elements.automateActiveTab, true);
+  try {
+    showSuccess("Triggering automation on current active LinkedIn tab...");
+    const response = await chrome.runtime.sendMessage({
+      type: "AUTOMATE_ACTIVE_TAB",
+    });
+    if (!response?.ok) {
+      throw new Error(response?.error || "Active tab automation failed. Ensure you are on a LinkedIn profile or activity page.");
+    }
+    showSuccess("Active tab automation completed!");
+    await refreshDashboard();
+  } catch (error) {
+    showError(error, true);
+  } finally {
+    setBusy(elements.automateActiveTab, false);
+  }
+}
+
 async function saveSettings(event) {
   event.preventDefault();
   clearMessages();
@@ -262,6 +308,9 @@ async function saveSettings(event) {
         includeNote: elements.includeNote.checked,
       },
     );
+    await chrome.storage.local.set({
+      validateBeforeCommenting: elements.validateComment.checked,
+    });
     dashboard.settings = settings;
     renderSettings(settings);
     showSuccess("Workflow settings saved.");
@@ -326,6 +375,11 @@ function renderSettings(settings) {
     settings.connectionDelayMinutes,
   );
   elements.includeNote.checked = settings.includeNote;
+  void chrome.storage.local.get("validateBeforeCommenting").then((res) => {
+    if (elements.validateComment) {
+      elements.validateComment.checked = res.validateBeforeCommenting ?? true;
+    }
+  });
 }
 
 function showLogin() {
