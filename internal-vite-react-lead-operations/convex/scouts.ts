@@ -364,7 +364,7 @@ export const recordPostActivity = action({
         [scout.operatorId],
       );
       const currentLikes = Number(usageResult.rows[0]?.likes_used ?? 0);
-      if (shouldCountLike && currentLikes >= settings.engagementDailyLimit) {
+      if (shouldCountLike && currentLikes >= configuredEngagementLimit(settings)) {
         throw new Error("Today's LinkedIn engagement limit has been reached.");
       }
 
@@ -1133,15 +1133,23 @@ function mapDailyUsage(
 ): DailyUsage {
   const requestsSent = Number(row.requests_sent ?? 0);
   const likesUsed = Number(row.likes_used ?? 0);
+  const engagementLimit = configuredEngagementLimit(settings);
   return {
     date: String(row.usage_date ?? new Date().toISOString().slice(0, 10)),
     requestsSent,
     likesUsed,
     requestLimit: settings.connectionDailyLimit,
-    engagementLimit: settings.engagementDailyLimit,
+    engagementLimit,
     requestRemaining: Math.max(0, settings.connectionDailyLimit - requestsSent),
-    engagementRemaining: Math.max(0, settings.engagementDailyLimit - likesUsed),
+    engagementRemaining: Math.max(0, engagementLimit - likesUsed),
   };
+}
+
+function configuredEngagementLimit(settings: ScoutSettings) {
+  return Math.min(
+    settings.engagementDailyLimit,
+    settings.connectionDailyLimit * settings.postEngagements,
+  );
 }
 
 function emptyCounts() {

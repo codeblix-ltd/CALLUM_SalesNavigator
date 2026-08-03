@@ -232,14 +232,20 @@
     updateStatus("Starting post engagement...");
 
     // Get settings from storage if not provided
-    const stored = await chrome.storage.local.get(["scoutDashboard"]);
+    const stored = await chrome.storage.local.get([
+      "scoutDashboard",
+      "validateBeforeCommenting",
+    ]);
     const settings = stored.scoutDashboard?.settings || {};
     const maxPosts = clampInteger(
       options.postEngagements ?? settings.postEngagements ?? 2,
       0,
       10,
     );
-    const validate = false;
+    const validate =
+      options.validateBeforeCommenting ??
+      stored.validateBeforeCommenting ??
+      false;
 
     if (!options.leadId || !options.profileUrl) {
       throw new Error("The assigned lead context is missing from post engagement.");

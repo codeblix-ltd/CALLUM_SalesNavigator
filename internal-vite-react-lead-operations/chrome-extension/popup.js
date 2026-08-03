@@ -57,6 +57,9 @@ const elements = {
   onboardingCapacity: document.querySelector("#onboarding-capacity"),
   onboardingCapacityBar: document.querySelector("#onboarding-capacity-bar"),
   onboardingPostHelp: document.querySelector("#onboarding-post-help"),
+  onboardingValidateComment: document.querySelector(
+    "#onboarding-validate-comment",
+  ),
   validateComment: document.querySelector("#validate-comment"),
   premiumNoteGate: document.querySelector("#premium-note-gate"),
   premiumNoteTitle: document.querySelector("#premium-note-title"),
@@ -233,7 +236,9 @@ async function saveOnboarding(event) {
       onboardingCompleted: true,
       includeNote: false,
     });
-    await chrome.storage.local.set({ validateBeforeCommenting: false });
+    await chrome.storage.local.set({
+      validateBeforeCommenting: elements.onboardingValidateComment.checked,
+    });
     dashboard.settings = settings;
     showSuccess("Setup saved. Your daily workflow is ready.");
     await refreshDashboard();
@@ -278,7 +283,10 @@ async function restartOnboarding() {
       "scouts:resetOnboarding",
       {},
     );
-    await chrome.storage.local.set({ linkedInPremium: false });
+    await chrome.storage.local.set({
+      linkedInPremium: false,
+      validateBeforeCommenting: false,
+    });
     await chrome.storage.local.remove([
       "linkedInPremiumCheckedAt",
       "linkedInPremiumEvidence",
@@ -320,7 +328,7 @@ async function saveSettings(event) {
       includeNote,
     });
     await chrome.storage.local.set({
-      validateBeforeCommenting: false,
+      validateBeforeCommenting: elements.validateComment.checked,
       invitationNote: invitationNote || DEFAULT_INVITATION_NOTE,
     });
     dashboard.settings = settings;
@@ -381,6 +389,7 @@ function showOnboarding(settings) {
   elements.onboardingFreePlan.setAttribute("aria-pressed", "false");
   elements.onboardingPremiumPlan.setAttribute("aria-pressed", "false");
   elements.onboardingPremiumCheck.hidden = true;
+  elements.onboardingValidateComment.checked = false;
   setOnboardingStep(1);
   syncOnboardingPlanGate();
   elements.onboardingConnectionLimit.value = settings.connectionDailyLimit || 20;
@@ -398,9 +407,10 @@ function renderSettings(settings) {
   updateLimitControls("settings");
   syncPremiumNoteGate();
   void chrome.storage.local
-    .get(["invitationNote"])
+    .get(["validateBeforeCommenting", "invitationNote"])
     .then((stored) => {
-      elements.validateComment.checked = false;
+      elements.validateComment.checked =
+        stored.validateBeforeCommenting ?? false;
       elements.invitationNote.value =
         stored.invitationNote?.trim() || DEFAULT_INVITATION_NOTE;
     });

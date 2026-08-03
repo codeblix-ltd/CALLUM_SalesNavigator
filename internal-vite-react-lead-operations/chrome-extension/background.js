@@ -58,7 +58,7 @@ async function initializeExtensionDefaults() {
     "linkedInPremium",
   ]);
   const defaults = {};
-  if (current.validateBeforeCommenting !== false) {
+  if (current.validateBeforeCommenting === undefined) {
     defaults.validateBeforeCommenting = false;
   }
   if (!current.invitationNote) defaults.invitationNote = DEFAULT_INVITATION_NOTE;
@@ -253,7 +253,10 @@ async function runLeadWorkflow(lead, settings, usage) {
     }
 
     const requestedProfileUrl = normalizeLinkedInProfileUrl(lead.linkedinUrl);
-    const localSettings = await chrome.storage.local.get(["invitationNote"]);
+    const localSettings = await chrome.storage.local.get([
+      "validateBeforeCommenting",
+      "invitationNote",
+    ]);
     const postEngagements = Math.min(
       clampInteger(settings.postEngagements ?? 3, 1, 10),
       clampInteger(usage.engagementRemaining ?? 0, 0, 250),
@@ -264,7 +267,8 @@ async function runLeadWorkflow(lead, settings, usage) {
     const automationOptions = {
       leadId: lead.id,
       postEngagements,
-      validateBeforeCommenting: false,
+      validateBeforeCommenting:
+        localSettings.validateBeforeCommenting ?? false,
       includeNote,
       invitationNote: String(
         localSettings.invitationNote || DEFAULT_INVITATION_NOTE,

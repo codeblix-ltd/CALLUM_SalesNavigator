@@ -299,8 +299,6 @@ input:focus, select:focus, textarea:focus {
 .check-row input { width: 16px; min-height: 16px; }
 .check-row span { display: grid; gap: 2px; }
 .check-row small { color: #929aab; font-size: 8px; font-weight: 550; }
-.disabled-check-row { color: #7f8797; cursor: not-allowed; }
-.disabled-check-row input { opacity: .55; }
 .premium-note-gate {
   display: grid;
   gap: 10px;
