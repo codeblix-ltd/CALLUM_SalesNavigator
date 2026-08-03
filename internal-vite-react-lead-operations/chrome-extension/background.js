@@ -6,7 +6,7 @@ const PREMIUM_URL = "https://www.linkedin.com/premium/my-premium/";
 const CONNECTIONS_URL =
   "https://www.linkedin.com/mynetwork/invite-connect/connections/";
 const DEFAULT_INVITATION_NOTE =
-  "Hi, I came across your profile and would be glad to connect and keep in touch.";
+  "Hi, I saw your profile and would like to connect.";
 
 let premiumCheckPromise = null;
 let workflowPromise = null;
@@ -77,7 +77,7 @@ function startDailyWorkflow(specificLeadId) {
 async function runDailyWorkflow(specificLeadId) {
   let dashboard = await ScoutApi.authenticatedAction("scouts:getDashboard");
   if (!dashboard.settings?.onboardingCompleted) {
-    throw new Error("Complete the extension setup before running automation.");
+    throw new Error("Finish setup before you start.");
   }
 
   const review = await reviewAcceptedConnections(dashboard);
@@ -94,7 +94,7 @@ async function runDailyWorkflow(specificLeadId) {
       lead = dashboard.activeLead;
       if (!lead || lead.id !== specificLeadId) {
         throw new Error(
-          "The selected lead is no longer active. Refresh the extension and try again.",
+          "This lead is no longer available. Refresh the extension and try again.",
         );
       }
     } else {
@@ -154,7 +154,7 @@ async function reviewAcceptedConnections(dashboard) {
   if (!plan.shouldReview) return empty;
 
   const tab = await chrome.tabs.create({ url: CONNECTIONS_URL, active: true });
-  if (!tab?.id) throw new Error("Unable to open LinkedIn connections.");
+  if (!tab?.id) throw new Error("We couldn’t open your LinkedIn connections.");
   let reviewResult;
   try {
     await waitForTabComplete(tab.id);
@@ -168,7 +168,7 @@ async function reviewAcceptedConnections(dashboard) {
       },
     });
     if (!scan?.ok) {
-      throw new Error(scan?.error || "LinkedIn connection review failed.");
+      throw new Error(scan?.error || "We couldn’t check new connections.");
     }
     reviewResult = await ScoutApi.authenticatedAction(
       "scouts:recordConnectionReview",
@@ -210,7 +210,7 @@ async function reviewAcceptedConnections(dashboard) {
 async function collectAcceptedContact(lead) {
   const requestedProfileUrl = normalizeLinkedInProfileUrl(lead.profileUrl);
   const tab = await chrome.tabs.create({ url: requestedProfileUrl, active: true });
-  if (!tab?.id) throw new Error("Unable to open an accepted LinkedIn profile.");
+  if (!tab?.id) throw new Error("We couldn’t open this LinkedIn profile.");
   try {
     await waitForTabComplete(tab.id);
     const profileUrl = await waitForResolvedLinkedInProfileUrl(
@@ -223,7 +223,7 @@ async function collectAcceptedContact(lead) {
       options: { expectedProfileUrl: profileUrl },
     });
     if (!contact?.ok) {
-      throw new Error(contact?.error || "Unable to read LinkedIn contact info.");
+      throw new Error(contact?.error || "We couldn’t read the contact info.");
     }
     return ScoutApi.authenticatedAction("scouts:recordContactInfo", {
       leadId: lead.id,
@@ -262,7 +262,7 @@ async function runLeadWorkflow(lead, settings, usage) {
       clampInteger(usage.engagementRemaining ?? 0, 0, 250),
     );
     if (postEngagements < 1) {
-      throw new Error("Today's LinkedIn engagement limit has been reached.");
+      throw new Error("You’ve used all your likes for today.");
     }
     const automationOptions = {
       leadId: lead.id,
@@ -300,7 +300,7 @@ async function runLeadWorkflow(lead, settings, usage) {
     if (!engagementResponse?.ok) {
       throw new Error(
         engagementResponse?.error ||
-          "Post engagement failed on the recent activity page.",
+          "We couldn’t finish this lead’s posts.",
       );
     }
 
@@ -311,7 +311,7 @@ async function runLeadWorkflow(lead, settings, usage) {
       await sendMessageToTab(tab.id, {
         type: "SHOW_AUTOMATION_STATUS",
         status:
-          "LinkedIn Premium was not detected. Continuing without an invitation note.",
+          "Premium is not active, so no note will be added.",
       });
     }
 
@@ -330,7 +330,7 @@ async function runLeadWorkflow(lead, settings, usage) {
     });
     if (!connectResponse?.ok) {
       throw new Error(
-        connectResponse?.error || "Connection request failed on the profile page.",
+        connectResponse?.error || "We couldn’t send the connection request.",
       );
     }
     requestSubmitted = true;
@@ -397,12 +397,12 @@ function verifyLinkedInPremium() {
 
 async function inspectLinkedInPremium() {
   const tab = await chrome.tabs.create({ url: PREMIUM_URL, active: false });
-  if (!tab?.id) throw new Error("Unable to open LinkedIn for the Premium check.");
+  if (!tab?.id) throw new Error("We couldn’t open LinkedIn to check Premium.");
   try {
     const finalUrl = await waitForStableTabUrl(tab.id);
     let inspection = {
       premium: false,
-      evidence: "LinkedIn redirected away from the Premium account page.",
+      evidence: "LinkedIn did not open the Premium page. Try again.",
     };
     if (isLinkedInPremiumUrl(finalUrl)) {
       await waitForContentScript(tab.id);
@@ -411,7 +411,7 @@ async function inspectLinkedInPremium() {
       });
       if (!response?.ok) {
         throw new Error(
-          response?.error || "Unable to inspect the LinkedIn Premium account page.",
+          response?.error || "We couldn’t check your Premium plan.",
         );
       }
       inspection = {
@@ -447,7 +447,7 @@ async function waitForStableTabUrl(tabId, timeoutMs = 30_000) {
     await sleep(250);
   }
   if (lastUrl) return lastUrl;
-  throw new Error("LinkedIn did not complete the Premium eligibility check.");
+  throw new Error("LinkedIn didn’t finish the Premium check. Try again.");
 }
 
 function isLinkedInPremiumUrl(value) {
@@ -489,7 +489,7 @@ function waitForTabComplete(tabId) {
     };
     chrome.tabs.onUpdated.addListener(listener);
     const timeout = setTimeout(
-      () => finish(new Error("LinkedIn did not finish loading within 45 seconds.")),
+      () => finish(new Error("LinkedIn took too long to load. Try again.")),
       45_000,
     );
     chrome.tabs
@@ -512,7 +512,7 @@ async function waitForContentScript(tabId, timeoutMs = 20_000) {
   }
   throw new Error(
     lastError ||
-      "The automation script did not attach to the LinkedIn page within 20 seconds.",
+      "Callum Scout couldn’t start on the LinkedIn page. Reload the page and try again.",
   );
 }
 
@@ -541,7 +541,7 @@ async function waitForResolvedLinkedInProfileUrl(
   }
   if (lastProfileUrl && !mustRedirect) return lastProfileUrl;
   throw new Error(
-    "LinkedIn did not redirect the imported member URL to a public profile URL within 30 seconds.",
+    "LinkedIn couldn’t open this lead’s profile. Try again.",
   );
 }
 
@@ -550,13 +550,13 @@ function normalizeLinkedInProfileUrl(value) {
   try {
     url = new URL(String(value));
   } catch {
-    throw new Error("The lead has an invalid LinkedIn profile URL.");
+    throw new Error("This lead’s LinkedIn link does not work.");
   }
   if (url.protocol !== "https:" || !/(^|\.)linkedin\.com$/i.test(url.hostname)) {
-    throw new Error("The lead URL must be an HTTPS LinkedIn profile URL.");
+    throw new Error("This lead’s LinkedIn link does not work.");
   }
   const match = url.pathname.match(/^\/in\/([^/]+)/i);
-  if (!match) throw new Error("The lead URL must use the linkedin.com/in/profile format.");
+  if (!match) throw new Error("This lead’s LinkedIn link does not work.");
   return `https://www.linkedin.com/in/${match[1]}`;
 }
 
@@ -585,7 +585,7 @@ function clampInteger(value, minimum, maximum) {
 }
 
 function cleanError(error) {
-  return String(error instanceof Error ? error.message : error || "Automation failed.")
+  return String(error instanceof Error ? error.message : error || "Something went wrong. Try again.")
     .replace(/^Error:\s*/i, "")
     .split("\n")[0];
 }

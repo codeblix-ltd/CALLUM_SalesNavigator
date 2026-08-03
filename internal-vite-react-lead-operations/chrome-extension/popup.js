@@ -75,7 +75,7 @@ const elements = {
 };
 
 const DEFAULT_INVITATION_NOTE =
-  "Hi, I came across your profile and would be glad to connect and keep in touch.";
+  "Hi, I saw your profile and would like to connect.";
 const RECOMMENDED_POSTS_PER_LEAD = 3;
 const PLAN_LIMITS = {
   free: { requests: 20, likes: 150, label: "Free" },
@@ -202,7 +202,7 @@ async function refreshDashboard() {
       type: "REFRESH_SCOUT_DASHBOARD",
     });
     if (!response?.ok || !response.dashboard) {
-      throw new Error(response?.error || "Unable to refresh the scout queue.");
+      throw new Error(response?.error || "We couldn’t update your leads. Try again.");
     }
     renderDashboard(response.dashboard, Date.now());
   } catch (error) {
@@ -220,12 +220,12 @@ async function saveOnboarding(event) {
   try {
     const premium = onboardingSelectedPlan === "premium";
     if (!onboardingSelectedPlan) {
-      throw new Error("Choose your LinkedIn plan before continuing.");
+      throw new Error("Choose your LinkedIn plan first.");
     }
     if (premium && !premiumVerified) {
       setOnboardingStep(1);
       throw new Error(
-        "Verify Premium with the signed-in LinkedIn account before continuing.",
+        "Check your Premium plan before you continue.",
       );
     }
     const settings = await updateSettings({
@@ -240,7 +240,7 @@ async function saveOnboarding(event) {
       validateBeforeCommenting: elements.onboardingValidateComment.checked,
     });
     dashboard.settings = settings;
-    showSuccess("Setup saved. Your daily workflow is ready.");
+    showSuccess("All set. You can start today’s work.");
     await refreshDashboard();
   } catch (error) {
     showError(error);
@@ -253,14 +253,14 @@ async function startAutoLead() {
   clearMessages();
   setBusy(elements.startAutoLead, true);
   try {
-    showSuccess("Reviewing accepted connections, then running today's queue...");
+    showSuccess("Checking new connections. Then we’ll work through today’s leads...");
     const response = await chrome.runtime.sendMessage({ type: "START_AUTO_LEAD" });
     if (!response?.ok) {
-      throw new Error(response?.error || "Daily workflow failed.");
+      throw new Error(response?.error || "We couldn’t finish today’s work. Try again.");
     }
     const result = response.result;
     showSuccess(
-      `Workflow complete: ${formatNumber(result.requestsSent)} request(s), ${formatNumber(result.acceptedMatched)} accepted match(es), ${formatNumber(result.emailsCollected)} email(s).`,
+      `Done: ${formatCount(result.requestsSent, "connection request")} sent, ${formatCount(result.acceptedMatched, "new connection")}, and ${formatCount(result.emailsCollected, "email address")} saved.`,
     );
     await refreshDashboard();
   } catch (error) {
@@ -272,7 +272,7 @@ async function startAutoLead() {
 
 async function restartOnboarding() {
   const confirmed = window.confirm(
-    "Restart onboarding? This resets your LinkedIn plan and daily pace. Your leads, assignments, and usage history will not be changed.",
+    "Run setup again? This will reset your LinkedIn plan and daily limits. It will not remove your leads or past work.",
   );
   if (!confirmed) return;
 
@@ -295,7 +295,7 @@ async function restartOnboarding() {
     savedPlanIsPremium = false;
     dashboard = { ...dashboard, settings };
     renderDashboard(dashboard, Date.now());
-    showSuccess("Onboarding reset. Choose a plan to test the setup again.");
+    showSuccess("Setup reset. Choose your LinkedIn plan to begin.");
   } catch (error) {
     showError(error);
   } finally {
@@ -311,13 +311,13 @@ async function saveSettings(event) {
     const premium = elements.linkedinPlan.value === "premium";
     if (premium && !premiumVerified) {
       throw new Error(
-        "Verify Premium with the signed-in LinkedIn account before saving.",
+        "Check your Premium plan before you save.",
       );
     }
     const invitationNote = elements.invitationNote.value.trim();
     const includeNote = premium && premiumVerified;
     if (includeNote && !invitationNote) {
-      throw new Error("Enter an invitation note before saving your settings.");
+      throw new Error("Write a connection request note before you save.");
     }
     const settings = await updateSettings({
       premium,
@@ -333,7 +333,7 @@ async function saveSettings(event) {
     });
     dashboard.settings = settings;
     renderSettings(settings);
-    showSuccess("Daily workflow settings saved.");
+    showSuccess("Settings saved.");
     elements.settingsForm.hidden = true;
     await refreshDashboard();
   } catch (error) {
@@ -373,9 +373,9 @@ function renderDashboard(value, updatedAt) {
   elements.failedCount.textContent = formatNumber(value.counts.failed);
   elements.requestUsage.textContent = `${formatNumber(value.usage.requestsSent)} / ${formatNumber(value.usage.requestLimit)}`;
   elements.engagementUsage.textContent = `${formatNumber(value.usage.likesUsed)} / ${formatNumber(value.usage.engagementLimit)}`;
-  elements.updated.textContent = `Synced ${relativeTime(updatedAt)} · resets daily`;
+  elements.updated.textContent = `Updated ${relativeTime(updatedAt)} · counts start over each day`;
   elements.connection.classList.remove("error");
-  elements.connection.lastChild.textContent = " Scout queue connected";
+  elements.connection.lastChild.textContent = " Ready";
   renderSettings(value.settings);
 }
 
@@ -395,7 +395,7 @@ function showOnboarding(settings) {
   elements.onboardingConnectionLimit.value = settings.connectionDailyLimit || 20;
   elements.onboardingPostsPerLead.value =
     settings.postEngagements || RECOMMENDED_POSTS_PER_LEAD;
-  elements.updated.textContent = "Complete setup to start automation";
+  elements.updated.textContent = "Finish setup to get started";
 }
 
 function renderSettings(settings) {
@@ -444,15 +444,15 @@ function updateLimitControls(scope) {
   controls.calculation.textContent =
     `${requests} request${requests === 1 ? "" : "s"} × ${posts} post${posts === 1 ? "" : "s"} = ${calculatedLikes} likes`;
   controls.capacity.textContent =
-    `${remaining} like${remaining === 1 ? "" : "s"} remain below the ${limits.label} limit of ${limits.likes}.`;
+    `You can use ${remaining} more like${remaining === 1 ? "" : "s"}. Your ${limits.label} limit is ${limits.likes}.`;
   controls.capacityBar.style.width =
     `${Math.min(100, Math.round((calculatedLikes / limits.likes) * 100))}%`;
   controls.postHelp.textContent =
-    `Maximum ${maximumPosts} at ${requests} request${requests === 1 ? "" : "s"} per day.`;
+    `You can choose up to ${maximumPosts} with ${requests} request${requests === 1 ? "" : "s"} a day.`;
 
   if (scope === "onboarding") {
     elements.onboardingPlanSummary.textContent =
-      `${limits.label} LinkedIn · ${limits.requests} request / ${limits.likes} like daily caps`;
+      `${limits.label} LinkedIn: up to ${limits.requests} requests and ${limits.likes} likes a day`;
   }
 }
 
@@ -511,7 +511,7 @@ function selectOnboardingPlan(plan) {
   );
   elements.onboardingPremiumCheck.hidden = plan !== "premium";
   elements.onboardingPremiumStatus.textContent =
-    plan === "premium" ? "Not verified" : "";
+    plan === "premium" ? "Not checked" : "";
   elements.onboardingPremiumStatus.classList.remove("is-verified", "is-error");
   syncOnboardingPlanGate();
   applyRecommendedLimits("onboarding");
@@ -523,7 +523,7 @@ function syncOnboardingPlanGate() {
     onboardingSelectedPlan === "free" || (premiumSelected && premiumVerified);
   elements.onboardingNext.disabled = !canContinue;
   if (premiumSelected && premiumVerified) {
-    elements.onboardingPremiumStatus.textContent = "Premium verified";
+    elements.onboardingPremiumStatus.textContent = "Premium is active";
     elements.onboardingPremiumStatus.classList.add("is-verified");
     elements.onboardingPremiumStatus.classList.remove("is-error");
   }
@@ -552,30 +552,30 @@ async function verifyOnboardingPremium() {
   clearMessages();
   elements.onboardingVerifyPremium.disabled = true;
   elements.onboardingVerifyPremium.textContent = "Checking LinkedIn...";
-  elements.onboardingPremiumStatus.textContent = "Checking real account";
+  elements.onboardingPremiumStatus.textContent = "Checking your plan";
   elements.onboardingPremiumStatus.classList.remove("is-verified", "is-error");
   try {
     const result = await checkPremiumEligibility();
     if (!result.premium) {
       premiumVerified = false;
-      elements.onboardingPremiumStatus.textContent = "Premium not detected";
+      elements.onboardingPremiumStatus.textContent = "Premium not found";
       elements.onboardingPremiumStatus.classList.add("is-error");
       throw new Error(
         result.evidence ||
-          "LinkedIn showed a plan purchase flow instead of an active Premium account.",
+          "Premium is not active on this LinkedIn account.",
       );
     }
     premiumVerified = true;
     syncOnboardingPlanGate();
-    showSuccess("Premium verified against the signed-in LinkedIn account.");
+    showSuccess("Premium is active. You can continue.");
   } catch (error) {
     syncOnboardingPlanGate();
     showError(error);
   } finally {
     elements.onboardingVerifyPremium.disabled = false;
     elements.onboardingVerifyPremium.textContent = premiumVerified
-      ? "Verify again"
-      : "Try verification again";
+      ? "Check again"
+      : "Try again";
   }
 }
 
@@ -583,19 +583,19 @@ async function verifyPremiumAndUnlockNote() {
   clearMessages();
   setPremiumCheckPending(true);
   try {
-    showSuccess("Checking LinkedIn Premium eligibility...");
+    showSuccess("Checking your Premium plan...");
     const result = await checkPremiumEligibility();
     if (!result.premium) {
       premiumVerified = false;
       syncPremiumNoteGate();
       throw new Error(
         result.evidence ||
-          "LinkedIn Premium was not detected for the current account. Sign in to the correct LinkedIn account, then try again.",
+          "Premium is not active on this LinkedIn account. Check the account and try again.",
       );
     }
     premiumVerified = true;
     syncPremiumNoteGate();
-    showSuccess("LinkedIn Premium verified. Custom invitation notes are unlocked.");
+    showSuccess("Premium is active. You can now add a note.");
     elements.invitationNote.focus();
   } catch (error) {
     showError(error);
@@ -609,20 +609,24 @@ function syncPremiumNoteGate() {
   const unlocked = premiumSelected && premiumVerified;
   elements.premiumNoteGate.classList.toggle("is-verified", unlocked);
   elements.verifyPremium.hidden = !premiumSelected;
-  elements.premiumNoteStatus.textContent = unlocked ? "Verified" : "Locked";
+  elements.premiumNoteStatus.textContent = unlocked
+    ? "On"
+    : premiumSelected
+      ? "Not checked"
+      : "Off";
   elements.premiumNoteTitle.textContent = unlocked
-    ? "LinkedIn Premium verified"
+    ? "Your note is ready"
     : premiumSelected
-      ? "Verify LinkedIn Premium"
-      : "LinkedIn Premium required";
+      ? "Check your Premium plan"
+      : "Premium only";
   elements.premiumNoteDescription.textContent = unlocked
-    ? "Your custom note will be included with connection requests."
+    ? "This note will be sent with each new connection request."
     : premiumSelected
-      ? "Verify the signed-in LinkedIn account to unlock a custom connection note."
-      : "Select LinkedIn Premium to verify the account and unlock a custom connection note.";
+      ? "We need to check that Premium is active before you can add a note."
+      : "Choose LinkedIn Premium above to add a note to connection requests.";
   elements.verifyPremium.textContent = premiumVerified
-    ? "Verify again"
-    : "Verify my Premium";
+    ? "Check again"
+    : "Check Premium";
   elements.invitationNoteField.hidden = !unlocked;
   elements.invitationNote.required = unlocked;
   elements.saveSettings.disabled = premiumSelected && !premiumVerified;
@@ -636,10 +640,10 @@ function setPremiumCheckPending(pending) {
     return;
   }
   elements.premiumNoteStatus.textContent = "Checking";
-  elements.premiumNoteTitle.textContent = "Checking your LinkedIn account...";
+  elements.premiumNoteTitle.textContent = "Checking your plan...";
   elements.premiumNoteDescription.textContent =
-    "The extension is confirming Premium eligibility.";
-  elements.verifyPremium.textContent = "Verifying...";
+    "This may take a few seconds.";
+  elements.verifyPremium.textContent = "Checking...";
 }
 
 async function loadPremiumNoteState() {
@@ -658,7 +662,7 @@ async function checkPremiumEligibility() {
   });
   if (!response?.ok) {
     throw new Error(
-      response?.error || "Unable to verify LinkedIn Premium eligibility.",
+      response?.error || "We couldn’t check your Premium plan. Try again.",
     );
   }
   return {
@@ -672,7 +676,7 @@ function showLogin() {
   elements.onboardingView.hidden = true;
   elements.dashboardView.hidden = true;
   elements.signOut.hidden = true;
-  elements.updated.textContent = "Sign in to sync your queue";
+  elements.updated.textContent = "Sign in to see your leads";
 }
 
 function showError(error, report = false) {
@@ -681,7 +685,7 @@ function showError(error, report = false) {
   elements.error.textContent = message;
   elements.error.hidden = false;
   elements.connection.classList.add("error");
-  elements.connection.lastChild.textContent = " Connection issue";
+  elements.connection.lastChild.textContent = " Needs attention";
   if (report) {
     void ScoutApi.authenticatedAction("scouts:reportError", {
       leadId: null,
@@ -713,14 +717,19 @@ function formatNumber(value) {
   return new Intl.NumberFormat("en-US").format(Number(value) || 0);
 }
 
+function formatCount(value, singular, plural = `${singular}s`) {
+  const count = Number(value) || 0;
+  return `${formatNumber(count)} ${count === 1 ? singular : plural}`;
+}
+
 function relativeTime(timestamp) {
   const seconds = Math.max(
     0,
     Math.round((Date.now() - Number(timestamp || Date.now())) / 1000),
   );
-  if (seconds < 10) return "now";
-  if (seconds < 60) return `${seconds}s ago`;
-  return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 10) return "just now";
+  if (seconds < 60) return `${seconds} sec ago`;
+  return `${Math.floor(seconds / 60)} min ago`;
 }
 
 function cleanError(error) {

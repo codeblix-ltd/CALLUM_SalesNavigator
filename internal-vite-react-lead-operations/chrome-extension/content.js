@@ -55,7 +55,7 @@
     }
 
     if (message?.type === "SHOW_AUTOMATION_ERROR") {
-      showWorkflowError(message.error || "Automation failed.");
+      showWorkflowError(message.error || "Something went wrong. Try again.");
       sendResponse({ ok: true });
       return false;
     }
@@ -63,7 +63,7 @@
     if (message?.type === "SHOW_AUTOMATION_STATUS") {
       initOverlay();
       if (overlayContainer) overlayContainer.style.display = "block";
-      updateStatus(message.status || "Automation is continuing...");
+      updateStatus(message.status || "Still working...");
       sendResponse({ ok: true });
       return false;
     }
@@ -75,7 +75,7 @@
     if (!premiumRoute) {
       return {
         premium: false,
-        evidence: "LinkedIn redirected away from the Premium account page.",
+        evidence: "LinkedIn did not open the Premium page. Try again.",
       };
     }
 
@@ -108,7 +108,7 @@
       return {
         premium: false,
         evidence:
-          "LinkedIn showed its Premium plan recommendation flow, so the signed-in account does not have an active Premium subscription.",
+          "Premium is not active on this LinkedIn account.",
       };
     }
 
@@ -134,14 +134,14 @@
       return {
         premium: true,
         evidence:
-          "LinkedIn showed the active Premium subscription dashboard for the signed-in account.",
+          "Premium is active on this LinkedIn account.",
       };
     }
 
     return {
       premium: false,
       evidence:
-        "LinkedIn did not show an active Premium subscription dashboard. Confirm the correct LinkedIn account is signed in and try again.",
+        "We couldn’t find an active Premium plan. Check the LinkedIn account and try again.",
     };
   }
 
@@ -161,18 +161,18 @@
       <div class="callum-header">
         <div class="callum-brand">
           <span>Callum Scout</span>
-          <span class="callum-badge">Auto</span>
+          <span class="callum-badge">Ready</span>
         </div>
-        <button class="callum-close" id="callum-close-btn" title="Close Overlay">&times;</button>
+        <button class="callum-close" id="callum-close-btn" title="Close">&times;</button>
       </div>
       <div class="callum-body">
         <div class="callum-status-row">
           <div class="callum-pulse"></div>
-          <span id="callum-status-text">Ready for LinkedIn automation</span>
+          <span id="callum-status-text">Ready</span>
         </div>
         <div id="callum-validation-container" style="display: none;"></div>
         <ul class="callum-log-list" id="callum-log-list">
-          <li><strong>Loaded:</strong> Automation script attached to page</li>
+          <li><strong>Ready:</strong> Callum Scout can work on this page</li>
         </ul>
       </div>
     `;
@@ -187,7 +187,7 @@
     const el = document.getElementById("callum-status-text");
     if (el) el.textContent = text;
     document.querySelector(".callum-status-row")?.removeAttribute("data-state");
-    addLog("Status", text);
+    addLog("Update", text);
   }
 
   function showWorkflowError(error) {
@@ -201,7 +201,7 @@
     document
       .querySelector(".callum-status-row")
       ?.setAttribute("data-state", "error");
-    if (!alreadyShown) addLog("Error", message);
+    if (!alreadyShown) addLog("Problem", message);
   }
 
   function addLog(title, detail) {
@@ -229,7 +229,7 @@
   async function runPostEngagement(options = {}) {
     initOverlay();
     if (overlayContainer) overlayContainer.style.display = "block";
-    updateStatus("Starting post engagement...");
+    updateStatus("Looking for posts...");
 
     // Get settings from storage if not provided
     const stored = await chrome.storage.local.get([
@@ -248,44 +248,44 @@
       false;
 
     if (!options.leadId || !options.profileUrl) {
-      throw new Error("The assigned lead context is missing from post engagement.");
+      throw new Error("This lead is missing some information. Go back to the extension and try again.");
     }
 
-    addLog("Settings", `Posts: ${maxPosts}, Validate AI comment: ${validate ? "Yes" : "No"}`);
+    addLog("Settings", `Posts: ${maxPosts}, Check comments: ${validate ? "Yes" : "No"}`);
 
     if (maxPosts === 0) {
-      updateStatus("Post engagement is disabled; skipping directly to connection.");
+      updateStatus("Skipping posts. Next: connection request.");
       return { engagedCount: 0, totalProcessed: 0, skipped: true };
     }
 
     if (!window.location.pathname.includes("/recent-activity/")) {
       throw new Error(
-        "Post engagement must run on the lead's /recent-activity/all/ page.",
+        "This lead’s Posts page did not open. Go back to the extension and try again.",
       );
     }
 
     // LinkedIn renders the activity feed after the document load event. Wait for
     // the actual post/action DOM from doc.md instead of taking one early snapshot.
-    updateStatus("Waiting for recent posts to load...");
+    updateStatus("Waiting for posts to load...");
     const posts = await findPostElements({
       timeoutMs: 30_000,
       minimumCount: maxPosts,
     });
     if (!posts || posts.length === 0) {
       throw new Error(
-        "No recent posts loaded within 30 seconds. Confirm LinkedIn shows the lead's Posts activity and is not displaying a sign-in, checkpoint, or empty-activity page.",
+        "We couldn’t find any recent posts. Make sure you’re signed in to LinkedIn and that this lead has posts.",
       );
     }
 
     const countToEngage = Math.min(posts.length, maxPosts);
-    addLog("Posts Found", `Found ${posts.length} posts, engaging top ${countToEngage}`);
+    addLog("Posts", `Found ${posts.length}. Working on ${countToEngage}.`);
 
     let engagedCount = 0;
     const activities = [];
 
     for (let i = 0; i < countToEngage; i++) {
       const postEl = posts[i];
-      updateStatus(`Engaging post ${i + 1} of ${countToEngage}...`);
+      updateStatus(`Working on post ${i + 1} of ${countToEngage}...`);
 
       // Scroll post into view
       postEl.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -294,14 +294,14 @@
       // 1. Click 'Like' button
       const likeResult = await handleLikeButton(postEl);
       if (!likeResult.success) {
-        addLog("Error", `Could not confirm Like on post #${i + 1}`);
+        addLog("Problem", `Couldn’t like post ${i + 1}`);
         continue;
       }
       addLog(
         likeResult.changed ? "Liked" : "Like",
         likeResult.changed
-          ? `Liked post #${i + 1}`
-          : `Post #${i + 1} was already liked`,
+          ? `Liked post ${i + 1}`
+          : `Post ${i + 1} was already liked`,
       );
 
       // 2. Click 'see more' if present and extract full post commentary text
@@ -310,60 +310,60 @@
       const postUrl = extractPostUrl(postEl);
 
       if (!postText || postText.length < 30) {
-        addLog("Skipped Text", `Post #${i + 1} did not contain enough readable text`);
+        addLog("Skipped", `Post ${i + 1} did not have enough text for a comment`);
         continue;
       }
       if (!postUrl) {
         throw new Error(
-          `Post #${i + 1} did not expose a supported post permalink, so it could not be recorded safely.`,
+          `We couldn’t save post ${i + 1}, so no comment was posted.`,
         );
       }
 
-      addLog("Read Post", `"${postText.substring(0, 60)}..."`);
+      addLog("Read", `"${postText.substring(0, 60)}..."`);
 
       // 3. Request a draft comment
-      updateStatus(`Generating comment for post ${i + 1}...`);
+      updateStatus(`Writing a comment for post ${i + 1}...`);
       const response = await ScoutApi.authenticatedAction("scouts:draftComment", {
         postText: postText.slice(0, 8_000),
       });
       let draftText = response?.draft?.trim() || "";
       if (!draftText) {
-        throw new Error(`The generated comment was empty for post #${i + 1}.`);
+        throw new Error(`No comment was created for post ${i + 1}. Try again.`);
       }
 
       // 4. Handle Comment Validation Option
       if (validate) {
-        updateStatus(`Awaiting user validation for post ${i + 1}...`);
+        updateStatus(`Waiting for you to check comment ${i + 1}...`);
         const userApprovedText = await promptValidationUI(postText, draftText, i + 1);
         if (!userApprovedText) {
-          addLog("Skipped", `User skipped comment for post #${i + 1}`);
+          addLog("Skipped", `You skipped the comment for post ${i + 1}`);
           continue;
         }
         draftText = userApprovedText;
       }
 
       // 5. Click 'Comment' button under post
-      updateStatus(`Opening comment box for post ${i + 1}...`);
+      updateStatus(`Opening the comment box for post ${i + 1}...`);
       const commentBoxOpened = await openCommentBox(postEl);
       if (!commentBoxOpened) {
-        addLog("Error", `Could not open comment box for post #${i + 1}`);
+        addLog("Problem", `Couldn’t open the comment box for post ${i + 1}`);
         continue;
       }
 
       await sleep(1200);
 
       // 6. Type comment into Quill contenteditable editor
-      updateStatus(`Writing comment on post ${i + 1}...`);
+      updateStatus(`Adding the comment to post ${i + 1}...`);
       const typed = await typeCommentInQuill(postEl, draftText);
       if (!typed) {
-        addLog("Error", `Could not fill comment box for post #${i + 1}`);
+        addLog("Problem", `Couldn’t add the comment to post ${i + 1}`);
         continue;
       }
 
       await sleep(1000);
 
       // 7. Click 'Comment' submit button
-      updateStatus(`Submitting comment on post ${i + 1}...`);
+      updateStatus(`Posting comment ${i + 1}...`);
       const submitted = await submitComment(postEl);
       if (submitted) {
         await ScoutApi.authenticatedAction("scouts:recordPostActivity", {
@@ -380,9 +380,9 @@
           commentText: draftText,
           liked: likeResult.changed,
         });
-        addLog("Commented", `Posted comment on post #${i + 1}`);
+        addLog("Commented", `Posted a comment on post ${i + 1}`);
       } else {
-        addLog("Error", `Failed to click comment submit for post #${i + 1}`);
+        addLog("Problem", `Couldn’t post the comment on post ${i + 1}`);
       }
 
       await sleep(2000);
@@ -390,18 +390,18 @@
 
     if (engagedCount !== countToEngage) {
       throw new Error(
-        `Only ${engagedCount} of ${countToEngage} configured post engagements completed. The lead was not marked engaged and no connection request was sent.`,
+        `Finished ${engagedCount} of ${countToEngage} posts. No connection request was sent for this lead.`,
       );
     }
 
-    updateStatus(`Completed post engagement on ${engagedCount} post(s)!`);
+    updateStatus(`Finished ${engagedCount} post${engagedCount === 1 ? "" : "s"}.`);
     return { engagedCount, totalProcessed: countToEngage, activities };
   }
 
   async function runConnectionRequest(options = {}) {
     initOverlay();
     if (overlayContainer) overlayContainer.style.display = "block";
-    updateStatus("Initiating connection request on profile...");
+    updateStatus("Opening a connection request...");
 
     const currentProfileSlug = getLinkedInProfileSlug(window.location.href);
     const expectedProfileSlug = getLinkedInProfileSlug(
@@ -409,7 +409,7 @@
     );
     if (!currentProfileSlug) {
       throw new Error(
-        "Connection requests can only run on a LinkedIn /in/ profile page.",
+        "This is not a LinkedIn profile page. No request was sent.",
       );
     }
     if (
@@ -418,7 +418,7 @@
         normalizeProfileSlug(expectedProfileSlug)
     ) {
       throw new Error(
-        "LinkedIn is showing a different profile than the selected lead. No connection request was sent.",
+        "LinkedIn opened a different profile. No request was sent.",
       );
     }
 
@@ -427,50 +427,50 @@
       String(options.expectedProfileName || "").trim();
     if (!targetProfileName) {
       throw new Error(
-        "Could not verify the current LinkedIn profile name. No connection request was sent.",
+        "We couldn’t check the name on this profile. No request was sent.",
       );
     }
-    addLog("Target", `Connecting only with ${targetProfileName}`);
+    addLog("Lead", targetProfileName);
 
     await sleep(1500);
 
     // 1. Click 'More' button on profile
-    updateStatus("Looking for profile 'More' button...");
+    updateStatus("Looking for the More button...");
     const moreBtn = await findMoreButton(targetProfileName);
     if (!moreBtn) {
-      throw new Error("Could not find 'More' button on LinkedIn profile header.");
+      throw new Error("We couldn’t find the More button on this profile.");
     }
 
     if (moreBtn.getAttribute("aria-expanded") === "true") {
-      addLog("Menu", "Profile 'More' menu is already open");
+      addLog("Menu", "The More menu is already open");
     } else {
       clickElement(moreBtn);
-      addLog("Click", "Clicked 'More' button on profile");
+      addLog("Opened", "More menu");
       await sleep(1200);
     }
 
     // 2. Click 'Connect' in the dropdown menu / popover
-    updateStatus("Looking for 'Connect' option in menu...");
+    updateStatus("Looking for Connect...");
     const connectEl = await findConnectOption({
       targetProfileName,
       targetProfileSlug: currentProfileSlug,
     });
     if (!connectEl) {
-      throw new Error("Could not find 'Connect' option in 'More' menu.");
+      throw new Error("We couldn’t find Connect in the More menu.");
     }
 
     clickElement(connectEl);
-    addLog("Click", "Clicked 'Connect' option");
+    addLog("Opened", "Connection request");
     await sleep(1500);
 
     // 3. Verify the modal belongs to the profile before sending anything.
-    updateStatus(`Verifying invitation recipient is ${targetProfileName}...`);
+    updateStatus(`Checking that this request is for ${targetProfileName}...`);
     const invitationDialog = await waitForMatch(
       findActiveInvitationDialog,
       20_000,
     );
     if (!invitationDialog) {
-      throw new Error("Could not find LinkedIn's invitation modal.");
+      throw new Error("LinkedIn did not open the connection request.");
     }
 
     const invitationRecipient = getInvitationRecipient(invitationDialog);
@@ -480,48 +480,48 @@
     ) {
       dismissInvitationDialog(invitationDialog);
       const openedFor = invitationRecipient
-        ? `LinkedIn opened the invitation for ${invitationRecipient}, not ${targetProfileName}`
-        : `Could not verify that the invitation is for ${targetProfileName}`;
-      throw new Error(`${openedFor}. Request cancelled before sending.`);
+        ? `LinkedIn opened a request for ${invitationRecipient}, not ${targetProfileName}`
+        : `We couldn’t check that the request is for ${targetProfileName}`;
+      throw new Error(`${openedFor}. Nothing was sent.`);
     }
 
     let sendBtn = null;
     if (options.includeNote) {
       const note = String(options.invitationNote || "").trim().slice(0, 300);
       if (!note) {
-        throw new Error("The invitation note is empty. Request cancelled before sending.");
+        throw new Error("Your connection request note is empty. Nothing was sent.");
       }
 
-      updateStatus("Adding the invitation note...");
+      updateStatus("Adding your note...");
       const addNoteBtn = await findAddNoteButton(invitationDialog);
       if (!addNoteBtn) {
         throw new Error(
-          "Could not find the 'Add a note' button in the invitation modal.",
+          "We couldn’t find Add a note in the connection request.",
         );
       }
       clickElement(addNoteBtn);
 
       const noteInput = await findInvitationNoteInput();
       if (!noteInput) {
-        throw new Error("LinkedIn did not open the invitation note editor.");
+        throw new Error("LinkedIn did not open the note box.");
       }
       fillInvitationNote(noteInput, note);
 
-      updateStatus("Looking for 'Send' in the invitation note modal...");
+      updateStatus("Looking for Send...");
       const noteDialog = noteInput.closest("[role='dialog']") || invitationDialog;
       sendBtn = await findSendInvitationButton(noteDialog);
       if (!sendBtn) {
         throw new Error(
-          "Could not find an enabled 'Send' button after adding the invitation note.",
+          "We couldn’t find the Send button after adding your note.",
         );
       }
-      addLog("Note", "Added the configured invitation note");
+      addLog("Note", "Added your connection request note");
     } else {
-      updateStatus("Looking for 'Send without a note' in verified modal...");
+      updateStatus("Looking for Send without a note...");
       sendBtn = await findSendWithoutNoteButton(invitationDialog);
       if (!sendBtn) {
         throw new Error(
-          "Could not find 'Send without a note' button in invitation modal.",
+          "We couldn’t find Send without a note.",
         );
       }
     }
@@ -540,10 +540,10 @@
     if (!modalClosed) {
       addLog(
         "Confirmation",
-        "The request was submitted, but LinkedIn left the invitation dialog visible",
+        "LinkedIn kept the request box open. Check that the request was sent.",
       );
     }
-    updateStatus("Connection request sent successfully!");
+    updateStatus("Connection request sent.");
     return { success: true, confirmationPending: !modalClosed };
   }
 
@@ -554,10 +554,10 @@
       window.location.pathname.replace(/\/+$/, "") !==
       "/mynetwork/invite-connect/connections"
     ) {
-      throw new Error("Connection review must run on LinkedIn's Connections page.");
+      throw new Error("LinkedIn’s Connections page did not open. Try again.");
     }
 
-    updateStatus("Reviewing recently accepted connections...");
+    updateStatus("Checking new connections...");
     const maxProfiles = clampInteger(options.maxProfiles ?? 250, 1, 250);
     const checkpointUrl = normalizeLinkedInProfileHref(
       options.checkpoint?.topProfileUrl,
@@ -577,7 +577,7 @@
     );
     if (!loaded) {
       throw new Error(
-        "LinkedIn did not load any connection cards. Confirm the account is signed in and the page is sorted by Recently added.",
+        "We couldn’t find your connections. Make sure you’re signed in and the list is sorted by Recently added.",
       );
     }
 
@@ -622,10 +622,10 @@
       }),
     );
     addLog(
-      "Connections",
-      `${connections.length} new connection entr${connections.length === 1 ? "y" : "ies"} reviewed`,
+      "New connections",
+      `${connections.length} found`,
     );
-    updateStatus("Accepted-connection review complete.");
+    updateStatus("New connections checked.");
     return { connections, top, reachedPriorScan };
   }
 
@@ -638,18 +638,18 @@
     );
     if (!currentProfileUrl || currentProfileUrl !== expectedProfileUrl) {
       throw new Error(
-        "LinkedIn is showing a different profile than the accepted assigned lead.",
+        "LinkedIn opened the wrong profile. Nothing was saved.",
       );
     }
 
-    updateStatus("Opening accepted lead contact info...");
+    updateStatus("Checking contact info...");
     const contactLink = await waitForMatch(findContactInfoLink, 20_000);
     if (!contactLink) {
-      throw new Error("Could not find the Contact info link on this profile.");
+      throw new Error("We couldn’t find Contact info on this profile.");
     }
     clickElement(contactLink);
     const dialog = await waitForMatch(findContactInfoDialog, 20_000);
-    if (!dialog) throw new Error("LinkedIn did not open the Contact info dialog.");
+    if (!dialog) throw new Error("LinkedIn did not open Contact info.");
     await waitForMatch(
       () => {
         const progress = dialog.querySelector(
@@ -666,8 +666,8 @@
     const email = mailto
       ? decodeURIComponent(mailto.replace(/^mailto:/i, "").split("?")[0]).trim()
       : null;
-    addLog("Contact info", email ? "Email address saved" : "No email was listed");
-    updateStatus("Accepted lead contact info checked.");
+    addLog("Email", email ? "Email address saved" : "No email address found");
+    updateStatus("Contact info checked.");
     return { profileUrl: currentProfileUrl, email };
   }
 
@@ -791,7 +791,7 @@
 
       if (Date.now() - lastProgressAt >= 5_000) {
         const secondsLeft = Math.max(1, Math.ceil((deadline - Date.now()) / 1000));
-        addLog("Waiting", `LinkedIn is still loading posts (${secondsLeft}s remaining)`);
+        addLog("Waiting", `LinkedIn is still loading posts (${secondsLeft}s left)`);
         lastProgressAt = Date.now();
       }
       await sleep(500);
@@ -1466,12 +1466,12 @@
       container.style.display = "block";
       container.innerHTML = `
         <div class="callum-validation-box">
-          <span class="callum-validation-label">Review Reply (Post #${postIndex})</span>
+          <span class="callum-validation-label">Check comment (Post ${postIndex})</span>
           <div class="callum-post-preview">"${escapeHtml(postExcerpt.substring(0, 150))}${postExcerpt.length > 150 ? "..." : ""}"</div>
           <textarea class="callum-textarea" id="callum-draft-editor">${escapeHtml(generatedDraft)}</textarea>
           <div class="callum-actions">
-            <button class="callum-btn callum-btn-primary" id="callum-approve-btn">Approve & Comment</button>
-            <button class="callum-btn callum-btn-danger" id="callum-skip-btn">Skip Post</button>
+            <button class="callum-btn callum-btn-primary" id="callum-approve-btn">Post comment</button>
+            <button class="callum-btn callum-btn-danger" id="callum-skip-btn">Skip this post</button>
           </div>
         </div>
       `;
@@ -1540,7 +1540,7 @@
   }
 
   function cleanError(error) {
-    return String(error instanceof Error ? error.message : error || "Automation failed.")
+    return String(error instanceof Error ? error.message : error || "Something went wrong. Try again.")
       .replace(/^Error:\s*/i, "")
       .split("\n")[0];
   }

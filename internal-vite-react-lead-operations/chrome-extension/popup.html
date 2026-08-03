@@ -12,16 +12,16 @@
         <div class="brand-mark">C</div>
         <div>
           <strong>Callum Scout</strong>
-          <span id="connection"><i></i> Secure lead workspace</span>
+          <span id="connection"><i></i> Ready to connect</span>
         </div>
         <button id="sign-out" class="text-button" type="button" hidden>Sign out</button>
       </header>
 
       <section id="login-view" class="card login-card">
-        <p class="eyebrow">Scout sign in</p>
-        <h1>Your assigned leads</h1>
+        <p class="eyebrow">Sign in</p>
+        <h1>Open your lead list</h1>
         <p class="muted">
-          Use the username and password created by your operations manager.
+          Use the username and password your manager gave you.
         </p>
         <form id="login-form">
           <label>
@@ -37,72 +37,72 @@
       </section>
 
       <section id="onboarding-view" class="card onboarding-card" hidden>
-        <p class="eyebrow">First-time setup</p>
+        <p class="eyebrow">Quick setup</p>
         <div class="setup-progress" aria-label="Setup progress">
-          <span id="plan-step-marker" class="is-active">1 <b>Plan</b></span>
+          <span id="plan-step-marker" class="is-active">1 <b>LinkedIn plan</b></span>
           <i></i>
-          <span id="workflow-step-marker">2 <b>Daily pace</b></span>
+          <span id="workflow-step-marker">2 <b>Daily limits</b></span>
         </div>
         <form id="onboarding-form">
           <div id="onboarding-plan-step" class="setup-step">
             <h1>Do you have LinkedIn Premium?</h1>
             <p class="muted">
-              Choose the plan used by the LinkedIn account currently signed in to this browser.
+              Choose the plan for the LinkedIn account open in this browser.
             </p>
             <div class="plan-choice-grid" role="group" aria-label="LinkedIn plan">
               <button id="onboarding-free-plan" class="plan-choice" type="button" aria-pressed="false">
                 <span class="plan-choice-icon">F</span>
-                <span><strong>No, I use Free</strong><small>Up to 20 requests · 150 daily likes</small></span>
+                <span><strong>No, I use LinkedIn Free</strong><small>Up to 20 requests and 150 likes a day</small></span>
               </button>
               <button id="onboarding-premium-plan" class="plan-choice" type="button" aria-pressed="false">
                 <span class="plan-choice-icon premium">P</span>
-                <span><strong>Yes, I have Premium</strong><small>Up to 40 requests · 250 daily likes</small></span>
+                <span><strong>Yes, I use Premium</strong><small>Up to 40 requests and 250 likes a day</small></span>
               </button>
             </div>
             <section id="onboarding-premium-check" class="premium-validation" hidden>
               <div>
-                <strong>We’ll verify your real LinkedIn account</strong>
+                <strong>Check your Premium plan</strong>
                 <p>
-                  The extension will securely open LinkedIn’s Premium page and confirm the signed-in account has an active Premium subscription. You cannot continue until it is verified.
+                  We’ll open LinkedIn for a moment to check that Premium is active.
                 </p>
               </div>
-              <button id="onboarding-verify-premium" class="secondary" type="button">Verify with LinkedIn</button>
-              <span id="onboarding-premium-status" class="validation-status">Not verified</span>
+              <button id="onboarding-verify-premium" class="secondary" type="button">Check my plan</button>
+              <span id="onboarding-premium-status" class="validation-status">Not checked</span>
             </section>
-            <button id="onboarding-next" class="primary" type="button" disabled>Continue to daily pace</button>
+            <button id="onboarding-next" class="primary" type="button" disabled>Next: daily limits</button>
           </div>
 
           <div id="onboarding-workflow-step" class="setup-step" hidden>
-            <button id="onboarding-back" class="back-button" type="button">← Back to plan</button>
-            <p class="eyebrow">Your daily pace</p>
-            <h1>How much should run each day?</h1>
+            <button id="onboarding-back" class="back-button" type="button">← Back</button>
+            <p class="eyebrow">Daily limits</p>
+            <h1>Choose what happens each day</h1>
             <p class="muted">
-              Likes are calculated automatically from requests × recent posts per lead.
+              Your likes depend on your requests and the posts you choose for each lead.
             </p>
-            <div id="onboarding-plan-summary" class="selected-plan-summary">Free LinkedIn limits</div>
+            <div id="onboarding-plan-summary" class="selected-plan-summary">LinkedIn Free limits</div>
             <label>
-              Connection requests per day
+              Connection requests each day
               <input id="onboarding-connection-limit" type="number" min="1" max="20" required />
             </label>
             <label>
-              Recent posts to engage per lead
+              Posts for each lead
               <input id="onboarding-posts-per-lead" type="number" min="1" max="7" required />
               <span id="onboarding-post-help" class="field-help"></span>
             </label>
             <div class="daily-calculation" aria-live="polite">
-              <span>Calculated daily likes</span>
+              <span>Likes each day</span>
               <strong id="onboarding-calculation">20 requests × 3 posts = 60 likes</strong>
-              <small id="onboarding-capacity">90 likes remain below the Free limit of 150.</small>
+              <small id="onboarding-capacity">You can use 90 more likes. Your Free limit is 150.</small>
               <div class="capacity-track"><i id="onboarding-capacity-bar"></i></div>
             </div>
             <label class="check-row">
               <input id="onboarding-validate-comment" type="checkbox" />
               <span>
-                Review generated replies before commenting
-                <small>Optional. Pause so you can approve or edit each reply.</small>
+                Let me check each comment before it is posted
+                <small>You can edit or skip the comment.</small>
               </span>
             </label>
-            <button class="primary" type="submit">Save and open my queue</button>
+            <button class="primary" type="submit">Save and continue</button>
           </div>
         </form>
       </section>
@@ -110,100 +110,100 @@
       <section id="dashboard-view" hidden>
         <div class="welcome-row">
           <div>
-            <p class="eyebrow">Signed in as</p>
+            <p class="eyebrow">Your account</p>
             <h1 id="scout-name">Scout</h1>
           </div>
-          <button id="refresh" class="icon-button" type="button" title="Refresh">↻</button>
+          <button id="refresh" class="icon-button" type="button" title="Update" aria-label="Update">↻</button>
         </div>
 
         <div class="daily-usage">
           <div>
-            <span>Requests today</span>
+            <span>Requests used today</span>
             <strong id="request-usage">—</strong>
           </div>
           <div>
-            <span>Likes today</span>
+            <span>Likes used today</span>
             <strong id="engagement-usage">—</strong>
           </div>
         </div>
 
         <div class="metrics">
-          <article class="metric metric-fresh"><span>Fresh leads</span><strong id="fresh-count">—</strong></article>
-          <article class="metric"><span>Engaged</span><strong id="engaged-count">—</strong></article>
+          <article class="metric metric-fresh"><span>New leads</span><strong id="fresh-count">—</strong></article>
+          <article class="metric"><span>Leads engaged</span><strong id="engaged-count">—</strong></article>
           <article class="metric"><span>Requests sent</span><strong id="request-count">—</strong></article>
           <article class="metric"><span>Accepted</span><strong id="accepted-count">—</strong></article>
           <article class="metric"><span>Emails saved</span><strong id="email-count">—</strong></article>
-          <article class="metric"><span>Errors</span><strong id="failed-count">—</strong></article>
+          <article class="metric"><span>Problems</span><strong id="failed-count">—</strong></article>
         </div>
 
         <section class="card automation-launch">
-          <p class="eyebrow">LinkedIn automation</p>
-          <h2>Execute daily workflow</h2>
+          <p class="eyebrow">Today’s tasks</p>
+          <h2>Work through today’s leads</h2>
           <p class="muted">
-            First reviews newly accepted assigned connections and collects contact info, then visits, engages, and connects with assigned leads up to today’s limits.
+            First, we check new connections and save their email addresses. Then we like and comment on posts, and send connection requests until you reach today’s limits.
           </p>
-          <button id="start-auto-lead" class="primary" type="button">⚡ Execute workflow</button>
+          <button id="start-auto-lead" class="primary" type="button">⚡ Start today’s work</button>
         </section>
 
         <div class="utility-row">
           <button id="reset-onboarding" class="text-button reset-button" type="button">
-            Restart onboarding
+            Run setup again
           </button>
           <button id="toggle-settings" class="text-button" type="button">Settings</button>
         </div>
 
         <form id="settings-form" class="card settings-card" hidden>
           <div>
-            <p class="eyebrow">Workflow settings</p>
-            <h2>Daily limits</h2>
+            <p class="eyebrow">Daily settings</p>
+            <h2>Your limits</h2>
           </div>
           <label>
             LinkedIn plan
             <select id="linkedin-plan">
-              <option value="free">Free LinkedIn</option>
+              <option value="free">LinkedIn Free</option>
               <option value="premium">LinkedIn Premium</option>
             </select>
           </label>
           <label>
-            Connection requests per day
+            Connection requests each day
             <input id="connection-daily-limit" type="number" min="1" max="20" required />
           </label>
           <label>
-            Recent posts to engage per lead
+            Posts for each lead
             <input id="post-engagements" type="number" min="1" max="7" required />
             <span id="settings-post-help" class="field-help"></span>
           </label>
           <div class="daily-calculation compact-calculation" aria-live="polite">
-            <span>Calculated daily likes</span>
+            <span>Likes each day</span>
             <strong id="settings-calculation">20 requests × 3 posts = 60 likes</strong>
-            <small id="settings-capacity">90 likes remain below the Free limit of 150.</small>
+            <small id="settings-capacity">You can use 90 more likes. Your Free limit is 150.</small>
             <div class="capacity-track"><i id="settings-capacity-bar"></i></div>
           </div>
           <label class="check-row">
             <input id="validate-comment" type="checkbox" />
             <span>
-              Review generated replies before commenting
-              <small>Optional. Pause so you can approve or edit each reply.</small>
+              Let me check each comment before it is posted
+              <small>You can edit or skip the comment.</small>
             </span>
           </label>
           <section id="premium-note-gate" class="premium-note-gate" aria-labelledby="premium-note-title">
             <div class="premium-note-heading">
               <div>
-                <span class="premium-note-kicker">Invitation notes</span>
-                <strong id="premium-note-title">LinkedIn Premium required</strong>
+                <span class="premium-note-kicker">Connection request note</span>
+                <strong id="premium-note-title">Premium only</strong>
               </div>
-              <span id="premium-note-status" class="premium-note-status">Locked</span>
+              <span id="premium-note-status" class="premium-note-status">Off</span>
             </div>
             <p id="premium-note-description" class="premium-note-description">
-              Select LinkedIn Premium to verify the account and unlock a custom connection note.
+              Choose LinkedIn Premium above to add a note to connection requests.
             </p>
             <button id="verify-premium" class="secondary premium-verify" type="button" hidden>
-              Verify my Premium
+              Check Premium
             </button>
             <label id="invitation-note-field" class="invitation-note-field" hidden>
-              Customize your invitation note
+              Your connection request note
               <textarea id="invitation-note" rows="4" maxlength="300"></textarea>
-              <span class="field-help">Sent exactly as written. Maximum 300 characters.</span>
+              <span class="field-help">Sent as written. Up to 300 characters.</span>
             </label>
           </section>
           <button id="save-settings" class="primary" type="submit">Save settings</button>
@@ -212,7 +212,7 @@
 
       <p class="error" id="error" hidden></p>
       <p class="success" id="success" hidden></p>
-      <footer id="updated">Not synced yet</footer>
+      <footer id="updated">Not updated yet</footer>
     </main>
     <script src="config.js"></script>
     <script src="convex-client.js"></script>

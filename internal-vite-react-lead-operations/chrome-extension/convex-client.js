@@ -13,7 +13,7 @@ const ScoutApi = (() => {
       },
     });
     if (!result?.tokens?.token || !result.tokens.refreshToken) {
-      throw new Error("Sign-in did not return a session.");
+      throw new Error("We couldn’t sign you in. Try again.");
     }
     const auth = {
       token: result.tokens.token,
@@ -138,7 +138,7 @@ const ScoutApi = (() => {
     const convexUrl = config?.CONVEX_URL;
     if (!convexUrl || convexUrl.includes("your-deployment")) {
       throw new Error(
-        "Extension is not configured. Run npm run extension:config.",
+        "Callum Scout is not ready yet. Ask your manager for help.",
       );
     }
     const headers = {
@@ -159,7 +159,7 @@ const ScoutApi = (() => {
     const payload = await response.json().catch(() => null);
     if (!payload) {
       throw requestError(
-        `Convex returned an invalid response (${response.status}).`,
+        "We couldn’t reach Callum Scout. Try again.",
         response.status,
       );
     }
@@ -168,7 +168,7 @@ const ScoutApi = (() => {
     }
     if (!response.ok || payload.status !== "success") {
       throw requestError(
-        `Convex request failed (${response.status}).`,
+        "Callum Scout did not respond. Try again.",
         response.status,
       );
     }
@@ -182,10 +182,45 @@ const ScoutApi = (() => {
   }
 
   function cleanError(value) {
-    return String(value || "Request failed.")
+    const message = String(value || "Something went wrong. Try again.")
       .replace(/^.*?Uncaught (?:Error|ConvexError):\s*/s, "")
       .replace(/^(?:Uncaught (?:Error|ConvexError):\s*)+/, "")
       .split("\n")[0];
+
+    if (/invalid.*(?:credential|password|account)|wrong.*(?:password|username)/i.test(message)) {
+      return "Your username or password is wrong.";
+    }
+    if (/account.*(?:disabled|not active|not authorized)/i.test(message)) {
+      return "You can’t use this account. Ask your manager for help.";
+    }
+    if (/sign in is required/i.test(message)) {
+      return "Please sign in.";
+    }
+    if (/premium.*(?:verified|signed-in account)/i.test(message)) {
+      return "Check your Premium plan first.";
+    }
+    if (/engagement limit/i.test(message)) {
+      return "You’ve used all your likes for today.";
+    }
+    if (/connection-request limit/i.test(message)) {
+      return "You’ve sent all your connection requests for today.";
+    }
+    if (/post activity requires|post text must/i.test(message)) {
+      return "We couldn’t read this post. Try again.";
+    }
+    if (/not available for post engagement|must complete engagement|reserved connection-request|cannot move a lead|status is recorded by/i.test(message)) {
+      return "This lead is no longer ready. Refresh the extension and try again.";
+    }
+    if (/accepted assigned lead can expose contact info/i.test(message)) {
+      return "This lead is not ready for contact info yet.";
+    }
+    if (/valid https linkedin|linkedin url must|post permalink/i.test(message)) {
+      return "This LinkedIn link does not work.";
+    }
+    if (/codex gateway|convex|cockroach_database_url/i.test(message)) {
+      return "Callum Scout isn’t ready. Ask your manager for help.";
+    }
+    return message;
   }
 
   function looksLikeAuthError(error) {

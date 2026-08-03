@@ -47,11 +47,11 @@ assert.match(popupSource, /id="start-auto-lead"/);
 assert.match(popupSource, /id="reset-onboarding"/);
 assert.match(popupSource, /id="onboarding-form"/);
 assert.match(popupSource, /Do you have LinkedIn Premium\?/);
-assert.match(popupSource, /verify your real LinkedIn account/i);
+assert.match(popupSource, /Check your Premium plan/i);
 assert.match(popupSource, /id="onboarding-next"[\s\S]*disabled/);
 assert.match(popupSource, /id="connection-daily-limit"/);
 assert.doesNotMatch(popupSource, /id="engagement-daily-limit"/);
-assert.match(popupSource, /Calculated daily likes/);
+assert.match(popupSource, /Likes each day/);
 assert.match(popupSource, /id="onboarding-validate-comment"/);
 assert.doesNotMatch(
   popupSource,
@@ -67,7 +67,7 @@ assert.doesNotMatch(
 assert.match(popupSource, /id="invitation-note"[\s\S]*maxlength="300"/);
 assert.doesNotMatch(popupSource, /id="include-note"|Include a note when you send a request/);
 assert.match(popupSource, /id="verify-premium"/);
-assert.match(popupSource, /LinkedIn Premium required/);
+assert.match(popupSource, /Premium only/);
 assert.match(popupScript, /CHECK_LINKEDIN_PREMIUM/);
 assert.match(popupScript, /verifyPremiumAndUnlockNote/);
 assert.match(popupScript, /invitationNote/);
@@ -78,7 +78,15 @@ assert.match(popupScript, /premiumVerified/);
 assert.match(popupScript, /onboardingValidateComment\.checked/);
 assert.match(popupScript, /stored\.validateBeforeCommenting \?\? false/);
 assert.match(popupScript, /scouts:resetOnboarding/);
-assert.match(popupScript, /leads, assignments, and usage history will not be changed/);
+assert.match(popupScript, /It will not remove your leads or past work/);
+assert.doesNotMatch(
+  popupSource,
+  /Execute daily workflow|Execute workflow|Restart onboarding|Scout queue connected|Secure lead workspace|Calculated daily likes/,
+);
+assert.doesNotMatch(
+  contentSource,
+  /Ready for LinkedIn automation|Automation script attached to page|Awaiting user validation|configured post engagements|invitation modal/,
+);
 
 for (const selectorContract of [
   "button[aria-label='Add a note']",
