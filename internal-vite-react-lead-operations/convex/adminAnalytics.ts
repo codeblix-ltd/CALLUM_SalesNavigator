@@ -66,6 +66,19 @@ const activityValidator = v.object({
   operatorId: v.string(),
   eventType: v.string(),
   leadName: v.union(v.string(), v.null()),
+  detail: v.union(v.string(), v.null()),
+  url: v.union(v.string(), v.null()),
+  at: v.string(),
+});
+
+const postActivityValidator = v.object({
+  id: v.string(),
+  operatorId: v.string(),
+  leadName: v.union(v.string(), v.null()),
+  profileUrl: v.string(),
+  postUrl: v.string(),
+  commentText: v.string(),
+  liked: v.boolean(),
   at: v.string(),
 });
 
@@ -125,6 +138,18 @@ type AnalyticsResult = {
     operatorId: string;
     eventType: string;
     leadName: string | null;
+    detail: string | null;
+    url: string | null;
+    at: string;
+  }>;
+  postActivities: Array<{
+    id: string;
+    operatorId: string;
+    leadName: string | null;
+    profileUrl: string;
+    postUrl: string;
+    commentText: string;
+    liked: boolean;
     at: string;
   }>;
 };
@@ -160,6 +185,7 @@ export const getOverview = action({
     scouts: v.array(scoutMetricsValidator),
     trend: v.array(trendPointValidator),
     recentActivity: v.array(activityValidator),
+    postActivities: v.array(postActivityValidator),
   }),
   handler: async (ctx, args): Promise<AnalyticsResult> => {
     await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
@@ -170,7 +196,14 @@ export const getOverview = action({
     const since = rangeStart(args.range);
     const bucket = args.range === "all" ? "month" : "day";
     const database = getPool();
-    const [inventoryResult, metricResult, eventResult, trendResult, recentResult] =
+    const [
+      inventoryResult,
+      metricResult,
+      eventResult,
+      trendResult,
+      recentResult,
+      postResult,
+    ] =
       await Promise.all([
         database.query(
           `SELECT total_count::FLOAT8 AS total
@@ -253,12 +286,31 @@ export const getOverview = action({
              e.operator_id,
              e.event_type,
              l.full_name,
+             coalesce(e.details->>'comment', e.details->>'message') AS detail,
+             coalesce(e.details->>'postUrl', e.details->>'profileUrl') AS url,
              e.created_at::STRING AS at
            FROM lead_assignment_events AS e
            INNER JOIN leads AS l ON l.id = e.lead_id
            WHERE ($1::TIMESTAMPTZ IS NULL OR e.created_at >= $1::TIMESTAMPTZ)
            ORDER BY e.created_at DESC
            LIMIT 80`,
+          [since],
+        ),
+        database.query(
+          `SELECT
+             p.id::STRING AS id,
+             p.operator_id,
+             l.full_name,
+             p.profile_url,
+             p.post_url,
+             p.comment_text,
+             p.liked,
+             p.commented_at::STRING AS at
+           FROM lead_post_activities AS p
+           INNER JOIN leads AS l ON l.id = p.lead_id
+           WHERE ($1::TIMESTAMPTZ IS NULL OR p.commented_at >= $1::TIMESTAMPTZ)
+           ORDER BY p.commented_at DESC
+           LIMIT 200`,
           [since],
         ),
       ]);
@@ -362,6 +414,18 @@ export const getOverview = action({
         operatorId: String(row.operator_id),
         eventType: String(row.event_type),
         leadName: nullableString(row.full_name),
+        detail: nullableString(row.detail),
+        url: nullableString(row.url),
+        at: String(row.at),
+      })),
+      postActivities: postResult.rows.map((row) => ({
+        id: String(row.id),
+        operatorId: String(row.operator_id),
+        leadName: nullableString(row.full_name),
+        profileUrl: String(row.profile_url),
+        postUrl: String(row.post_url),
+        commentText: String(row.comment_text),
+        liked: Boolean(row.liked),
         at: String(row.at),
       })),
     };

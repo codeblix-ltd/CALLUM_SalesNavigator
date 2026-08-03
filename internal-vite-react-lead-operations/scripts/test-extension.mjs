@@ -23,7 +23,7 @@ const [manifestSource, popupSource, popupScript, backgroundSource, contentSource
   ]);
 const manifest = JSON.parse(manifestSource);
 
-assert.equal(manifest.version, "0.5.1");
+assert.equal(manifest.version, "0.6.0");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -37,20 +37,32 @@ for (const source of [manifestSource, popupSource, popupScript, contentSource]) 
 assert.doesNotMatch(popupSource, /Automate Active LinkedIn Tab/i);
 assert.doesNotMatch(
   popupSource,
-  /Open next fresh lead|Current lead|Open profile|Contact info|Generate draft|Mark engaged|Connection sent|Skip lead/i,
+  /Open next fresh lead|Current lead|Open profile|Generate draft|Mark engaged|Connection sent|Skip lead/i,
 );
 assert.doesNotMatch(
   popupScript,
   /claimNextLead|updateLeadStatus|generateDraft|copyDraft|contactInfoUrl/,
 );
 assert.match(popupSource, /id="start-auto-lead"/);
+assert.match(popupSource, /id="onboarding-form"/);
+assert.match(popupSource, /id="connection-daily-limit"/);
+assert.match(popupSource, /id="engagement-daily-limit"/);
+assert.match(popupSource, /20 connection requests · 150 likes per day/);
+assert.match(popupScript, /40 connection requests · 250 likes per day/);
+assert.doesNotMatch(
+  popupSource,
+  /Review sent invitations|Review interval|Wait before connecting|id="open-sent"/i,
+);
 assert.match(popupSource, /id="invitation-note"[\s\S]*maxlength="300"/);
 assert.doesNotMatch(popupSource, /id="include-note"|Include a note when you send a request/);
 assert.match(popupSource, /id="verify-premium"/);
-assert.match(popupSource, /Do you have LinkedIn Premium\?/);
+assert.match(popupSource, /LinkedIn Premium required/);
 assert.match(popupScript, /CHECK_LINKEDIN_PREMIUM/);
 assert.match(popupScript, /verifyPremiumAndUnlockNote/);
 assert.match(popupScript, /invitationNote/);
+assert.match(popupScript, /onboardingCompleted: true/);
+assert.match(popupScript, /connectionDailyLimit/);
+assert.match(popupScript, /engagementDailyLimit/);
 
 for (const selectorContract of [
   "button[aria-label='Add a note']",
@@ -67,9 +79,21 @@ for (const selectorContract of [
 }
 assert.match(contentSource, /fillInvitationNote/);
 assert.match(contentSource, /options\.includeNote/);
+assert.match(contentSource, /SCAN_RECENT_CONNECTIONS/);
+assert.match(contentSource, /Connected on\\s\+/);
+assert.match(contentSource, /EXTRACT_CONTACT_INFO/);
+assert.match(contentSource, /a\[href\^='mailto:'\]/);
+assert.match(contentSource, /recordPostActivity/);
+assert.match(contentSource, /feed\/update\/urn:li:activity/);
 assert.match(backgroundSource, /CHECK_LINKEDIN_PREMIUM/);
 assert.match(backgroundSource, /premium\/my-premium/);
-assert.match(backgroundSource, /includeNote: automationOptions\.includeNote/);
+assert.match(backgroundSource, /settings\.includeNote && settings\.linkedinPremium/);
+assert.match(backgroundSource, /getConnectionReviewPlan/);
+assert.match(backgroundSource, /recordConnectionReview/);
+assert.match(backgroundSource, /recordContactInfo/);
+assert.match(backgroundSource, /reserveConnectionRequest/);
+assert.match(backgroundSource, /completeConnectionRequest/);
+assert.match(backgroundSource, /dashboard\.usage\.requestRemaining/);
 assert.match(clientSource, /error\?\.status === 401/);
 assert.match(clientSource, /refreshOnce/);
 assert.match(clientSource, /clearAuthIfUnchanged/);

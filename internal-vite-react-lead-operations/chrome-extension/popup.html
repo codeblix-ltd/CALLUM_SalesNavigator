@@ -36,6 +36,40 @@
         </form>
       </section>
 
+      <section id="onboarding-view" class="card onboarding-card" hidden>
+        <p class="eyebrow">First-time setup</p>
+        <h1>Set your daily workflow</h1>
+        <p class="muted">
+          Choose your LinkedIn plan first, then confirm how many assigned leads and post engagements to run each day.
+        </p>
+        <form id="onboarding-form">
+          <label>
+            LinkedIn plan
+            <select id="onboarding-plan">
+              <option value="free">Free LinkedIn</option>
+              <option value="premium">LinkedIn Premium</option>
+            </select>
+          </label>
+          <div class="recommended-card">
+            <strong>Recommended</strong>
+            <span id="onboarding-recommendation">20 connection requests · 150 likes per day</span>
+          </div>
+          <label>
+            Connection requests per day
+            <input id="onboarding-connection-limit" type="number" min="1" max="20" required />
+          </label>
+          <label>
+            Engagements (likes) per day
+            <input id="onboarding-engagement-limit" type="number" min="1" max="150" required />
+          </label>
+          <label>
+            Recent posts to engage per lead
+            <input id="onboarding-posts-per-lead" type="number" min="1" max="10" required />
+          </label>
+          <button class="primary" type="submit">Save and open my queue</button>
+        </form>
+      </section>
+
       <section id="dashboard-view" hidden>
         <div class="welcome-row">
           <div>
@@ -45,86 +79,67 @@
           <button id="refresh" class="icon-button" type="button" title="Refresh">↻</button>
         </div>
 
+        <div class="daily-usage">
+          <div>
+            <span>Requests today</span>
+            <strong id="request-usage">—</strong>
+          </div>
+          <div>
+            <span>Likes today</span>
+            <strong id="engagement-usage">—</strong>
+          </div>
+        </div>
+
         <div class="metrics">
-          <article class="metric metric-fresh">
-            <span>Fresh leads</span>
-            <strong id="fresh-count">—</strong>
-          </article>
-          <article class="metric">
-            <span>Engaged</span>
-            <strong id="engaged-count">—</strong>
-          </article>
-          <article class="metric">
-            <span>Requests sent</span>
-            <strong id="request-count">—</strong>
-          </article>
-          <article class="metric">
-            <span>Accepted</span>
-            <strong id="accepted-count">—</strong>
-          </article>
-          <article class="metric">
-            <span>Emails saved</span>
-            <strong id="email-count">—</strong>
-          </article>
-          <article class="metric">
-            <span>Errors</span>
-            <strong id="failed-count">—</strong>
-          </article>
+          <article class="metric metric-fresh"><span>Fresh leads</span><strong id="fresh-count">—</strong></article>
+          <article class="metric"><span>Engaged</span><strong id="engaged-count">—</strong></article>
+          <article class="metric"><span>Requests sent</span><strong id="request-count">—</strong></article>
+          <article class="metric"><span>Accepted</span><strong id="accepted-count">—</strong></article>
+          <article class="metric"><span>Emails saved</span><strong id="email-count">—</strong></article>
+          <article class="metric"><span>Errors</span><strong id="failed-count">—</strong></article>
         </div>
 
         <section class="card automation-launch">
-          <div class="automation-title-row">
-            <div>
-              <p class="eyebrow">LinkedIn automation</p>
-              <h2>Auto Engage & Connect</h2>
-            </div>
-          </div>
+          <p class="eyebrow">LinkedIn automation</p>
+          <h2>Execute daily workflow</h2>
           <p class="muted">
-            Likes and comments on recent posts, then sends a connection request using your workflow settings.
+            First reviews newly accepted assigned connections and collects contact info, then visits, engages, and connects with assigned leads up to today’s limits.
           </p>
-          <div class="automation-controls">
-            <button id="start-auto-lead" class="primary" type="button">
-              ⚡ Run Auto-Lead
-            </button>
-          </div>
+          <button id="start-auto-lead" class="primary" type="button">⚡ Execute workflow</button>
         </section>
 
         <div class="utility-row">
-          <button id="open-sent" class="text-button" type="button">Review sent invitations</button>
           <button id="toggle-settings" class="text-button" type="button">Settings</button>
         </div>
 
         <form id="settings-form" class="card settings-card" hidden>
           <div>
             <p class="eyebrow">Workflow settings</p>
-            <h2>Scout pacing</h2>
+            <h2>Daily limits</h2>
           </div>
           <label>
-            Posts to review per lead (0 disables auto engagement)
-            <input id="post-engagements" type="number" min="0" max="10" required />
+            LinkedIn plan
+            <select id="linkedin-plan">
+              <option value="free">Free LinkedIn</option>
+              <option value="premium">LinkedIn Premium</option>
+            </select>
           </label>
-          <div class="duration-field">
-            <label>
-              Review interval
-              <input id="engagement-interval" type="number" min="1" required />
-            </label>
-            <select id="engagement-unit" aria-label="Review interval unit">
-              <option value="1">minutes</option>
-              <option value="60">hours</option>
-              <option value="1440">days</option>
-            </select>
+          <div class="recommended-card compact-recommendation">
+            <strong>Recommended</strong>
+            <span id="settings-recommendation">20 connection requests · 150 likes per day</span>
           </div>
-          <div class="duration-field">
-            <label>
-              Wait before connecting
-              <input id="connection-delay" type="number" min="0" required />
-            </label>
-            <select id="connection-unit" aria-label="Connection delay unit">
-              <option value="1">minutes</option>
-              <option value="60">hours</option>
-              <option value="1440">days</option>
-            </select>
-          </div>
+          <label>
+            Connection requests per day
+            <input id="connection-daily-limit" type="number" min="1" max="20" required />
+          </label>
+          <label>
+            Engagements (likes) per day
+            <input id="engagement-daily-limit" type="number" min="1" max="150" required />
+          </label>
+          <label>
+            Recent posts to engage per lead
+            <input id="post-engagements" type="number" min="1" max="10" required />
+          </label>
           <label class="check-row">
             <input id="validate-comment" type="checkbox" checked />
             Review generated replies before commenting
@@ -133,15 +148,15 @@
             <div class="premium-note-heading">
               <div>
                 <span class="premium-note-kicker">Invitation notes</span>
-                <strong id="premium-note-title">Do you have LinkedIn Premium?</strong>
+                <strong id="premium-note-title">LinkedIn Premium required</strong>
               </div>
               <span id="premium-note-status" class="premium-note-status">Locked</span>
             </div>
             <p id="premium-note-description" class="premium-note-description">
-              Verify your LinkedIn account to unlock a custom note for connection requests.
+              Select LinkedIn Premium to verify the account and unlock a custom connection note.
             </p>
-            <button id="verify-premium" class="secondary premium-verify" type="button">
-              Yes — verify my Premium
+            <button id="verify-premium" class="secondary premium-verify" type="button" hidden>
+              Verify my Premium
             </button>
             <label id="invitation-note-field" class="invitation-note-field" hidden>
               Customize your invitation note

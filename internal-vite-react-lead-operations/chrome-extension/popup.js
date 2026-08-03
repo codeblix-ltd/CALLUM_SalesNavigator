@@ -1,7 +1,9 @@
 const elements = {
   loginView: document.querySelector("#login-view"),
+  onboardingView: document.querySelector("#onboarding-view"),
   dashboardView: document.querySelector("#dashboard-view"),
   loginForm: document.querySelector("#login-form"),
+  onboardingForm: document.querySelector("#onboarding-form"),
   username: document.querySelector("#username"),
   password: document.querySelector("#password"),
   signOut: document.querySelector("#sign-out"),
@@ -13,15 +15,29 @@ const elements = {
   acceptedCount: document.querySelector("#accepted-count"),
   emailCount: document.querySelector("#email-count"),
   failedCount: document.querySelector("#failed-count"),
+  requestUsage: document.querySelector("#request-usage"),
+  engagementUsage: document.querySelector("#engagement-usage"),
   startAutoLead: document.querySelector("#start-auto-lead"),
-  openSent: document.querySelector("#open-sent"),
   toggleSettings: document.querySelector("#toggle-settings"),
   settingsForm: document.querySelector("#settings-form"),
+  linkedinPlan: document.querySelector("#linkedin-plan"),
+  connectionDailyLimit: document.querySelector("#connection-daily-limit"),
+  engagementDailyLimit: document.querySelector("#engagement-daily-limit"),
   postEngagements: document.querySelector("#post-engagements"),
-  engagementInterval: document.querySelector("#engagement-interval"),
-  engagementUnit: document.querySelector("#engagement-unit"),
-  connectionDelay: document.querySelector("#connection-delay"),
-  connectionUnit: document.querySelector("#connection-unit"),
+  settingsRecommendation: document.querySelector("#settings-recommendation"),
+  onboardingPlan: document.querySelector("#onboarding-plan"),
+  onboardingConnectionLimit: document.querySelector(
+    "#onboarding-connection-limit",
+  ),
+  onboardingEngagementLimit: document.querySelector(
+    "#onboarding-engagement-limit",
+  ),
+  onboardingPostsPerLead: document.querySelector(
+    "#onboarding-posts-per-lead",
+  ),
+  onboardingRecommendation: document.querySelector(
+    "#onboarding-recommendation",
+  ),
   validateComment: document.querySelector("#validate-comment"),
   premiumNoteGate: document.querySelector("#premium-note-gate"),
   premiumNoteTitle: document.querySelector("#premium-note-title"),
@@ -38,23 +54,28 @@ const elements = {
 
 const DEFAULT_INVITATION_NOTE =
   "Hi, I came across your profile and would be glad to connect and keep in touch.";
+const RECOMMENDED_POSTS_PER_LEAD = 3;
 
 let dashboard = null;
-let activeLead = null;
 let premiumVerified = false;
 
 elements.loginForm.addEventListener("submit", handleLogin);
+elements.onboardingForm.addEventListener("submit", saveOnboarding);
 elements.signOut.addEventListener("click", handleSignOut);
 elements.refresh.addEventListener("click", refreshDashboard);
-elements.startAutoLead?.addEventListener("click", startAutoLead);
-elements.openSent.addEventListener("click", () =>
-  openUrl("https://www.linkedin.com/mynetwork/invitation-manager/sent/"),
-);
+elements.startAutoLead.addEventListener("click", startAutoLead);
 elements.toggleSettings.addEventListener("click", () => {
   elements.settingsForm.hidden = !elements.settingsForm.hidden;
 });
 elements.settingsForm.addEventListener("submit", saveSettings);
 elements.verifyPremium.addEventListener("click", verifyPremiumAndUnlockNote);
+elements.onboardingPlan.addEventListener("change", () =>
+  applyRecommendedLimits("onboarding"),
+);
+elements.linkedinPlan.addEventListener("change", () => {
+  applyRecommendedLimits("settings");
+  syncPremiumNoteGate();
+});
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local" || !changes.linkedInPremium) return;
   premiumVerified = changes.linkedInPremium.newValue === true;
@@ -89,6 +110,10 @@ async function handleLogin(event) {
   clearMessages();
   try {
     await ScoutApi.signIn(elements.username.value, elements.password.value);
+    await chrome.storage.local.remove([
+      "scoutDashboard",
+      "scoutDashboardUpdatedAt",
+    ]);
     elements.password.value = "";
     await refreshDashboard();
   } catch (error) {
@@ -106,7 +131,10 @@ async function handleSignOut() {
     showError(error);
   } finally {
     dashboard = null;
-    activeLead = null;
+    await chrome.storage.local.remove([
+      "scoutDashboard",
+      "scoutDashboardUpdatedAt",
+    ]);
     await chrome.action.setBadgeText({ text: "" });
     showLogin();
   }
@@ -124,12 +152,34 @@ async function refreshDashboard() {
     }
     renderDashboard(response.dashboard, Date.now());
   } catch (error) {
-    if (/sign in|required|expired|session/i.test(String(error))) {
-      showLogin();
-    }
+    if (/sign in|required|expired|session/i.test(String(error))) showLogin();
     showError(error);
   } finally {
     setBusy(elements.refresh, false);
+  }
+}
+
+async function saveOnboarding(event) {
+  event.preventDefault();
+  clearMessages();
+  setBusy(elements.onboardingForm, true);
+  try {
+    const premium = elements.onboardingPlan.value === "premium";
+    const settings = await updateSettings({
+      premium,
+      connectionDailyLimit: Number(elements.onboardingConnectionLimit.value),
+      engagementDailyLimit: Number(elements.onboardingEngagementLimit.value),
+      postEngagements: Number(elements.onboardingPostsPerLead.value),
+      onboardingCompleted: true,
+      includeNote: false,
+    });
+    dashboard.settings = settings;
+    showSuccess("Setup saved. Your daily workflow is ready.");
+    await refreshDashboard();
+  } catch (error) {
+    showError(error);
+  } finally {
+    setBusy(elements.onboardingForm, false);
   }
 }
 
@@ -137,15 +187,15 @@ async function startAutoLead() {
   clearMessages();
   setBusy(elements.startAutoLead, true);
   try {
-    showSuccess("Starting automation on LinkedIn...");
-    const response = await chrome.runtime.sendMessage({
-      type: "START_AUTO_LEAD",
-      leadId: activeLead?.id,
-    });
+    showSuccess("Reviewing accepted connections, then running today's queue...");
+    const response = await chrome.runtime.sendMessage({ type: "START_AUTO_LEAD" });
     if (!response?.ok) {
-      throw new Error(response?.error || "Auto lead workflow failed.");
+      throw new Error(response?.error || "Daily workflow failed.");
     }
-    showSuccess(`Automation complete! Status: Connection requested.`);
+    const result = response.result;
+    showSuccess(
+      `Workflow complete: ${formatNumber(result.requestsSent)} request(s), ${formatNumber(result.acceptedMatched)} accepted match(es), ${formatNumber(result.emailsCollected)} email(s).`,
+    );
     await refreshDashboard();
   } catch (error) {
     showError(error, true);
@@ -159,36 +209,29 @@ async function saveSettings(event) {
   clearMessages();
   setBusy(elements.settingsForm, true);
   try {
-    const includeNote = premiumVerified;
+    const premium = elements.linkedinPlan.value === "premium";
     const invitationNote = elements.invitationNote.value.trim();
-
+    const includeNote = premium && premiumVerified;
     if (includeNote && !invitationNote) {
       throw new Error("Enter an invitation note before saving your settings.");
     }
-
-    const settings = await ScoutApi.authenticatedAction(
-      "scouts:updateSettings",
-      {
-        postEngagements: Number(elements.postEngagements.value),
-        engagementIntervalMinutes: toMinutes(
-          elements.engagementInterval,
-          elements.engagementUnit,
-        ),
-        connectionDelayMinutes: toMinutes(
-          elements.connectionDelay,
-          elements.connectionUnit,
-        ),
-        includeNote,
-      },
-    );
+    const settings = await updateSettings({
+      premium,
+      connectionDailyLimit: Number(elements.connectionDailyLimit.value),
+      engagementDailyLimit: Number(elements.engagementDailyLimit.value),
+      postEngagements: Number(elements.postEngagements.value),
+      onboardingCompleted: true,
+      includeNote,
+    });
     await chrome.storage.local.set({
       validateBeforeCommenting: elements.validateComment.checked,
       invitationNote: invitationNote || DEFAULT_INVITATION_NOTE,
     });
     dashboard.settings = settings;
     renderSettings(settings);
-    showSuccess("Workflow settings saved.");
+    showSuccess("Daily workflow settings saved.");
     elements.settingsForm.hidden = true;
+    await refreshDashboard();
   } catch (error) {
     showError(error);
   } finally {
@@ -196,49 +239,112 @@ async function saveSettings(event) {
   }
 }
 
+function updateSettings(values) {
+  return ScoutApi.authenticatedAction("scouts:updateSettings", {
+    postEngagements: values.postEngagements,
+    linkedinPremium: values.premium,
+    connectionDailyLimit: values.connectionDailyLimit,
+    engagementDailyLimit: values.engagementDailyLimit,
+    onboardingCompleted: values.onboardingCompleted,
+    includeNote: values.includeNote,
+  });
+}
+
 function renderDashboard(value, updatedAt) {
   dashboard = value;
-  activeLead = value.activeLead;
   elements.loginView.hidden = true;
-  elements.dashboardView.hidden = false;
   elements.signOut.hidden = false;
   elements.scoutName.textContent = value.scout.username;
+  if (!value.settings.onboardingCompleted) {
+    showOnboarding(value.settings);
+    return;
+  }
+  elements.onboardingView.hidden = true;
+  elements.dashboardView.hidden = false;
   elements.freshCount.textContent = formatNumber(value.counts.fresh);
   elements.engagedCount.textContent = formatNumber(value.counts.engaged);
-  elements.requestCount.textContent = formatNumber(
-    value.counts.connectionRequested,
-  );
+  elements.requestCount.textContent = formatNumber(value.counts.connectionRequested);
   elements.acceptedCount.textContent = formatNumber(value.counts.accepted);
   elements.emailCount.textContent = formatNumber(value.counts.emailCollected);
   elements.failedCount.textContent = formatNumber(value.counts.failed);
-  elements.updated.textContent = `Synced ${relativeTime(updatedAt)}`;
+  elements.requestUsage.textContent = `${formatNumber(value.usage.requestsSent)} / ${formatNumber(value.usage.requestLimit)}`;
+  elements.engagementUsage.textContent = `${formatNumber(value.usage.likesUsed)} / ${formatNumber(value.usage.engagementLimit)}`;
+  elements.updated.textContent = `Synced ${relativeTime(updatedAt)} · resets daily`;
   elements.connection.classList.remove("error");
   elements.connection.lastChild.textContent = " Scout queue connected";
   renderSettings(value.settings);
 }
 
+function showOnboarding(settings) {
+  elements.dashboardView.hidden = true;
+  elements.onboardingView.hidden = false;
+  elements.onboardingPlan.value = settings.linkedinPremium ? "premium" : "free";
+  elements.onboardingConnectionLimit.value = settings.connectionDailyLimit || 20;
+  elements.onboardingEngagementLimit.value = settings.engagementDailyLimit || 150;
+  elements.onboardingPostsPerLead.value =
+    settings.postEngagements || RECOMMENDED_POSTS_PER_LEAD;
+  updateLimitControls("onboarding");
+  elements.updated.textContent = "Complete setup to start automation";
+}
+
 function renderSettings(settings) {
+  elements.linkedinPlan.value = settings.linkedinPremium ? "premium" : "free";
+  elements.connectionDailyLimit.value = settings.connectionDailyLimit;
+  elements.engagementDailyLimit.value = settings.engagementDailyLimit;
   elements.postEngagements.value = settings.postEngagements;
-  setDuration(
-    elements.engagementInterval,
-    elements.engagementUnit,
-    settings.engagementIntervalMinutes,
-  );
-  setDuration(
-    elements.connectionDelay,
-    elements.connectionUnit,
-    settings.connectionDelayMinutes,
-  );
+  updateLimitControls("settings");
   syncPremiumNoteGate();
   void chrome.storage.local
     .get(["validateBeforeCommenting", "invitationNote"])
-    .then((res) => {
-    if (elements.validateComment) {
-      elements.validateComment.checked = res.validateBeforeCommenting ?? true;
-    }
-    elements.invitationNote.value =
-      res.invitationNote?.trim() || DEFAULT_INVITATION_NOTE;
+    .then((stored) => {
+      elements.validateComment.checked = stored.validateBeforeCommenting ?? true;
+      elements.invitationNote.value =
+        stored.invitationNote?.trim() || DEFAULT_INVITATION_NOTE;
     });
+}
+
+function applyRecommendedLimits(scope) {
+  const controls = limitControls(scope);
+  const premium = controls.plan.value === "premium";
+  controls.connection.value = premium ? "40" : "20";
+  controls.engagement.value = premium ? "250" : "150";
+  if (controls.posts) controls.posts.value = String(RECOMMENDED_POSTS_PER_LEAD);
+  updateLimitControls(scope);
+}
+
+function updateLimitControls(scope) {
+  const controls = limitControls(scope);
+  const premium = controls.plan.value === "premium";
+  controls.connection.max = premium ? "40" : "20";
+  controls.engagement.max = premium ? "250" : "150";
+  controls.connection.value = String(
+    Math.min(Number(controls.connection.value || 1), premium ? 40 : 20),
+  );
+  controls.engagement.value = String(
+    Math.min(Number(controls.engagement.value || 1), premium ? 250 : 150),
+  );
+  controls.recommendation.textContent = premium
+    ? "40 connection requests · 250 likes per day"
+    : "20 connection requests · 150 likes per day";
+}
+
+function limitControls(scope) {
+  if (scope === "onboarding") {
+    return {
+      plan: elements.onboardingPlan,
+      connection: elements.onboardingConnectionLimit,
+      engagement: elements.onboardingEngagementLimit,
+      posts: elements.onboardingPostsPerLead,
+      recommendation: elements.onboardingRecommendation,
+    };
+  }
+  return {
+    plan: elements.linkedinPlan,
+    connection: elements.connectionDailyLimit,
+    engagement: elements.engagementDailyLimit,
+    posts: elements.postEngagements,
+    recommendation: elements.settingsRecommendation,
+  };
 }
 
 async function verifyPremiumAndUnlockNote() {
@@ -256,7 +362,7 @@ async function verifyPremiumAndUnlockNote() {
     }
     premiumVerified = true;
     syncPremiumNoteGate();
-    showSuccess("LinkedIn Premium verified. Custom invitation notes are now unlocked.");
+    showSuccess("LinkedIn Premium verified. Custom invitation notes are unlocked.");
     elements.invitationNote.focus();
   } catch (error) {
     showError(error);
@@ -266,19 +372,26 @@ async function verifyPremiumAndUnlockNote() {
 }
 
 function syncPremiumNoteGate() {
-  elements.premiumNoteGate.classList.toggle("is-verified", premiumVerified);
-  elements.premiumNoteStatus.textContent = premiumVerified ? "Verified" : "Locked";
-  elements.premiumNoteTitle.textContent = premiumVerified
+  const premiumSelected = elements.linkedinPlan.value === "premium";
+  const unlocked = premiumSelected && premiumVerified;
+  elements.premiumNoteGate.classList.toggle("is-verified", unlocked);
+  elements.verifyPremium.hidden = !premiumSelected;
+  elements.premiumNoteStatus.textContent = unlocked ? "Verified" : "Locked";
+  elements.premiumNoteTitle.textContent = unlocked
     ? "LinkedIn Premium verified"
-    : "Do you have LinkedIn Premium?";
-  elements.premiumNoteDescription.textContent = premiumVerified
+    : premiumSelected
+      ? "Verify LinkedIn Premium"
+      : "LinkedIn Premium required";
+  elements.premiumNoteDescription.textContent = unlocked
     ? "Your custom note will be included with connection requests."
-    : "Verify your LinkedIn account to unlock a custom note for connection requests.";
+    : premiumSelected
+      ? "Verify the signed-in LinkedIn account to unlock a custom connection note."
+      : "Select LinkedIn Premium to verify the account and unlock a custom connection note.";
   elements.verifyPremium.textContent = premiumVerified
     ? "Verify again"
-    : "Yes — verify my Premium";
-  elements.invitationNoteField.hidden = !premiumVerified;
-  elements.invitationNote.required = premiumVerified;
+    : "Verify my Premium";
+  elements.invitationNoteField.hidden = !unlocked;
+  elements.invitationNote.required = unlocked;
 }
 
 function setPremiumCheckPending(pending) {
@@ -291,7 +404,7 @@ function setPremiumCheckPending(pending) {
   elements.premiumNoteStatus.textContent = "Checking";
   elements.premiumNoteTitle.textContent = "Checking your LinkedIn account...";
   elements.premiumNoteDescription.textContent =
-    "The extension is securely confirming your Premium eligibility.";
+    "The extension is confirming Premium eligibility.";
   elements.verifyPremium.textContent = "Verifying...";
 }
 
@@ -303,7 +416,6 @@ async function loadPremiumNoteState() {
   elements.invitationNote.value =
     stored.invitationNote?.trim() || DEFAULT_INVITATION_NOTE;
   premiumVerified = stored.linkedInPremium === true;
-  syncPremiumNoteGate();
 }
 
 async function checkPremiumEligibility() {
@@ -320,6 +432,7 @@ async function checkPremiumEligibility() {
 
 function showLogin() {
   elements.loginView.hidden = false;
+  elements.onboardingView.hidden = true;
   elements.dashboardView.hidden = true;
   elements.signOut.hidden = true;
   elements.updated.textContent = "Sign in to sync your queue";
@@ -334,7 +447,7 @@ function showError(error, report = false) {
   elements.connection.lastChild.textContent = " Connection issue";
   if (report) {
     void ScoutApi.authenticatedAction("scouts:reportError", {
-      leadId: activeLead?.id ?? null,
+      leadId: null,
       message,
     }).catch(() => {});
   }
@@ -357,24 +470,6 @@ function setBusy(target, busy) {
     ? target.querySelectorAll("button, input, select, textarea")
     : [target];
   for (const control of controls) control.disabled = busy;
-}
-
-async function openUrl(url) {
-  if (!url) throw new Error("This lead does not have a valid profile URL.");
-  await chrome.tabs.create({ url });
-}
-
-function toMinutes(input, unit) {
-  return Math.round(Number(input.value) * Number(unit.value));
-}
-
-function setDuration(input, unit, totalMinutes) {
-  const units = [1440, 60, 1];
-  const selected = units.find(
-    (value) => totalMinutes >= value && totalMinutes % value === 0,
-  ) ?? 1;
-  unit.value = String(selected);
-  input.value = String(totalMinutes / selected);
 }
 
 function formatNumber(value) {

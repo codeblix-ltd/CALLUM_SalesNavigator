@@ -16,9 +16,21 @@ type ScoutIdentity = {
 
 type ScoutSettings = {
   postEngagements: number;
-  engagementIntervalMinutes: number;
-  connectionDelayMinutes: number;
+  linkedinPremium: boolean;
+  connectionDailyLimit: number;
+  engagementDailyLimit: number;
+  onboardingCompleted: boolean;
   includeNote: boolean;
+};
+
+type DailyUsage = {
+  date: string;
+  requestsSent: number;
+  likesUsed: number;
+  requestLimit: number;
+  engagementLimit: number;
+  requestRemaining: number;
+  engagementRemaining: number;
 };
 
 type ScoutLead = {
@@ -30,19 +42,51 @@ type ScoutLead = {
   status: string;
 };
 
+type ReviewLead = {
+  id: string;
+  fullName: string | null;
+  profileUrl: string;
+  requestedAt: string | null;
+};
+
+type ConnectionReviewPlan = {
+  shouldReview: boolean;
+  cutoffDate: string | null;
+  checkpoint: {
+    topProfileUrl: string | null;
+    topConnectedOn: string | null;
+    lastReviewedAt: string | null;
+  };
+  pendingLeads: ReviewLead[];
+  contactLeads: ReviewLead[];
+};
+
 type ScoutDashboard = {
   scout: { username: string };
   counts: ReturnType<typeof emptyCounts>;
   settings: ScoutSettings;
+  usage: DailyUsage;
+  hasSentConnectionRequest: boolean;
   activeLead: ScoutLead | null;
 };
 
 const optionalText = v.union(v.string(), v.null());
 const settingsValidator = v.object({
   postEngagements: v.number(),
-  engagementIntervalMinutes: v.number(),
-  connectionDelayMinutes: v.number(),
+  linkedinPremium: v.boolean(),
+  connectionDailyLimit: v.number(),
+  engagementDailyLimit: v.number(),
+  onboardingCompleted: v.boolean(),
   includeNote: v.boolean(),
+});
+const usageValidator = v.object({
+  date: v.string(),
+  requestsSent: v.number(),
+  likesUsed: v.number(),
+  requestLimit: v.number(),
+  engagementLimit: v.number(),
+  requestRemaining: v.number(),
+  engagementRemaining: v.number(),
 });
 const leadValidator = v.object({
   id: v.string(),
@@ -52,10 +96,19 @@ const leadValidator = v.object({
   linkedinUrl: v.string(),
   status: v.string(),
 });
+const reviewLeadValidator = v.object({
+  id: v.string(),
+  fullName: optionalText,
+  profileUrl: v.string(),
+  requestedAt: optionalText,
+});
+const checkpointValidator = v.object({
+  topProfileUrl: optionalText,
+  topConnectedOn: optionalText,
+  lastReviewedAt: optionalText,
+});
 const dashboardValidator = v.object({
-  scout: v.object({
-    username: v.string(),
-  }),
+  scout: v.object({ username: v.string() }),
   counts: v.object({
     total: v.number(),
     fresh: v.number(),
@@ -68,6 +121,8 @@ const dashboardValidator = v.object({
     failed: v.number(),
   }),
   settings: settingsValidator,
+  usage: usageValidator,
+  hasSentConnectionRequest: v.boolean(),
   activeLead: v.union(leadValidator, v.null()),
 });
 
@@ -80,7 +135,8 @@ export const getDashboard = action({
       {},
     );
     const database = getPool();
-    const [countResult, settings, activeResult] = await Promise.all([
+    const settings = await getOrCreateSettings(scout.operatorId);
+    const [countResult, usage, activeResult] = await Promise.all([
       database.query(
         `SELECT
            count(*)::FLOAT8 AS total,
@@ -106,19 +162,19 @@ export const getDashboard = action({
          WHERE operator_id = $1`,
         [scout.operatorId],
       ),
-      getOrCreateSettings(scout.operatorId),
+      getOrCreateDailyUsage(scout.operatorId, settings),
       database.query(
         `SELECT
            l.id::STRING AS id,
            l.full_name,
            l.current_title,
            l.company_name,
-           l.linkedin_url,
+           coalesce(a.resolved_linkedin_url, l.linkedin_url) AS linkedin_url,
            a.status
          FROM lead_assignments AS a
          INNER JOIN leads AS l ON l.id = a.lead_id
          WHERE a.operator_id = $1
-           AND a.status IN ('viewed', 'engaged', 'connected', 'connection_requested', 'accepted')
+           AND a.status IN ('viewed', 'engaged')
          ORDER BY a.updated_at DESC, a.lead_id
          LIMIT 1`,
         [scout.operatorId],
@@ -142,6 +198,8 @@ export const getDashboard = action({
       scout: { username: scout.username },
       counts,
       settings,
+      usage,
+      hasSentConnectionRequest: counts.connectionRequested > 0,
       activeLead: activeResult.rows[0] ? mapLead(activeResult.rows[0]) : null,
     };
   },
@@ -162,12 +220,12 @@ export const claimNextLead = action({
          l.full_name,
          l.current_title,
          l.company_name,
-         l.linkedin_url,
+         coalesce(a.resolved_linkedin_url, l.linkedin_url) AS linkedin_url,
          a.status
        FROM lead_assignments AS a
        INNER JOIN leads AS l ON l.id = a.lead_id
        WHERE a.operator_id = $1
-         AND a.status IN ('viewed', 'engaged', 'connected', 'connection_requested', 'accepted')
+         AND a.status IN ('viewed', 'engaged')
        ORDER BY a.updated_at DESC, a.lead_id
        LIMIT 1`,
       [scout.operatorId],
@@ -221,6 +279,563 @@ export const claimNextLead = action({
   },
 });
 
+export const recordProfileVisit = action({
+  args: { leadId: v.string(), resolvedLinkedinUrl: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
+    const resolvedUrl = normalizeLinkedInProfileUrl(args.resolvedLinkedinUrl);
+    const database = getPool();
+    const result = await database.query(
+      `UPDATE lead_assignments
+          SET resolved_linkedin_url = $3,
+              status = CASE WHEN status = 'assigned' THEN 'viewed' ELSE status END,
+              viewed_at = coalesce(viewed_at, now()),
+              updated_at = now()
+        WHERE lead_id = $1::UUID
+          AND operator_id = $2
+          AND status IN ('assigned', 'viewed', 'engaged')
+      RETURNING lead_id`,
+      [args.leadId, scout.operatorId, resolvedUrl],
+    );
+    if (!result.rows[0]) throw new Error("This lead is not available to visit.");
+    await database.query(
+      `INSERT INTO lead_assignment_events (lead_id, operator_id, event_type, details)
+       VALUES ($1::UUID, $2, 'profile_visited', $3::JSONB)`,
+      [args.leadId, scout.operatorId, JSON.stringify({ profileUrl: resolvedUrl })],
+    );
+    return null;
+  },
+});
+
+export const recordPostActivity = action({
+  args: {
+    leadId: v.string(),
+    profileUrl: v.string(),
+    postUrl: v.string(),
+    postText: v.string(),
+    commentText: v.string(),
+    liked: v.boolean(),
+  },
+  returns: usageValidator,
+  handler: async (ctx, args): Promise<DailyUsage> => {
+    const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
+    const settings = await getOrCreateSettings(scout.operatorId);
+    const profileUrl = normalizeLinkedInProfileUrl(args.profileUrl);
+    const postUrl = normalizeLinkedInPostUrl(args.postUrl);
+    const postText = args.postText.trim().slice(0, 8_000);
+    const commentText = args.commentText.trim().slice(0, 2_000);
+    if (!postText || !commentText) {
+      throw new Error("Post activity requires the post text and submitted comment.");
+    }
+
+    const database = getPool();
+    const client = await database.connect();
+    try {
+      await client.query("BEGIN");
+      const assignment = await client.query(
+        `SELECT status
+           FROM lead_assignments
+          WHERE lead_id = $1::UUID AND operator_id = $2
+          FOR UPDATE`,
+        [args.leadId, scout.operatorId],
+      );
+      const status = String(assignment.rows[0]?.status ?? "");
+      if (!["viewed", "engaged"].includes(status)) {
+        throw new Error("This lead is not available for post engagement.");
+      }
+
+      const existing = await client.query(
+        `SELECT liked
+           FROM lead_post_activities
+          WHERE operator_id = $1 AND lead_id = $2::UUID AND post_url = $3
+          FOR UPDATE`,
+        [scout.operatorId, args.leadId, postUrl],
+      );
+      const shouldCountLike = args.liked && existing.rows[0]?.liked !== true;
+      await ensureDailyUsageRow(client, scout.operatorId);
+      const usageResult = await client.query(
+        `SELECT usage_date::STRING AS usage_date, requests_sent, likes_used
+           FROM operator_daily_usage
+          WHERE operator_id = $1 AND usage_date = current_date
+          FOR UPDATE`,
+        [scout.operatorId],
+      );
+      const currentLikes = Number(usageResult.rows[0]?.likes_used ?? 0);
+      if (shouldCountLike && currentLikes >= settings.engagementDailyLimit) {
+        throw new Error("Today's LinkedIn engagement limit has been reached.");
+      }
+
+      await client.query(
+        `INSERT INTO lead_post_activities (
+           lead_id, operator_id, profile_url, post_url, post_text,
+           comment_text, liked, liked_at, commented_at, updated_at
+         ) VALUES (
+           $1::UUID, $2, $3, $4, $5, $6, $7,
+           CASE WHEN $7 THEN now() ELSE NULL END, now(), now()
+         )
+         ON CONFLICT (operator_id, lead_id, post_url) DO UPDATE SET
+           profile_url = excluded.profile_url,
+           post_text = excluded.post_text,
+           comment_text = excluded.comment_text,
+           liked = lead_post_activities.liked OR excluded.liked,
+           liked_at = coalesce(lead_post_activities.liked_at, excluded.liked_at),
+           commented_at = now(),
+           updated_at = now()`,
+        [
+          args.leadId,
+          scout.operatorId,
+          profileUrl,
+          postUrl,
+          postText,
+          commentText,
+          args.liked,
+        ],
+      );
+      if (shouldCountLike) {
+        await client.query(
+          `UPDATE operator_daily_usage
+              SET likes_used = likes_used + 1, updated_at = now()
+            WHERE operator_id = $1 AND usage_date = current_date`,
+          [scout.operatorId],
+        );
+      }
+      await client.query(
+        `UPDATE lead_assignments
+            SET status = 'engaged',
+                engaged_at = coalesce(engaged_at, now()),
+                resolved_linkedin_url = $3,
+                updated_at = now()
+          WHERE lead_id = $1::UUID AND operator_id = $2`,
+        [args.leadId, scout.operatorId, profileUrl],
+      );
+      await insertEvent(client, args.leadId, scout.operatorId, "post_engaged", {
+        profileUrl,
+        postUrl,
+        comment: commentText,
+        liked: args.liked,
+      });
+      await client.query("COMMIT");
+      return getOrCreateDailyUsage(scout.operatorId, settings);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+});
+
+export const reserveConnectionRequest = action({
+  args: { leadId: v.string() },
+  returns: usageValidator,
+  handler: async (ctx, args): Promise<DailyUsage> => {
+    const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
+    const settings = await getOrCreateSettings(scout.operatorId);
+    const database = getPool();
+    const client = await database.connect();
+    try {
+      await client.query("BEGIN");
+      const assignment = await client.query(
+        `SELECT status, connection_request_reserved_on::STRING AS reserved_on
+           FROM lead_assignments
+          WHERE lead_id = $1::UUID AND operator_id = $2
+          FOR UPDATE`,
+        [args.leadId, scout.operatorId],
+      );
+      const row = assignment.rows[0];
+      if (!row || row.status !== "engaged") {
+        throw new Error("The lead must complete engagement before connecting.");
+      }
+      await ensureDailyUsageRow(client, scout.operatorId);
+      const usageResult = await client.query(
+        `SELECT current_date::STRING AS usage_date, requests_sent, likes_used
+           FROM operator_daily_usage
+          WHERE operator_id = $1 AND usage_date = current_date
+          FOR UPDATE`,
+        [scout.operatorId],
+      );
+      if (String(row.reserved_on ?? "") !== String(usageResult.rows[0]?.usage_date)) {
+        if (
+          Number(usageResult.rows[0]?.requests_sent ?? 0) >=
+          settings.connectionDailyLimit
+        ) {
+          throw new Error("Today's LinkedIn connection-request limit has been reached.");
+        }
+        await client.query(
+          `UPDATE operator_daily_usage
+              SET requests_sent = requests_sent + 1, updated_at = now()
+            WHERE operator_id = $1 AND usage_date = current_date`,
+          [scout.operatorId],
+        );
+        await client.query(
+          `UPDATE lead_assignments
+              SET connection_request_reserved_on = current_date, updated_at = now()
+            WHERE lead_id = $1::UUID AND operator_id = $2`,
+          [args.leadId, scout.operatorId],
+        );
+      }
+      await client.query("COMMIT");
+      return getOrCreateDailyUsage(scout.operatorId, settings);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+});
+
+export const releaseConnectionRequest = action({
+  args: { leadId: v.string() },
+  returns: usageValidator,
+  handler: async (ctx, args): Promise<DailyUsage> => {
+    const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
+    const settings = await getOrCreateSettings(scout.operatorId);
+    const database = getPool();
+    const client = await database.connect();
+    try {
+      await client.query("BEGIN");
+      const released = await client.query(
+        `UPDATE lead_assignments
+            SET connection_request_reserved_on = NULL, updated_at = now()
+          WHERE lead_id = $1::UUID
+            AND operator_id = $2
+            AND status = 'engaged'
+            AND connection_request_reserved_on = current_date
+        RETURNING lead_id`,
+        [args.leadId, scout.operatorId],
+      );
+      if (released.rows[0]) {
+        await client.query(
+          `UPDATE operator_daily_usage
+              SET requests_sent = greatest(0, requests_sent - 1), updated_at = now()
+            WHERE operator_id = $1 AND usage_date = current_date`,
+          [scout.operatorId],
+        );
+      }
+      await client.query("COMMIT");
+      return getOrCreateDailyUsage(scout.operatorId, settings);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+});
+
+export const completeConnectionRequest = action({
+  args: { leadId: v.string(), profileUrl: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
+    const profileUrl = normalizeLinkedInProfileUrl(args.profileUrl);
+    const database = getPool();
+    const client = await database.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query(
+        `UPDATE lead_assignments
+            SET status = 'connection_requested',
+                connection_requested_at = coalesce(connection_requested_at, now()),
+                resolved_linkedin_url = $3,
+                updated_at = now()
+          WHERE lead_id = $1::UUID
+            AND operator_id = $2
+            AND status = 'engaged'
+            AND connection_request_reserved_on = current_date
+        RETURNING lead_id`,
+        [args.leadId, scout.operatorId, profileUrl],
+      );
+      if (!result.rows[0]) {
+        throw new Error("No reserved connection-request slot exists for this lead.");
+      }
+      await insertEvent(
+        client,
+        args.leadId,
+        scout.operatorId,
+        "connection_requested",
+        { profileUrl },
+      );
+      await client.query("COMMIT");
+      return null;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+});
+
+export const getConnectionReviewPlan = action({
+  args: {},
+  returns: v.object({
+    shouldReview: v.boolean(),
+    cutoffDate: optionalText,
+    checkpoint: checkpointValidator,
+    pendingLeads: v.array(reviewLeadValidator),
+    contactLeads: v.array(reviewLeadValidator),
+  }),
+  handler: async (ctx): Promise<ConnectionReviewPlan> => {
+    const scout: ScoutIdentity = await ctx.runQuery(
+      internal.scoutIdentity.requireScout,
+      {},
+    );
+    const database = getPool();
+    const [history, pending, contact, checkpoint] = await Promise.all([
+      database.query(
+        `SELECT count(*)::FLOAT8 AS count
+           FROM lead_assignments
+          WHERE operator_id = $1 AND connection_requested_at IS NOT NULL`,
+        [scout.operatorId],
+      ),
+      database.query(
+        `SELECT
+           l.id::STRING AS id,
+           l.full_name,
+           coalesce(a.resolved_linkedin_url, l.linkedin_url) AS profile_url,
+           a.connection_requested_at::STRING AS requested_at
+         FROM lead_assignments AS a
+         INNER JOIN leads AS l ON l.id = a.lead_id
+         WHERE a.operator_id = $1 AND a.status = 'connection_requested'
+         ORDER BY a.connection_requested_at, a.lead_id
+         LIMIT 1000`,
+        [scout.operatorId],
+      ),
+      database.query(
+        `SELECT
+           l.id::STRING AS id,
+           l.full_name,
+           coalesce(a.resolved_linkedin_url, l.linkedin_url) AS profile_url,
+           a.connection_requested_at::STRING AS requested_at
+         FROM lead_assignments AS a
+         INNER JOIN leads AS l ON l.id = a.lead_id
+         WHERE a.operator_id = $1 AND a.status = 'accepted'
+         ORDER BY a.accepted_at, a.lead_id
+         LIMIT 1000`,
+        [scout.operatorId],
+      ),
+      database.query(
+        `SELECT
+           top_profile_url,
+           top_connected_on::STRING AS top_connected_on,
+           last_reviewed_at::STRING AS last_reviewed_at
+         FROM operator_connection_review_checkpoints
+         WHERE operator_id = $1`,
+        [scout.operatorId],
+      ),
+    ]);
+    const pendingLeads = pending.rows.map(mapReviewLead);
+    const contactLeads = contact.rows.map(mapReviewLead);
+    const checkpointRow = checkpoint.rows[0] ?? {};
+    const cutoffDate = pendingLeads
+      .map((lead) => lead.requestedAt?.slice(0, 10) ?? null)
+      .filter((value): value is string => Boolean(value))
+      .sort()[0] ?? null;
+    return {
+      shouldReview: Number(history.rows[0]?.count ?? 0) > 0,
+      cutoffDate,
+      checkpoint: {
+        topProfileUrl: nullableString(checkpointRow.top_profile_url),
+        topConnectedOn: nullableString(checkpointRow.top_connected_on),
+        lastReviewedAt: nullableString(checkpointRow.last_reviewed_at),
+      },
+      pendingLeads,
+      contactLeads,
+    };
+  },
+});
+
+export const recordConnectionReview = action({
+  args: {
+    connections: v.array(
+      v.object({
+        profileUrl: v.string(),
+        name: v.string(),
+        connectedOn: v.string(),
+      }),
+    ),
+    top: v.union(
+      v.object({ profileUrl: v.string(), connectedOn: v.string() }),
+      v.null(),
+    ),
+  },
+  returns: v.object({
+    acceptedLeads: v.array(reviewLeadValidator),
+    matched: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    if (args.connections.length > 250) {
+      throw new Error("A connection review can inspect at most 250 profiles.");
+    }
+    const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
+    const database = getPool();
+    const client = await database.connect();
+    const acceptedLeads: ReviewLead[] = [];
+    try {
+      await client.query("BEGIN");
+      const pending = await client.query(
+        `SELECT
+           l.id::STRING AS id,
+           l.full_name,
+           l.linkedin_url,
+           a.resolved_linkedin_url,
+           a.connection_requested_at::STRING AS requested_at
+         FROM lead_assignments AS a
+         INNER JOIN leads AS l ON l.id = a.lead_id
+         WHERE a.operator_id = $1 AND a.status = 'connection_requested'
+         ORDER BY a.connection_requested_at, a.lead_id
+         LIMIT 1000
+         FOR UPDATE`,
+        [scout.operatorId],
+      );
+      const byProfile = new Map<string, Record<string, unknown>>();
+      for (const row of pending.rows as Array<Record<string, unknown>>) {
+        for (const value of [row.resolved_linkedin_url, row.linkedin_url]) {
+          const normalized = tryNormalizeLinkedInProfileUrl(value);
+          if (normalized) byProfile.set(normalized, row);
+        }
+      }
+      const matchedLeadIds = new Set<string>();
+      for (const connection of args.connections) {
+        const profileUrl = normalizeLinkedInProfileUrl(connection.profileUrl);
+        const row = byProfile.get(profileUrl);
+        const leadId = row ? String(row.id) : "";
+        if (!row || matchedLeadIds.has(leadId)) continue;
+        const connectedOn = validateDateKey(connection.connectedOn);
+        await client.query(
+          `UPDATE lead_assignments
+              SET status = 'accepted',
+                  accepted_at = coalesce(accepted_at, $3::DATE::TIMESTAMPTZ),
+                  resolved_linkedin_url = $4,
+                  updated_at = now()
+            WHERE lead_id = $1::UUID AND operator_id = $2`,
+          [leadId, scout.operatorId, connectedOn, profileUrl],
+        );
+        await insertEvent(client, leadId, scout.operatorId, "accepted", {
+          profileUrl,
+          connectedOn,
+          source: "linkedin_connections_review",
+        });
+        matchedLeadIds.add(leadId);
+        acceptedLeads.push({
+          id: leadId,
+          fullName: nullableString(row.full_name),
+          profileUrl,
+          requestedAt: nullableString(row.requested_at),
+        });
+      }
+
+      if (args.top) {
+        const topProfileUrl = normalizeLinkedInProfileUrl(args.top.profileUrl);
+        const topConnectedOn = validateDateKey(args.top.connectedOn);
+        await client.query(
+          `UPSERT INTO operator_connection_review_checkpoints (
+             operator_id, top_profile_url, top_connected_on, last_reviewed_at, updated_at
+           ) VALUES ($1, $2, $3::DATE, now(), now())`,
+          [scout.operatorId, topProfileUrl, topConnectedOn],
+        );
+      } else {
+        await client.query(
+          `INSERT INTO operator_connection_review_checkpoints (
+             operator_id, top_profile_url, top_connected_on, last_reviewed_at, updated_at
+           ) VALUES ($1, NULL, NULL, now(), now())
+           ON CONFLICT (operator_id) DO UPDATE SET
+             last_reviewed_at = now(),
+             updated_at = now()`,
+          [scout.operatorId],
+        );
+      }
+      await client.query("COMMIT");
+      return { acceptedLeads, matched: acceptedLeads.length };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+});
+
+export const recordContactInfo = action({
+  args: {
+    leadId: v.string(),
+    profileUrl: v.string(),
+    email: optionalText,
+  },
+  returns: v.object({ status: v.string(), email: optionalText }),
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ status: string; email: string | null }> => {
+    const scout: ScoutIdentity = await ctx.runQuery(
+      internal.scoutIdentity.requireScout,
+      {},
+    );
+    const profileUrl = normalizeLinkedInProfileUrl(args.profileUrl);
+    const email = args.email?.trim().toLowerCase() || null;
+    if (email && !isValidEmail(email)) {
+      throw new Error("LinkedIn returned an invalid email address.");
+    }
+    const database = getPool();
+    const client = await database.connect();
+    try {
+      await client.query("BEGIN");
+      const current = await client.query(
+        `SELECT status, email
+           FROM lead_assignments
+          WHERE lead_id = $1::UUID AND operator_id = $2
+          FOR UPDATE`,
+        [args.leadId, scout.operatorId],
+      );
+      const row = current.rows[0];
+      if (!row || !["accepted", "email_collected"].includes(String(row.status))) {
+        throw new Error("Only an accepted assigned lead can expose contact info.");
+      }
+      const finalEmail = email || nullableString(row.email);
+      const nextStatus = finalEmail ? "email_collected" : "accepted";
+      await client.query(
+        `UPDATE lead_assignments
+            SET status = $3,
+                resolved_linkedin_url = $4,
+                email = coalesce($5, email),
+                email_collected_at = CASE
+                  WHEN $5 IS NOT NULL THEN coalesce(email_collected_at, now())
+                  ELSE email_collected_at
+                END,
+                updated_at = now()
+          WHERE lead_id = $1::UUID AND operator_id = $2`,
+        [args.leadId, scout.operatorId, nextStatus, profileUrl, email],
+      );
+      await insertEvent(
+        client,
+        args.leadId,
+        scout.operatorId,
+        "contact_info_checked",
+        { profileUrl, emailFound: Boolean(finalEmail) },
+      );
+      if (email && !row.email) {
+        await insertEvent(
+          client,
+          args.leadId,
+          scout.operatorId,
+          "email_collected",
+          { profileUrl, email },
+        );
+      }
+      await client.query("COMMIT");
+      return { status: nextStatus, email: finalEmail };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+});
+
 export const updateLeadStatus = action({
   args: {
     leadId: v.string(),
@@ -232,16 +847,17 @@ export const updateLeadStatus = action({
       v.literal("skipped"),
       v.literal("failed"),
     ),
-    email: v.union(v.string(), v.null()),
-    error: v.union(v.string(), v.null()),
+    email: optionalText,
+    error: optionalText,
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
-    const email = args.email?.trim().toLowerCase() || null;
-    if (args.status === "email_collected" && !isValidEmail(email)) {
-      throw new Error("Enter a valid email address.");
+    if (["connection_requested", "accepted", "email_collected"].includes(args.status)) {
+      throw new Error(
+        "This status is recorded by the quota, connection-review, or contact-info workflow.",
+      );
     }
+    const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
     const database = getPool();
     const client = await database.connect();
     try {
@@ -253,9 +869,9 @@ export const updateLeadStatus = action({
           FOR UPDATE`,
         [args.leadId, scout.operatorId],
       );
-      const current = currentResult.rows[0]?.status;
+      const current = String(currentResult.rows[0]?.status ?? "");
       if (!current) throw new Error("This lead is not assigned to you.");
-      if (!isAllowedTransition(String(current), args.status)) {
+      if (!isAllowedTransition(current, args.status)) {
         throw new Error(`Cannot move a lead from ${current} to ${args.status}.`);
       }
       await client.query(
@@ -263,24 +879,18 @@ export const updateLeadStatus = action({
             SET status = $3,
                 updated_at = now(),
                 engaged_at = CASE WHEN $3 = 'engaged' THEN coalesce(engaged_at, now()) ELSE engaged_at END,
-                connection_requested_at = CASE WHEN $3 = 'connection_requested' THEN coalesce(connection_requested_at, now()) ELSE connection_requested_at END,
-                accepted_at = CASE WHEN $3 = 'accepted' THEN coalesce(accepted_at, now()) ELSE accepted_at END,
-                email_collected_at = CASE WHEN $3 = 'email_collected' THEN coalesce(email_collected_at, now()) ELSE email_collected_at END,
-                email = CASE WHEN $3 = 'email_collected' THEN $4 ELSE email END,
-                last_error = CASE WHEN $3 = 'failed' THEN $5 ELSE last_error END,
+                last_error = CASE WHEN $3 = 'failed' THEN $4 ELSE last_error END,
                 last_error_at = CASE WHEN $3 = 'failed' THEN now() ELSE last_error_at END
           WHERE lead_id = $1::UUID AND operator_id = $2`,
         [
           args.leadId,
           scout.operatorId,
           args.status,
-          email,
           args.error?.slice(0, 1000) ?? null,
         ],
       );
       await insertEvent(client, args.leadId, scout.operatorId, args.status, {
-        email: args.status === "email_collected" ? email : undefined,
-        error: args.status === "failed" ? args.error?.slice(0, 1000) : undefined,
+        error: args.status === "failed" ? args.error?.slice(0, 1000) : null,
       });
       await client.query("COMMIT");
       return null;
@@ -296,42 +906,52 @@ export const updateLeadStatus = action({
 export const updateSettings = action({
   args: {
     postEngagements: v.number(),
-    engagementIntervalMinutes: v.number(),
-    connectionDelayMinutes: v.number(),
+    linkedinPremium: v.boolean(),
+    connectionDailyLimit: v.number(),
+    engagementDailyLimit: v.number(),
+    onboardingCompleted: v.boolean(),
     includeNote: v.boolean(),
   },
   returns: settingsValidator,
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<ScoutSettings> => {
     const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
-    const settings = {
-      postEngagements: clampInteger(args.postEngagements, 0, 10),
-      engagementIntervalMinutes: clampInteger(
-        args.engagementIntervalMinutes,
+    const connectionMaximum = args.linkedinPremium ? 40 : 20;
+    const engagementMaximum = args.linkedinPremium ? 250 : 150;
+    const settings: ScoutSettings = {
+      postEngagements: clampInteger(args.postEngagements, 1, 10),
+      linkedinPremium: args.linkedinPremium,
+      connectionDailyLimit: clampInteger(
+        args.connectionDailyLimit,
         1,
-        43_200,
+        connectionMaximum,
       ),
-      connectionDelayMinutes: clampInteger(
-        args.connectionDelayMinutes,
-        0,
-        43_200,
+      engagementDailyLimit: clampInteger(
+        args.engagementDailyLimit,
+        1,
+        engagementMaximum,
       ),
-      includeNote: args.includeNote,
+      onboardingCompleted: args.onboardingCompleted,
+      includeNote: args.linkedinPremium && args.includeNote,
     };
     const database = getPool();
     await database.query(
       `UPSERT INTO operator_settings (
          operator_id,
          post_engagements,
-         engagement_interval_minutes,
-         connection_delay_minutes,
+         linkedin_premium,
+         connection_daily_limit,
+         engagement_daily_limit,
+         onboarding_completed,
          include_note,
          updated_at
-       ) VALUES ($1, $2, $3, $4, $5, now())`,
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, now())`,
       [
         scout.operatorId,
         settings.postEngagements,
-        settings.engagementIntervalMinutes,
-        settings.connectionDelayMinutes,
+        settings.linkedinPremium,
+        settings.connectionDailyLimit,
+        settings.engagementDailyLimit,
+        settings.onboardingCompleted,
         settings.includeNote,
       ],
     );
@@ -340,16 +960,12 @@ export const updateSettings = action({
 });
 
 export const reportError = action({
-  args: {
-    leadId: v.union(v.string(), v.null()),
-    message: v.string(),
-  },
+  args: { leadId: v.union(v.string(), v.null()), message: v.string() },
   returns: v.null(),
   handler: async (ctx, args) => {
     const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
     const database = getPool();
-    const message =
-      args.message.trim().slice(0, 1000) || "Unknown extension error";
+    const message = args.message.trim().slice(0, 1000) || "Unknown extension error";
     if (args.leadId) {
       await database.query(
         `UPDATE lead_assignments
@@ -370,14 +986,8 @@ export const reportError = action({
 });
 
 export const draftComment = action({
-  args: {
-    postText: v.string(),
-  },
-  returns: v.object({
-    draft: v.string(),
-    threadId: v.string(),
-    model: v.string(),
-  }),
+  args: { postText: v.string() },
+  returns: v.object({ draft: v.string(), threadId: v.string(), model: v.string() }),
   handler: async (
     ctx,
     args,
@@ -406,7 +1016,7 @@ export const draftComment = action({
   },
 });
 
-async function getOrCreateSettings(operatorId: string) {
+async function getOrCreateSettings(operatorId: string): Promise<ScoutSettings> {
   const database = getPool();
   await database.query(
     `INSERT INTO operator_settings (operator_id)
@@ -417,21 +1027,69 @@ async function getOrCreateSettings(operatorId: string) {
   const result = await database.query(
     `SELECT
        post_engagements::FLOAT8 AS post_engagements,
-       engagement_interval_minutes::FLOAT8 AS engagement_interval_minutes,
-       connection_delay_minutes::FLOAT8 AS connection_delay_minutes,
+       linkedin_premium,
+       connection_daily_limit::FLOAT8 AS connection_daily_limit,
+       engagement_daily_limit::FLOAT8 AS engagement_daily_limit,
+       onboarding_completed,
        include_note
      FROM operator_settings
      WHERE operator_id = $1`,
     [operatorId],
   );
-  const row = result.rows[0];
+  const row = result.rows[0] ?? {};
   return {
-    postEngagements: Number(row?.post_engagements ?? 3),
-    engagementIntervalMinutes: Number(
-      row?.engagement_interval_minutes ?? 60,
-    ),
-    connectionDelayMinutes: Number(row?.connection_delay_minutes ?? 1440),
-    includeNote: Boolean(row?.include_note),
+    postEngagements: Number(row.post_engagements ?? 3),
+    linkedinPremium: Boolean(row.linkedin_premium),
+    connectionDailyLimit: Number(row.connection_daily_limit ?? 20),
+    engagementDailyLimit: Number(row.engagement_daily_limit ?? 150),
+    onboardingCompleted: Boolean(row.onboarding_completed),
+    includeNote: Boolean(row.include_note),
+  };
+}
+
+async function ensureDailyUsageRow(client: PoolClient, operatorId: string) {
+  await client.query(
+    `INSERT INTO operator_daily_usage (operator_id, usage_date)
+     VALUES ($1, current_date)
+     ON CONFLICT (operator_id, usage_date) DO NOTHING`,
+    [operatorId],
+  );
+}
+
+async function getOrCreateDailyUsage(
+  operatorId: string,
+  settings: ScoutSettings,
+): Promise<DailyUsage> {
+  const database = getPool();
+  await database.query(
+    `INSERT INTO operator_daily_usage (operator_id, usage_date)
+     VALUES ($1, current_date)
+     ON CONFLICT (operator_id, usage_date) DO NOTHING`,
+    [operatorId],
+  );
+  const result = await database.query(
+    `SELECT usage_date::STRING AS usage_date, requests_sent, likes_used
+       FROM operator_daily_usage
+      WHERE operator_id = $1 AND usage_date = current_date`,
+    [operatorId],
+  );
+  return mapDailyUsage(result.rows[0] ?? {}, settings);
+}
+
+function mapDailyUsage(
+  row: Record<string, unknown>,
+  settings: ScoutSettings,
+): DailyUsage {
+  const requestsSent = Number(row.requests_sent ?? 0);
+  const likesUsed = Number(row.likes_used ?? 0);
+  return {
+    date: String(row.usage_date ?? new Date().toISOString().slice(0, 10)),
+    requestsSent,
+    likesUsed,
+    requestLimit: settings.connectionDailyLimit,
+    engagementLimit: settings.engagementDailyLimit,
+    requestRemaining: Math.max(0, settings.connectionDailyLimit - requestsSent),
+    engagementRemaining: Math.max(0, settings.engagementDailyLimit - likesUsed),
   };
 }
 
@@ -449,7 +1107,7 @@ function emptyCounts() {
   };
 }
 
-function mapLead(row: Record<string, unknown>) {
+function mapLead(row: Record<string, unknown>): ScoutLead {
   return {
     id: String(row.id),
     fullName: nullableString(row.full_name),
@@ -460,14 +1118,21 @@ function mapLead(row: Record<string, unknown>) {
   };
 }
 
+function mapReviewLead(row: Record<string, unknown>): ReviewLead {
+  return {
+    id: String(row.id),
+    fullName: nullableString(row.full_name),
+    profileUrl: normalizeLinkedInProfileUrl(row.profile_url),
+    requestedAt: nullableString(row.requested_at),
+  };
+}
+
 function nullableString(value: unknown) {
-  return typeof value === "string" ? value : null;
+  return typeof value === "string" && value ? value : null;
 }
 
 function clampInteger(value: number, minimum: number, maximum: number) {
-  if (!Number.isFinite(value)) {
-    throw new Error("Settings must be valid numbers.");
-  }
+  if (!Number.isFinite(value)) throw new Error("Settings must be valid numbers.");
   return Math.max(minimum, Math.min(maximum, Math.trunc(value)));
 }
 
@@ -477,23 +1142,46 @@ function isValidEmail(value: string | null): value is string {
 
 function isAllowedTransition(current: string, next: string) {
   if (next === "failed" || next === "skipped") {
-    return [
-      "assigned",
-      "viewed",
-      "engaged",
-      "connected",
-      "connection_requested",
-      "accepted",
-    ].includes(current);
+    return ["assigned", "viewed", "engaged"].includes(current);
   }
-  const transitions: Record<string, string[]> = {
-    viewed: ["engaged", "connection_requested"],
-    engaged: ["connection_requested"],
-    connected: ["accepted"],
-    connection_requested: ["accepted"],
-    accepted: ["email_collected"],
-  };
-  return transitions[current]?.includes(next) ?? false;
+  return current === "viewed" && next === "engaged";
+}
+
+function normalizeLinkedInProfileUrl(value: unknown) {
+  const url = new URL(String(value ?? ""));
+  if (url.protocol !== "https:" || !/(^|\.)linkedin\.com$/i.test(url.hostname)) {
+    throw new Error("A valid HTTPS LinkedIn profile URL is required.");
+  }
+  const match = url.pathname.match(/^\/in\/([^/]+)/i);
+  if (!match) throw new Error("The LinkedIn URL must use the /in/profile format.");
+  return `https://www.linkedin.com/in/${match[1]}`;
+}
+
+function tryNormalizeLinkedInProfileUrl(value: unknown) {
+  try {
+    return normalizeLinkedInProfileUrl(value);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeLinkedInPostUrl(value: unknown) {
+  const url = new URL(String(value ?? ""));
+  if (url.protocol !== "https:" || !/(^|\.)linkedin\.com$/i.test(url.hostname)) {
+    throw new Error("A valid HTTPS LinkedIn post URL is required.");
+  }
+  if (!/^\/(feed\/update\/|posts\/)/i.test(url.pathname)) {
+    throw new Error("The post URL is not a supported LinkedIn post permalink.");
+  }
+  return `https://www.linkedin.com${url.pathname.replace(/\/+$/, "")}`;
+}
+
+function validateDateKey(value: string) {
+  const date = String(value).trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new Error("Connected-on dates must use YYYY-MM-DD.");
+  }
+  return date;
 }
 
 async function insertEvent(

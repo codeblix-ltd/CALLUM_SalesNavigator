@@ -194,8 +194,23 @@ main { max-width: 1320px; margin: 0 auto; padding: 40px 24px 76px; }
 .activity-item p { margin: 0; color: #59647a; font-size: 10px; }
 .activity-item p strong { color: #2f3951; }
 .activity-item > div > span { display: block; margin-top: 3px; color: #9199aa; font-size: 9px; }
+.activity-detail { display: block; max-width: 620px; margin-top: 5px; color: #69748b; font-size: 9px; line-height: 1.45; }
+.activity-link { display: inline-flex; align-items: center; gap: 3px; margin-top: 5px; color: #5d47c5; font-size: 9px; font-weight: 800; text-decoration: none; }
 .activity-item time { color: #9aa2b1; font-size: 8px; }
 .activity-empty { min-height: 180px; display: flex; align-items: center; justify-content: center; gap: 9px; color: #969faf; font-size: 10px; }
+.post-history-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-top: 20px; padding-top: 16px; border-top: 1px solid #e5e8f0; }
+.post-history-heading strong { color: #303950; font-size: 11px; }
+.post-history-heading span { color: #929aab; font-size: 8px; }
+.post-history { display: grid; gap: 9px; margin-top: 10px; }
+.post-history article { padding: 11px; border: 1px solid #e1e5ee; border-radius: 10px; background: #fafbfe; }
+.post-history article > div:first-child { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.post-history article strong { color: #303950; font-size: 10px; }
+.post-history article span { color: #8c95a8; font-size: 8px; }
+.post-history article p { margin: 7px 0; color: #5e687d; font-size: 9px; line-height: 1.45; }
+.post-history-links { display: flex; align-items: center; gap: 10px; }
+.post-history-links a { display: inline-flex; align-items: center; gap: 3px; color: #5d47c5; font-size: 8px; font-weight: 800; text-decoration: none; }
+.post-history-links time { margin-left: auto; color: #969eae; font-size: 8px; }
+.post-history-empty { margin-top: 10px; padding: 12px; color: #929aab; background: #fafbfe; border: 1px dashed #dfe3ec; border-radius: 10px; font-size: 9px; text-align: center; }
 .inventory-content { margin-top: 25px; }
 .inventory-total { display: grid; gap: 2px; }
 .inventory-total strong { color: #292f4a; font: 800 32px "Manrope", sans-serif; letter-spacing: -1px; }

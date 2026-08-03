@@ -124,6 +124,21 @@ input:focus, select:focus, textarea:focus {
 
 .welcome-row { display: flex; align-items: center; justify-content: space-between; }
 .welcome-row h1 { margin-bottom: 12px; text-transform: capitalize; }
+.onboarding-card { margin-top: 2px; }
+.daily-usage {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 0 0 9px;
+}
+.daily-usage > div {
+  padding: 10px 12px;
+  background: #eeebfb;
+  border: 1px solid #d9d1f6;
+  border-radius: 11px;
+}
+.daily-usage span { display: block; color: #746995; font-size: 9px; font-weight: 750; }
+.daily-usage strong { display: block; margin-top: 3px; color: #4f37b2; font-size: 15px; }
 .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .metric {
   min-height: 77px;
@@ -142,14 +157,26 @@ input:focus, select:focus, textarea:focus {
 .metric-fresh span, .metric-fresh strong { color: white; }
 
 .automation-launch { margin-top: 10px; }
+.automation-launch > .primary { width: 100%; min-height: 42px; }
 .automation-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .automation-title-row h2 { margin-bottom: 3px; }
 .automation-controls { margin-top: 7px; }
 .automation-controls .primary { width: 100%; min-height: 42px; }
 
-.utility-row { display: flex; justify-content: space-between; margin: 8px 1px; }
+.utility-row { display: flex; justify-content: flex-end; margin: 8px 1px; }
 .settings-card { margin-top: 8px; }
-.duration-field { display: grid; grid-template-columns: 1fr 105px; align-items: end; gap: 8px; }
+.recommended-card {
+  display: grid;
+  gap: 3px;
+  padding: 10px 11px;
+  color: #5b4a9f;
+  background: #f1edff;
+  border: 1px solid #d9d0fb;
+  border-radius: 10px;
+}
+.recommended-card strong { font-size: 9px; letter-spacing: .45px; text-transform: uppercase; }
+.recommended-card span { color: #756c91; font-size: 10px; line-height: 1.35; }
+.compact-recommendation { padding: 9px 10px; }
 .check-row { display: flex; align-items: center; gap: 8px; }
 .check-row input { width: 16px; min-height: 16px; }
 .premium-note-gate {

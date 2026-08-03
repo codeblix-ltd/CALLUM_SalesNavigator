@@ -3,17 +3,22 @@ importScripts("convex-client.js");
 
 const REFRESH_ALARM = "refresh-lead-total";
 const PREMIUM_URL = "https://www.linkedin.com/premium/my-premium/";
+const CONNECTIONS_URL =
+  "https://www.linkedin.com/mynetwork/invite-connect/connections/";
 const DEFAULT_INVITATION_NOTE =
   "Hi, I came across your profile and would be glad to connect and keep in touch.";
 
 let premiumCheckPromise = null;
+let workflowPromise = null;
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create(REFRESH_ALARM, { periodInMinutes: 30 });
+  void initializeExtensionDefaults();
   refreshBadgeInBackground();
 });
 
 chrome.runtime.onStartup.addListener(() => {
+  void initializeExtensionDefaults();
   refreshBadgeInBackground();
 });
 
@@ -25,56 +30,226 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "REFRESH_SCOUT_DASHBOARD") {
     updateBadge()
       .then((dashboard) => sendResponse({ ok: true, dashboard }))
-      .catch((error) => sendResponse({ ok: false, error: String(error) }));
+      .catch((error) => sendResponse({ ok: false, error: cleanError(error) }));
     return true;
   }
 
   if (message?.type === "START_AUTO_LEAD") {
-    runAutoLeadWorkflow(message.leadId)
+    startDailyWorkflow(message.leadId)
       .then((result) => sendResponse({ ok: true, result }))
-      .catch((error) => sendResponse({ ok: false, error: String(error) }));
+      .catch((error) => sendResponse({ ok: false, error: cleanError(error) }));
     return true;
   }
 
   if (message?.type === "CHECK_LINKEDIN_PREMIUM") {
     verifyLinkedInPremium()
       .then((result) => sendResponse({ ok: true, ...result }))
-      .catch((error) => sendResponse({ ok: false, error: String(error) }));
+      .catch((error) => sendResponse({ ok: false, error: cleanError(error) }));
     return true;
   }
 
   return false;
 });
 
-async function runAutoLeadWorkflow(specificLeadId) {
-  let lead = null;
-  let workflowTabId = null;
-  try {
-    const dashboard = await ScoutApi.authenticatedAction("scouts:getDashboard");
-    let includeNote = Boolean(dashboard.settings?.includeNote);
-    let noteDisabledForEligibility = false;
+async function initializeExtensionDefaults() {
+  const current = await chrome.storage.local.get([
+    "validateBeforeCommenting",
+    "invitationNote",
+    "linkedInPremium",
+  ]);
+  const defaults = {};
+  if (current.validateBeforeCommenting === undefined) {
+    defaults.validateBeforeCommenting = true;
+  }
+  if (!current.invitationNote) defaults.invitationNote = DEFAULT_INVITATION_NOTE;
+  if (current.linkedInPremium === undefined) defaults.linkedInPremium = false;
+  if (Object.keys(defaults).length > 0) await chrome.storage.local.set(defaults);
+}
 
+function startDailyWorkflow(specificLeadId) {
+  if (workflowPromise) return workflowPromise;
+  workflowPromise = runDailyWorkflow(specificLeadId).finally(() => {
+    workflowPromise = null;
+  });
+  return workflowPromise;
+}
+
+async function runDailyWorkflow(specificLeadId) {
+  let dashboard = await ScoutApi.authenticatedAction("scouts:getDashboard");
+  if (!dashboard.settings?.onboardingCompleted) {
+    throw new Error("Complete the extension setup before running automation.");
+  }
+
+  const review = await reviewAcceptedConnections(dashboard);
+  dashboard = await ScoutApi.authenticatedAction("scouts:getDashboard");
+  const availableRequestSlots = specificLeadId
+    ? Math.min(1, dashboard.usage.requestRemaining)
+    : dashboard.usage.requestRemaining;
+  const results = [];
+
+  for (let index = 0; index < availableRequestSlots; index++) {
+    if (dashboard.usage.engagementRemaining <= 0) break;
+    let lead;
+    if (specificLeadId && index === 0) {
+      lead = dashboard.activeLead;
+      if (!lead || lead.id !== specificLeadId) {
+        throw new Error(
+          "The selected lead is no longer active. Refresh the extension and try again.",
+        );
+      }
+    } else {
+      lead = await ScoutApi.authenticatedAction("scouts:claimNextLead");
+    }
+    if (!lead?.linkedinUrl) break;
+
+    try {
+      results.push(
+        await runLeadWorkflow(lead, dashboard.settings, dashboard.usage),
+      );
+    } catch (error) {
+      const message = cleanError(error);
+      if (/no recent posts|no supported post permalink/i.test(message)) {
+        await ScoutApi.authenticatedAction("scouts:updateLeadStatus", {
+          leadId: lead.id,
+          status: "skipped",
+          email: null,
+          error: message,
+        }).catch(() => {});
+      } else {
+        await ScoutApi.authenticatedAction("scouts:reportError", {
+          leadId: lead.id,
+          message,
+        }).catch(() => {});
+      }
+      throw new Error(message);
+    }
+    dashboard = await ScoutApi.authenticatedAction("scouts:getDashboard");
+    if (specificLeadId) break;
+  }
+
+  await updateBadge();
+  return {
+    reviewedConnections: review.reviewed,
+    acceptedMatched: review.acceptedMatched,
+    contactsChecked: review.contactsChecked,
+    emailsCollected: review.emailsCollected,
+    requestsSent: results.length,
+    leads: results,
+    requestLimitReached: results.length >= availableRequestSlots,
+  };
+}
+
+async function reviewAcceptedConnections(dashboard) {
+  const empty = {
+    reviewed: false,
+    acceptedMatched: 0,
+    contactsChecked: 0,
+    emailsCollected: 0,
+  };
+  if (!dashboard.hasSentConnectionRequest) return empty;
+
+  const plan = await ScoutApi.authenticatedAction(
+    "scouts:getConnectionReviewPlan",
+  );
+  if (!plan.shouldReview) return empty;
+
+  const tab = await chrome.tabs.create({ url: CONNECTIONS_URL, active: true });
+  if (!tab?.id) throw new Error("Unable to open LinkedIn connections.");
+  let reviewResult;
+  try {
+    await waitForTabComplete(tab.id);
+    await waitForContentScript(tab.id);
+    const scan = await sendMessageToTab(tab.id, {
+      type: "SCAN_RECENT_CONNECTIONS",
+      options: {
+        checkpoint: plan.checkpoint,
+        cutoffDate: plan.cutoffDate,
+        maxProfiles: 250,
+      },
+    });
+    if (!scan?.ok) {
+      throw new Error(scan?.error || "LinkedIn connection review failed.");
+    }
+    reviewResult = await ScoutApi.authenticatedAction(
+      "scouts:recordConnectionReview",
+      {
+        connections: scan.result.connections,
+        top: scan.result.top,
+      },
+    );
+  } finally {
+    await chrome.tabs.remove(tab.id).catch(() => {});
+  }
+
+  const contactLeads = uniqueLeads([
+    ...(plan.contactLeads || []),
+    ...(reviewResult.acceptedLeads || []),
+  ]);
+  let contactsChecked = 0;
+  let emailsCollected = 0;
+  for (const lead of contactLeads) {
+    const result = await collectAcceptedContact(lead).catch(async (error) => {
+      await ScoutApi.authenticatedAction("scouts:reportError", {
+        leadId: lead.id,
+        message: cleanError(error),
+      }).catch(() => {});
+      return null;
+    });
+    if (!result) continue;
+    contactsChecked += 1;
+    if (result.email) emailsCollected += 1;
+  }
+  return {
+    reviewed: true,
+    acceptedMatched: Number(reviewResult.matched || 0),
+    contactsChecked,
+    emailsCollected,
+  };
+}
+
+async function collectAcceptedContact(lead) {
+  const requestedProfileUrl = normalizeLinkedInProfileUrl(lead.profileUrl);
+  const tab = await chrome.tabs.create({ url: requestedProfileUrl, active: true });
+  if (!tab?.id) throw new Error("Unable to open an accepted LinkedIn profile.");
+  try {
+    await waitForTabComplete(tab.id);
+    const profileUrl = await waitForResolvedLinkedInProfileUrl(
+      tab.id,
+      requestedProfileUrl,
+    );
+    await waitForContentScript(tab.id);
+    const contact = await sendMessageToTab(tab.id, {
+      type: "EXTRACT_CONTACT_INFO",
+      options: { expectedProfileUrl: profileUrl },
+    });
+    if (!contact?.ok) {
+      throw new Error(contact?.error || "Unable to read LinkedIn contact info.");
+    }
+    return ScoutApi.authenticatedAction("scouts:recordContactInfo", {
+      leadId: lead.id,
+      profileUrl,
+      email: contact.result.email || null,
+    });
+  } finally {
+    await chrome.tabs.remove(tab.id).catch(() => {});
+  }
+}
+
+async function runLeadWorkflow(lead, settings, usage) {
+  let workflowTabId = null;
+  let connectionReserved = false;
+  let requestSubmitted = false;
+  let workflowCompleted = false;
+  try {
+    let includeNote = Boolean(settings.includeNote && settings.linkedinPremium);
+    let noteDisabledForEligibility = false;
     if (includeNote) {
       const eligibility = await verifyLinkedInPremium();
       if (!eligibility.premium) {
         includeNote = false;
         noteDisabledForEligibility = true;
-        await disableInvitationNoteSetting(dashboard.settings).catch(() => {});
-        dashboard.settings.includeNote = false;
+        await disableInvitationNoteSetting(settings).catch(() => {});
       }
-    }
-
-    if (specificLeadId) {
-      lead = dashboard.activeLead;
-      if (!lead || lead.id !== specificLeadId) {
-        throw new Error("The selected lead is no longer the active Scout lead. Refresh the extension and try again.");
-      }
-    } else {
-      lead = await ScoutApi.authenticatedAction("scouts:claimNextLead");
-    }
-
-    if (!lead || !lead.linkedinUrl) {
-      throw new Error("No available lead with a valid LinkedIn URL found.");
     }
 
     const requestedProfileUrl = normalizeLinkedInProfileUrl(lead.linkedinUrl);
@@ -82,12 +257,16 @@ async function runAutoLeadWorkflow(specificLeadId) {
       "validateBeforeCommenting",
       "invitationNote",
     ]);
+    const postEngagements = Math.min(
+      clampInteger(settings.postEngagements ?? 3, 1, 10),
+      clampInteger(usage.engagementRemaining ?? 0, 0, 250),
+    );
+    if (postEngagements < 1) {
+      throw new Error("Today's LinkedIn engagement limit has been reached.");
+    }
     const automationOptions = {
-      postEngagements: clampInteger(
-        dashboard.settings?.postEngagements ?? 2,
-        0,
-        10,
-      ),
+      leadId: lead.id,
+      postEngagements,
       validateBeforeCommenting:
         localSettings.validateBeforeCommenting ?? true,
       includeNote,
@@ -98,64 +277,35 @@ async function runAutoLeadWorkflow(specificLeadId) {
         .slice(0, 300),
     };
 
-    // Lead imports can contain LinkedIn's opaque /in/AC... member URL. Open it
-    // first so LinkedIn can redirect to the public vanity URL; appending the
-    // activity route before that redirect produces a non-activity profile page.
-    const tab = await chrome.tabs.create({
-      url: requestedProfileUrl,
-      active: true,
-    });
+    const tab = await chrome.tabs.create({ url: requestedProfileUrl, active: true });
     workflowTabId = tab.id;
     await waitForTabComplete(tab.id);
     const profileUrl = await waitForResolvedLinkedInProfileUrl(
       tab.id,
       requestedProfileUrl,
     );
-    let engagementResponse = {
-      ok: true,
-      result: { engagedCount: 0, totalProcessed: 0, skipped: true },
-    };
+    await ScoutApi.authenticatedAction("scouts:recordProfileVisit", {
+      leadId: lead.id,
+      resolvedLinkedinUrl: profileUrl,
+    });
 
-    if (automationOptions.postEngagements > 0) {
-      const recentActivityUrl = `${profileUrl}/recent-activity/all/`;
-
-      // Step 1 from doc.md: open recent activity, then Like, expand, read,
-      // draft, optionally validate, and comment on the configured post count.
-      await chrome.tabs.update(tab.id, { url: recentActivityUrl });
-      await waitForTabComplete(tab.id);
-      await waitForContentScript(tab.id);
-      engagementResponse = await sendMessageToTab(tab.id, {
-        type: "EXECUTE_POST_ENGAGEMENT",
-        options: automationOptions,
-      });
-
-      if (!engagementResponse?.ok) {
-        throw new Error(
-          engagementResponse?.error ||
-            "Post engagement failed on the recent activity page.",
-        );
-      }
-
-      // Mark engaged only after the post workflow completes successfully.
-      await ScoutApi.authenticatedAction("scouts:updateLeadStatus", {
-        leadId: lead.id,
-        status: "engaged",
-        email: null,
-        error: null,
-      });
-
-      await chrome.tabs.update(tab.id, { url: profileUrl });
-      await waitForTabComplete(tab.id);
-    } else {
-      await waitForContentScript(tab.id);
-      await sendMessageToTab(tab.id, {
-        type: "SHOW_AUTOMATION_STATUS",
-        status: "Post engagement is disabled (0); continuing to connection.",
-      });
+    const recentActivityUrl = `${profileUrl}/recent-activity/all/`;
+    await chrome.tabs.update(tab.id, { url: recentActivityUrl });
+    await waitForTabComplete(tab.id);
+    await waitForContentScript(tab.id);
+    const engagementResponse = await sendMessageToTab(tab.id, {
+      type: "EXECUTE_POST_ENGAGEMENT",
+      options: { ...automationOptions, profileUrl },
+    });
+    if (!engagementResponse?.ok) {
+      throw new Error(
+        engagementResponse?.error ||
+          "Post engagement failed on the recent activity page.",
+      );
     }
 
-    // Step 2 from doc.md: return to the profile root and use More -> Connect,
-    // adding the configured note only for a verified Premium account.
+    await chrome.tabs.update(tab.id, { url: profileUrl });
+    await waitForTabComplete(tab.id);
     await waitForContentScript(tab.id);
     if (noteDisabledForEligibility) {
       await sendMessageToTab(tab.id, {
@@ -164,52 +314,65 @@ async function runAutoLeadWorkflow(specificLeadId) {
           "LinkedIn Premium was not detected. Continuing without an invitation note.",
       });
     }
+
+    await ScoutApi.authenticatedAction("scouts:reserveConnectionRequest", {
+      leadId: lead.id,
+    });
+    connectionReserved = true;
     const connectResponse = await sendMessageToTab(tab.id, {
       type: "EXECUTE_CONNECTION_REQUEST",
       options: {
         expectedProfileName: lead.fullName,
         expectedProfileUrl: profileUrl,
-        includeNote: automationOptions.includeNote,
+        includeNote,
         invitationNote: automationOptions.invitationNote,
       },
     });
-
     if (!connectResponse?.ok) {
       throw new Error(
-        connectResponse?.error ||
-          "Connection request failed on the profile page.",
+        connectResponse?.error || "Connection request failed on the profile page.",
       );
     }
-
-    await ScoutApi.authenticatedAction("scouts:updateLeadStatus", {
+    requestSubmitted = true;
+    await ScoutApi.authenticatedAction("scouts:completeConnectionRequest", {
       leadId: lead.id,
-      status: "connection_requested",
-      email: null,
-      error: null,
+      profileUrl,
     });
-
-    await updateBadge();
+    workflowCompleted = true;
     return {
       leadId: lead.id,
       leadName: lead.fullName,
       status: "connection_requested",
+      profileUrl,
       engagedCount: engagementResponse.result?.engagedCount ?? 0,
-      engagementSkipped: automationOptions.postEngagements === 0,
     };
   } catch (error) {
     const message = cleanError(error);
+    if (connectionReserved && !requestSubmitted) {
+      await ScoutApi.authenticatedAction("scouts:releaseConnectionRequest", {
+        leadId: lead.id,
+      }).catch(() => {});
+    }
     if (workflowTabId) {
       await sendMessageToTab(workflowTabId, {
         type: "SHOW_AUTOMATION_ERROR",
         error: message,
       }).catch(() => {});
     }
-    await ScoutApi.authenticatedAction("scouts:reportError", {
-      leadId: lead?.id ?? null,
-      message,
-    }).catch(() => {});
     throw new Error(message);
+  } finally {
+    if (workflowCompleted && workflowTabId) {
+      await chrome.tabs.remove(workflowTabId).catch(() => {});
+    }
   }
+}
+
+function uniqueLeads(leads) {
+  const unique = new Map();
+  for (const lead of leads) {
+    if (lead?.id && !unique.has(lead.id)) unique.set(lead.id, lead);
+  }
+  return [...unique.values()];
 }
 
 function sendMessageToTab(tabId, message) {
@@ -226,19 +389,15 @@ function sendMessageToTab(tabId, message) {
 
 function verifyLinkedInPremium() {
   if (premiumCheckPromise) return premiumCheckPromise;
-  premiumCheckPromise = inspectLinkedInPremium()
-    .finally(() => {
-      premiumCheckPromise = null;
-    });
+  premiumCheckPromise = inspectLinkedInPremium().finally(() => {
+    premiumCheckPromise = null;
+  });
   return premiumCheckPromise;
 }
 
 async function inspectLinkedInPremium() {
   const tab = await chrome.tabs.create({ url: PREMIUM_URL, active: false });
-  if (!tab?.id) {
-    throw new Error("Unable to open LinkedIn for the Premium check.");
-  }
-
+  if (!tab?.id) throw new Error("Unable to open LinkedIn for the Premium check.");
   try {
     const finalUrl = await waitForStableTabUrl(tab.id);
     const premium = isLinkedInPremiumUrl(finalUrl);
@@ -256,7 +415,6 @@ async function waitForStableTabUrl(tabId, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
   let lastUrl = "";
   let stableSince = Date.now();
-
   while (Date.now() < deadline) {
     const tab = await chrome.tabs.get(tabId);
     const currentUrl = tab.pendingUrl || tab.url || "";
@@ -264,16 +422,11 @@ async function waitForStableTabUrl(tabId, timeoutMs = 30_000) {
       lastUrl = currentUrl;
       stableSince = Date.now();
     }
-    if (
-      lastUrl &&
-      tab.status === "complete" &&
-      Date.now() - stableSince >= 2_500
-    ) {
+    if (lastUrl && tab.status === "complete" && Date.now() - stableSince >= 2_500) {
       return lastUrl;
     }
     await sleep(250);
   }
-
   if (lastUrl) return lastUrl;
   throw new Error("LinkedIn did not complete the Premium eligibility check.");
 }
@@ -292,11 +445,11 @@ function isLinkedInPremiumUrl(value) {
 
 async function disableInvitationNoteSetting(settings) {
   await ScoutApi.authenticatedAction("scouts:updateSettings", {
-    postEngagements: Number(settings?.postEngagements ?? 2),
-    engagementIntervalMinutes: Number(
-      settings?.engagementIntervalMinutes ?? 60,
-    ),
-    connectionDelayMinutes: Number(settings?.connectionDelayMinutes ?? 0),
+    postEngagements: Number(settings.postEngagements ?? 3),
+    linkedinPremium: Boolean(settings.linkedinPremium),
+    connectionDailyLimit: Number(settings.connectionDailyLimit ?? 20),
+    engagementDailyLimit: Number(settings.engagementDailyLimit ?? 150),
+    onboardingCompleted: Boolean(settings.onboardingCompleted),
     includeNote: false,
   });
 }
@@ -313,17 +466,13 @@ function waitForTabComplete(tabId) {
       else resolve();
     };
     const listener = (id, changeInfo) => {
-      if (id === tabId && changeInfo.status === "complete") {
-        finish();
-      }
+      if (id === tabId && changeInfo.status === "complete") finish();
     };
     chrome.tabs.onUpdated.addListener(listener);
-
     const timeout = setTimeout(
       () => finish(new Error("LinkedIn did not finish loading within 45 seconds.")),
       45_000,
     );
-
     chrome.tabs
       .get(tabId)
       .then((tab) => {
@@ -358,7 +507,6 @@ async function waitForResolvedLinkedInProfileUrl(
   const deadline = Date.now() + timeoutMs;
   let lastProfileUrl = "";
   let lastUrlChangeAt = Date.now();
-
   while (Date.now() < deadline) {
     const tab = await chrome.tabs.get(tabId);
     const currentProfileUrl = tryNormalizeLinkedInProfileUrl(tab.url);
@@ -366,16 +514,12 @@ async function waitForResolvedLinkedInProfileUrl(
       lastProfileUrl = currentProfileUrl;
       lastUrlChangeAt = Date.now();
     }
-
     if (currentProfileUrl && Date.now() - lastUrlChangeAt >= 1_000) {
       const currentSlug = linkedInProfileSlug(currentProfileUrl);
-      if (!mustRedirect || currentSlug !== requestedSlug) {
-        return currentProfileUrl;
-      }
+      if (!mustRedirect || currentSlug !== requestedSlug) return currentProfileUrl;
     }
     await sleep(250);
   }
-
   if (lastProfileUrl && !mustRedirect) return lastProfileUrl;
   throw new Error(
     "LinkedIn did not redirect the imported member URL to a public profile URL within 30 seconds.",
@@ -389,18 +533,11 @@ function normalizeLinkedInProfileUrl(value) {
   } catch {
     throw new Error("The lead has an invalid LinkedIn profile URL.");
   }
-
-  if (
-    url.protocol !== "https:" ||
-    !/(^|\.)linkedin\.com$/i.test(url.hostname)
-  ) {
+  if (url.protocol !== "https:" || !/(^|\.)linkedin\.com$/i.test(url.hostname)) {
     throw new Error("The lead URL must be an HTTPS LinkedIn profile URL.");
   }
-
   const match = url.pathname.match(/^\/in\/([^/]+)/i);
-  if (!match) {
-    throw new Error("The lead URL must use the linkedin.com/in/profile format.");
-  }
+  if (!match) throw new Error("The lead URL must use the linkedin.com/in/profile format.");
   return `https://www.linkedin.com/in/${match[1]}`;
 }
 
@@ -435,7 +572,7 @@ function cleanError(error) {
 }
 
 function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function updateBadge() {
@@ -450,9 +587,7 @@ async function updateBadge() {
     scoutDashboardUpdatedAt: Date.now(),
   });
   await chrome.action.setBadgeBackgroundColor({ color: "#6347D8" });
-  await chrome.action.setBadgeText({
-    text: compactNumber(dashboard.counts.fresh),
-  });
+  await chrome.action.setBadgeText({ text: compactNumber(dashboard.counts.fresh) });
   return dashboard;
 }
 

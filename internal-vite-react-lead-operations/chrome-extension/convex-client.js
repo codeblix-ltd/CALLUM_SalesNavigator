@@ -143,7 +143,7 @@ const ScoutApi = (() => {
     }
     const headers = {
       "Content-Type": "application/json",
-      "Convex-Client": "callum-scout-extension-0.5.0",
+      "Convex-Client": "callum-scout-extension-0.6.0",
     };
     if (token) headers.Authorization = `Bearer ${token}`;
     const response = await fetch(`${convexUrl}/api/action`, {

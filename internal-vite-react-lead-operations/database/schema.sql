@@ -123,6 +123,8 @@ CREATE TABLE IF NOT EXISTS lead_assignments (
   connection_requested_at TIMESTAMPTZ NULL,
   accepted_at TIMESTAMPTZ NULL,
   email_collected_at TIMESTAMPTZ NULL,
+  resolved_linkedin_url STRING NULL,
+  connection_request_reserved_on DATE NULL,
   email STRING NULL,
   last_error STRING NULL,
   last_error_at TIMESTAMPTZ NULL
@@ -134,6 +136,8 @@ ALTER TABLE lead_assignments
   ADD COLUMN IF NOT EXISTS connection_requested_at TIMESTAMPTZ NULL,
   ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ NULL,
   ADD COLUMN IF NOT EXISTS email_collected_at TIMESTAMPTZ NULL,
+  ADD COLUMN IF NOT EXISTS resolved_linkedin_url STRING NULL,
+  ADD COLUMN IF NOT EXISTS connection_request_reserved_on DATE NULL,
   ADD COLUMN IF NOT EXISTS email STRING NULL,
   ADD COLUMN IF NOT EXISTS last_error_at TIMESTAMPTZ NULL;
 
@@ -160,21 +164,98 @@ CREATE INDEX IF NOT EXISTS lead_assignments_by_operator_id_and_status
 CREATE TABLE IF NOT EXISTS operator_settings (
   operator_id STRING PRIMARY KEY,
   post_engagements INT4 NOT NULL DEFAULT 3
-    CHECK (post_engagements BETWEEN 0 AND 10),
-  engagement_interval_minutes INT8 NOT NULL DEFAULT 60
-    CHECK (engagement_interval_minutes BETWEEN 1 AND 43200),
-  connection_delay_minutes INT8 NOT NULL DEFAULT 1440
-    CHECK (connection_delay_minutes BETWEEN 0 AND 43200),
+    CHECK (post_engagements BETWEEN 1 AND 10),
+  linkedin_premium BOOL NOT NULL DEFAULT false,
+  connection_daily_limit INT4 NOT NULL DEFAULT 20
+    CHECK (connection_daily_limit BETWEEN 1 AND 40),
+  engagement_daily_limit INT4 NOT NULL DEFAULT 150
+    CHECK (engagement_daily_limit BETWEEN 1 AND 250),
+  onboarding_completed BOOL NOT NULL DEFAULT false,
   include_note BOOL NOT NULL DEFAULT false,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 ALTER TABLE operator_settings
+  ADD COLUMN IF NOT EXISTS linkedin_premium BOOL NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS connection_daily_limit INT4 NOT NULL DEFAULT 20,
+  ADD COLUMN IF NOT EXISTS engagement_daily_limit INT4 NOT NULL DEFAULT 150,
+  ADD COLUMN IF NOT EXISTS onboarding_completed BOOL NOT NULL DEFAULT false;
+
+-- Review/connection intervals never controlled the extension execution flow.
+-- Daily, per-scout counters now provide the pacing contract instead.
+ALTER TABLE operator_settings
+  DROP COLUMN IF EXISTS engagement_interval_minutes,
+  DROP COLUMN IF EXISTS connection_delay_minutes;
+
+ALTER TABLE operator_settings
   DROP CONSTRAINT IF EXISTS check_post_engagements;
+
+UPDATE operator_settings
+   SET post_engagements = 1
+ WHERE post_engagements < 1;
 
 ALTER TABLE operator_settings
   ADD CONSTRAINT check_post_engagements
-  CHECK (post_engagements BETWEEN 0 AND 10);
+  CHECK (post_engagements BETWEEN 1 AND 10);
+
+ALTER TABLE operator_settings
+  DROP CONSTRAINT IF EXISTS check_connection_daily_limit;
+
+ALTER TABLE operator_settings
+  ADD CONSTRAINT check_connection_daily_limit
+  CHECK (
+    connection_daily_limit BETWEEN 1 AND
+      CASE WHEN linkedin_premium THEN 40 ELSE 20 END
+  );
+
+ALTER TABLE operator_settings
+  DROP CONSTRAINT IF EXISTS check_engagement_daily_limit;
+
+ALTER TABLE operator_settings
+  ADD CONSTRAINT check_engagement_daily_limit
+  CHECK (
+    engagement_daily_limit BETWEEN 1 AND
+      CASE WHEN linkedin_premium THEN 250 ELSE 150 END
+  );
+
+CREATE TABLE IF NOT EXISTS operator_daily_usage (
+  operator_id STRING NOT NULL,
+  usage_date DATE NOT NULL,
+  requests_sent INT4 NOT NULL DEFAULT 0 CHECK (requests_sent >= 0),
+  likes_used INT4 NOT NULL DEFAULT 0 CHECK (likes_used >= 0),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (operator_id, usage_date)
+);
+
+CREATE TABLE IF NOT EXISTS operator_connection_review_checkpoints (
+  operator_id STRING PRIMARY KEY,
+  top_profile_url STRING NULL,
+  top_connected_on DATE NULL,
+  last_reviewed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS lead_post_activities (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  lead_id UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  operator_id STRING NOT NULL,
+  profile_url STRING NOT NULL,
+  post_url STRING NOT NULL,
+  post_text STRING NOT NULL,
+  comment_text STRING NOT NULL,
+  liked BOOL NOT NULL DEFAULT false,
+  liked_at TIMESTAMPTZ NULL,
+  commented_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (operator_id, lead_id, post_url)
+);
+
+CREATE INDEX IF NOT EXISTS lead_post_activities_by_operator_id_and_commented_at
+  ON lead_post_activities (operator_id, commented_at DESC);
+
+CREATE INDEX IF NOT EXISTS lead_post_activities_by_lead_id_and_commented_at
+  ON lead_post_activities (lead_id, commented_at DESC);
 
 CREATE TABLE IF NOT EXISTS lead_assignment_events (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

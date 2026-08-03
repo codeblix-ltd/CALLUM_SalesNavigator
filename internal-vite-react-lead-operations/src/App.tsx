@@ -97,6 +97,19 @@ type RecentActivity = {
   operatorId: string;
   eventType: string;
   leadName: string | null;
+  detail: string | null;
+  url: string | null;
+  at: string;
+};
+
+type PostActivity = {
+  id: string;
+  operatorId: string;
+  leadName: string | null;
+  profileUrl: string;
+  postUrl: string;
+  commentText: string;
+  liked: boolean;
   at: string;
 };
 
@@ -109,6 +122,7 @@ type Analytics = {
   scouts: ScoutMetrics[];
   trend: TrendPoint[];
   recentActivity: RecentActivity[];
+  postActivities: PostActivity[];
 };
 
 type Lead = {
@@ -415,6 +429,9 @@ function Dashboard({ adminName }: { adminName: string }) {
   const scoutActivity = analytics?.recentActivity.filter(
     (item) => !selectedScout || item.operatorId === selectedScout,
   ) ?? [];
+  const scoutPosts = analytics?.postActivities.filter(
+    (item) => !selectedScout || item.operatorId === selectedScout,
+  ) ?? [];
   const currentPage = cursorHistory.length + 1;
   const activeNicheCount = useMemo(
     () => stats?.niches.find((item) => item.name === niche)?.count ?? stats?.total ?? 0,
@@ -532,6 +549,7 @@ function Dashboard({ adminName }: { adminName: string }) {
             setSelectedScout={setSelectedScout}
             activeScout={activeScout}
             scoutActivity={scoutActivity}
+            scoutPosts={scoutPosts}
           />
         ) : (
           <LeadDirectory
@@ -589,6 +607,7 @@ function Overview({
   setSelectedScout,
   activeScout,
   scoutActivity,
+  scoutPosts,
 }: {
   analytics: Analytics | null;
   loading: boolean;
@@ -603,6 +622,7 @@ function Overview({
   setSelectedScout: (value: string | null) => void;
   activeScout: ScoutMetrics | null;
   scoutActivity: RecentActivity[];
+  scoutPosts: PostActivity[];
 }) {
   if (!analytics && loading) {
     return <div className="overview-loading"><RefreshCw size={22} className="spin" /> Building the team overview…</div>;
@@ -722,6 +742,11 @@ function Overview({
             icon={<Activity size={18} />}
           />
           <ActivityFeed items={scoutActivity.slice(0, 12)} />
+          <div className="post-history-heading">
+            <strong>Saved LinkedIn posts & comments</strong>
+            <span>{scoutPosts.length} shown in this period</span>
+          </div>
+          <PostActivityFeed items={scoutPosts} />
         </article>
         <article className="panel inventory-panel">
           <PanelHeading
@@ -871,9 +896,38 @@ function ActivityFeed({ items }: { items: RecentActivity[] }) {
       {items.map((item) => (
         <div className="activity-item" key={item.id}>
           <span className={`activity-mark ${activityTone(item.eventType)}`}>{activityIcon(item.eventType)}</span>
-          <div><p><strong>{item.operatorId}</strong> {activityLabel(item.eventType)}</p><span>{item.leadName || "Unnamed lead"}</span></div>
+          <div>
+            <p><strong>{item.operatorId}</strong> {activityLabel(item.eventType)}</p>
+            <span>{item.leadName || "Unnamed lead"}</span>
+            {item.detail && <small className="activity-detail">“{item.detail}”</small>}
+            {item.url && <a className="activity-link" href={item.url} target="_blank" rel="noreferrer">Open LinkedIn <ExternalLink size={11} /></a>}
+          </div>
           <time dateTime={item.at}>{formatRelativeTime(item.at)}</time>
         </div>
+      ))}
+    </div>
+  );
+}
+
+function PostActivityFeed({ items }: { items: PostActivity[] }) {
+  if (items.length === 0) {
+    return <div className="post-history-empty">No LinkedIn post engagements recorded in this period.</div>;
+  }
+  return (
+    <div className="post-history">
+      {items.map((item) => (
+        <article key={item.id}>
+          <div>
+            <strong>{item.leadName || "Unnamed lead"}</strong>
+            <span>{item.operatorId} · {item.liked ? "Liked and commented" : "Commented"}</span>
+          </div>
+          <p>“{item.commentText}”</p>
+          <div className="post-history-links">
+            <a href={item.postUrl} target="_blank" rel="noreferrer">Post <ExternalLink size={11} /></a>
+            <a href={item.profileUrl} target="_blank" rel="noreferrer">Profile <ExternalLink size={11} /></a>
+            <time dateTime={item.at}>{formatRelativeTime(item.at)}</time>
+          </div>
+        </article>
       ))}
     </div>
   );
@@ -949,9 +1003,12 @@ function activityLabel(type: string) {
   const labels: Record<string, string> = {
     viewed: "opened a lead",
     engaged: "completed engagement for",
+    post_engaged: "liked and commented on a post by",
     connection_requested: "sent a connection request to",
     accepted: "recorded an acceptance for",
     email_collected: "extracted an email for",
+    profile_visited: "visited the LinkedIn profile for",
+    contact_info_checked: "checked contact info for",
     skipped: "skipped",
     failed: "reported a failure for",
     error: "reported an error for",

@@ -22,6 +22,20 @@
       );
     }
 
+    if (message?.type === "SCAN_RECENT_CONNECTIONS") {
+      return runVisibleWorkflow(
+        () => runRecentConnectionsScan(message.options || {}),
+        sendResponse,
+      );
+    }
+
+    if (message?.type === "EXTRACT_CONTACT_INFO") {
+      return runVisibleWorkflow(
+        () => runContactInfoExtraction(message.options || {}),
+        sendResponse,
+      );
+    }
+
     if (message?.type === "GET_PAGE_INFO") {
       sendResponse({
         url: window.location.href,
@@ -142,6 +156,10 @@
     );
     const validate = options.validateBeforeCommenting ?? stored.validateBeforeCommenting ?? true;
 
+    if (!options.leadId || !options.profileUrl) {
+      throw new Error("The assigned lead context is missing from post engagement.");
+    }
+
     addLog("Settings", `Posts: ${maxPosts}, Validate AI comment: ${validate ? "Yes" : "No"}`);
 
     if (maxPosts === 0) {
@@ -172,6 +190,7 @@
     addLog("Posts Found", `Found ${posts.length} posts, engaging top ${countToEngage}`);
 
     let engagedCount = 0;
+    const activities = [];
 
     for (let i = 0; i < countToEngage; i++) {
       const postEl = posts[i];
@@ -197,10 +216,16 @@
       // 2. Click 'see more' if present and extract full post commentary text
       await handleSeeMore(postEl);
       const postText = extractPostText(postEl);
+      const postUrl = extractPostUrl(postEl);
 
       if (!postText || postText.length < 30) {
         addLog("Skipped Text", `Post #${i + 1} did not contain enough readable text`);
         continue;
+      }
+      if (!postUrl) {
+        throw new Error(
+          `Post #${i + 1} did not expose a supported post permalink, so it could not be recorded safely.`,
+        );
       }
 
       addLog("Read Post", `"${postText.substring(0, 60)}..."`);
@@ -250,7 +275,20 @@
       updateStatus(`Submitting comment on post ${i + 1}...`);
       const submitted = await submitComment(postEl);
       if (submitted) {
+        await ScoutApi.authenticatedAction("scouts:recordPostActivity", {
+          leadId: String(options.leadId),
+          profileUrl: String(options.profileUrl),
+          postUrl,
+          postText: postText.slice(0, 8_000),
+          commentText: draftText.slice(0, 2_000),
+          liked: likeResult.changed,
+        });
         engagedCount++;
+        activities.push({
+          postUrl,
+          commentText: draftText,
+          liked: likeResult.changed,
+        });
         addLog("Commented", `Posted comment on post #${i + 1}`);
       } else {
         addLog("Error", `Failed to click comment submit for post #${i + 1}`);
@@ -266,7 +304,7 @@
     }
 
     updateStatus(`Completed post engagement on ${engagedCount} post(s)!`);
-    return { engagedCount, totalProcessed: countToEngage };
+    return { engagedCount, totalProcessed: countToEngage, activities };
   }
 
   async function runConnectionRequest(options = {}) {
@@ -409,15 +447,233 @@
       10_000,
     );
     if (!modalClosed) {
-      throw new Error(
-        "LinkedIn did not confirm that the connection request modal closed.",
+      addLog(
+        "Confirmation",
+        "The request was submitted, but LinkedIn left the invitation dialog visible",
       );
     }
     updateStatus("Connection request sent successfully!");
-    return { success: true };
+    return { success: true, confirmationPending: !modalClosed };
+  }
+
+  async function runRecentConnectionsScan(options = {}) {
+    initOverlay();
+    if (overlayContainer) overlayContainer.style.display = "block";
+    if (
+      window.location.pathname.replace(/\/+$/, "") !==
+      "/mynetwork/invite-connect/connections"
+    ) {
+      throw new Error("Connection review must run on LinkedIn's Connections page.");
+    }
+
+    updateStatus("Reviewing recently accepted connections...");
+    const maxProfiles = clampInteger(options.maxProfiles ?? 250, 1, 250);
+    const checkpointUrl = normalizeLinkedInProfileHref(
+      options.checkpoint?.topProfileUrl,
+    );
+    const checkpointDate = String(
+      options.checkpoint?.topConnectedOn || "",
+    ).slice(0, 10);
+    const cutoffDate = String(options.cutoffDate || "").slice(0, 10);
+    const found = new Map();
+    let top = null;
+    let reachedPriorScan = false;
+    let unchangedPasses = 0;
+
+    const loaded = await waitForMatch(
+      () => (queryConnectionCards().length > 0 ? true : null),
+      30_000,
+    );
+    if (!loaded) {
+      throw new Error(
+        "LinkedIn did not load any connection cards. Confirm the account is signed in and the page is sorted by Recently added.",
+      );
+    }
+
+    for (let pass = 0; pass < 35 && found.size < maxProfiles; pass++) {
+      const cards = queryConnectionCards();
+      const sizeBefore = found.size;
+      for (const card of cards) {
+        if (!top) {
+          top = {
+            profileUrl: card.profileUrl,
+            connectedOn: card.connectedOn,
+          };
+        }
+        if (
+          checkpointUrl &&
+          card.profileUrl === checkpointUrl &&
+          (!checkpointDate || card.connectedOn === checkpointDate)
+        ) {
+          reachedPriorScan = true;
+          break;
+        }
+        if (cutoffDate && card.connectedOn < cutoffDate) {
+          reachedPriorScan = true;
+          break;
+        }
+        found.set(`${card.connectedOn}|${card.profileUrl}`, card);
+        if (found.size >= maxProfiles) break;
+      }
+      if (reachedPriorScan || found.size >= maxProfiles) break;
+
+      unchangedPasses = found.size === sizeBefore ? unchangedPasses + 1 : 0;
+      if (unchangedPasses >= 3 || cards.length === 0) break;
+      cards.at(-1)?.element.scrollIntoView({ behavior: "smooth", block: "end" });
+      await sleep(1_000);
+    }
+
+    const connections = [...found.values()].map(
+      ({ profileUrl, name, connectedOn }) => ({
+        profileUrl,
+        name,
+        connectedOn,
+      }),
+    );
+    addLog(
+      "Connections",
+      `${connections.length} new connection entr${connections.length === 1 ? "y" : "ies"} reviewed`,
+    );
+    updateStatus("Accepted-connection review complete.");
+    return { connections, top, reachedPriorScan };
+  }
+
+  async function runContactInfoExtraction(options = {}) {
+    initOverlay();
+    if (overlayContainer) overlayContainer.style.display = "block";
+    const currentProfileUrl = normalizeLinkedInProfileHref(window.location.href);
+    const expectedProfileUrl = normalizeLinkedInProfileHref(
+      options.expectedProfileUrl,
+    );
+    if (!currentProfileUrl || currentProfileUrl !== expectedProfileUrl) {
+      throw new Error(
+        "LinkedIn is showing a different profile than the accepted assigned lead.",
+      );
+    }
+
+    updateStatus("Opening accepted lead contact info...");
+    const contactLink = await waitForMatch(findContactInfoLink, 20_000);
+    if (!contactLink) {
+      throw new Error("Could not find the Contact info link on this profile.");
+    }
+    clickElement(contactLink);
+    const dialog = await waitForMatch(findContactInfoDialog, 20_000);
+    if (!dialog) throw new Error("LinkedIn did not open the Contact info dialog.");
+    await waitForMatch(
+      () => {
+        const progress = dialog.querySelector(
+          "[role='progressbar'], progress, [data-testid*='progress']",
+        );
+        return !progress || dialog.querySelector("a[href^='mailto:']")
+          ? true
+          : null;
+      },
+      20_000,
+    );
+
+    const mailto = dialog.querySelector("a[href^='mailto:']")?.getAttribute("href");
+    const email = mailto
+      ? decodeURIComponent(mailto.replace(/^mailto:/i, "").split("?")[0]).trim()
+      : null;
+    addLog("Contact info", email ? "Email address saved" : "No email was listed");
+    updateStatus("Accepted lead contact info checked.");
+    return { profileUrl: currentProfileUrl, email };
   }
 
   // --- Element Finder & Action Helpers ---
+
+  function queryConnectionCards() {
+    const main = document.querySelector("main");
+    if (!main) return [];
+    const seen = new Set();
+    const cards = [];
+    for (const anchor of main.querySelectorAll("a[href*='/in/']")) {
+      const profileUrl = normalizeLinkedInProfileHref(anchor.href);
+      if (!profileUrl || seen.has(profileUrl)) continue;
+      let card = anchor.parentElement;
+      while (
+        card &&
+        card !== main &&
+        !card.querySelector("a[href*='/messaging/compose/']")
+      ) {
+        card = card.parentElement;
+      }
+      if (!card || card === main) continue;
+      const connectedLabel = Array.from(card.querySelectorAll("p, span")).find(
+        (element) => /^Connected on\s+/i.test(element.textContent?.trim() || ""),
+      );
+      const connectedOn = parseConnectedOn(connectedLabel?.textContent);
+      if (!connectedOn) continue;
+      const nameAnchor = Array.from(card.querySelectorAll("a[href*='/in/']")).find(
+        (candidate) =>
+          normalizeLinkedInProfileHref(candidate.href) === profileUrl &&
+          (candidate.textContent || "").trim(),
+      );
+      const name =
+        nameAnchor?.querySelector("p")?.textContent?.trim() ||
+        nameAnchor?.textContent?.replace(/\s+/g, " ").trim() ||
+        "LinkedIn connection";
+      seen.add(profileUrl);
+      cards.push({ profileUrl, name, connectedOn, element: card });
+    }
+    return cards;
+  }
+
+  function parseConnectedOn(value) {
+    const match = String(value || "")
+      .trim()
+      .match(/^Connected on\s+([A-Za-z]+)\s+(\d{1,2}),\s+(\d{4})$/i);
+    if (!match) return null;
+    const months = {
+      january: 1,
+      february: 2,
+      march: 3,
+      april: 4,
+      may: 5,
+      june: 6,
+      july: 7,
+      august: 8,
+      september: 9,
+      october: 10,
+      november: 11,
+      december: 12,
+    };
+    const month = months[match[1].toLowerCase()];
+    if (!month) return null;
+    return `${match[3]}-${String(month).padStart(2, "0")}-${String(match[2]).padStart(2, "0")}`;
+  }
+
+  function findContactInfoLink() {
+    const currentProfileUrl = normalizeLinkedInProfileHref(window.location.href);
+    return (
+      Array.from(
+        document.querySelectorAll("main a[href*='/overlay/contact-info/']"),
+      ).find(
+        (link) =>
+          normalizeLinkedInProfileHref(link.href) === currentProfileUrl &&
+          /^Contact info$/i.test(link.textContent?.trim() || "") &&
+          isElementVisible(link),
+      ) || null
+    );
+  }
+
+  function findContactInfoDialog() {
+    for (const root of getLinkedInModalRoots()) {
+      const dialogs = root.querySelectorAll(
+        "dialog[data-testid='dialog'][open], dialog[open], [role='dialog']",
+      );
+      for (const dialog of dialogs) {
+        const heading = dialog.querySelector("h1, h2, [role='heading']");
+        if (
+          /^Contact info$/i.test(heading?.textContent?.trim() || "") &&
+          isElementActive(dialog)
+        ) {
+          return dialog;
+        }
+      }
+    }
+    return null;
+  }
 
   async function findPostElements({ timeoutMs = 30_000, minimumCount = 1 } = {}) {
     const deadline = Date.now() + timeoutMs;
@@ -571,6 +827,28 @@
     }
 
     return postEl.innerText || "";
+  }
+
+  function extractPostUrl(postEl) {
+    const permalink = Array.from(
+      postEl.querySelectorAll(
+        "a[href*='/feed/update/urn:li:activity:'], a[href*='/posts/']",
+      ),
+    )
+      .map((anchor) => normalizeLinkedInPostHref(anchor.href))
+      .find(Boolean);
+    if (permalink) return permalink;
+
+    const activityUrn =
+      postEl.getAttribute("data-urn") ||
+      postEl.querySelector("[data-urn*='urn:li:activity:']")?.getAttribute("data-urn") ||
+      postEl
+        .querySelector("[data-id*='urn:li:activity:']")
+        ?.getAttribute("data-id");
+    const match = String(activityUrn || "").match(/urn:li:activity:\d+/);
+    return match
+      ? `https://www.linkedin.com/feed/update/${match[0]}`
+      : null;
   }
 
   async function openCommentBox(postEl) {
@@ -1030,6 +1308,28 @@
         .match(/^\/in\/([^/]+)/i)?.[1] || "";
     } catch {
       return "";
+    }
+  }
+
+  function normalizeLinkedInProfileHref(value) {
+    try {
+      const url = new URL(String(value || ""), window.location.origin);
+      if (!/(^|\.)linkedin\.com$/i.test(url.hostname)) return null;
+      const slug = url.pathname.match(/^\/in\/([^/]+)/i)?.[1];
+      return slug ? `https://www.linkedin.com/in/${slug}` : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function normalizeLinkedInPostHref(value) {
+    try {
+      const url = new URL(String(value || ""), window.location.origin);
+      if (!/(^|\.)linkedin\.com$/i.test(url.hostname)) return null;
+      if (!/^\/(feed\/update\/|posts\/)/i.test(url.pathname)) return null;
+      return `https://www.linkedin.com${url.pathname.replace(/\/+$/, "")}`;
+    } catch {
+      return null;
     }
   }
 
