@@ -5,29 +5,28 @@
   window.__CALLUM_SCOUT_CONTENT_LOADED__ = true;
 
   let overlayContainer = null;
-  let validationResolver = null;
 
   // Listen for messages from background script or popup
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "EXECUTE_POST_ENGAGEMENT") {
-      runPostEngagement(message.options || {})
-        .then((result) => sendResponse({ ok: true, result }))
-        .catch((err) => sendResponse({ ok: false, error: String(err.message || err) }));
-      return true;
+      return runVisibleWorkflow(
+        () => runPostEngagement(message.options || {}),
+        sendResponse,
+      );
     }
 
     if (message?.type === "EXECUTE_CONNECTION_REQUEST") {
-      runConnectionRequest(message.options || {})
-        .then((result) => sendResponse({ ok: true, result }))
-        .catch((err) => sendResponse({ ok: false, error: String(err.message || err) }));
-      return true;
+      return runVisibleWorkflow(
+        () => runConnectionRequest(message.options || {}),
+        sendResponse,
+      );
     }
 
     if (message?.type === "EXECUTE_FULL_LEAD_AUTOMATION") {
-      runFullLeadAutomation(message.lead, message.options || {})
-        .then((result) => sendResponse({ ok: true, result }))
-        .catch((err) => sendResponse({ ok: false, error: String(err.message || err) }));
-      return true;
+      return runVisibleWorkflow(
+        () => runFullLeadAutomation(message.lead, message.options || {}),
+        sendResponse,
+      );
     }
 
     if (message?.type === "GET_PAGE_INFO") {
@@ -36,6 +35,20 @@
         isRecentActivity: window.location.pathname.includes("/recent-activity"),
         isProfile: window.location.pathname.startsWith("/in/"),
       });
+      return false;
+    }
+
+    if (message?.type === "SHOW_AUTOMATION_ERROR") {
+      showWorkflowError(message.error || "Automation failed.");
+      sendResponse({ ok: true });
+      return false;
+    }
+
+    if (message?.type === "SHOW_AUTOMATION_STATUS") {
+      initOverlay();
+      if (overlayContainer) overlayContainer.style.display = "block";
+      updateStatus(message.status || "Automation is continuing...");
+      sendResponse({ ok: true });
       return false;
     }
   });
@@ -81,7 +94,22 @@
   function updateStatus(text) {
     const el = document.getElementById("callum-status-text");
     if (el) el.textContent = text;
+    document.querySelector(".callum-status-row")?.removeAttribute("data-state");
     addLog("Status", text);
+  }
+
+  function showWorkflowError(error) {
+    initOverlay();
+    if (overlayContainer) overlayContainer.style.display = "block";
+    const message = cleanError(error);
+    const status = document.getElementById("callum-status-text");
+    const nextStatus = `Stopped: ${message}`;
+    const alreadyShown = status?.textContent === nextStatus;
+    if (status) status.textContent = nextStatus;
+    document
+      .querySelector(".callum-status-row")
+      ?.setAttribute("data-state", "error");
+    if (!alreadyShown) addLog("Error", message);
   }
 
   function addLog(title, detail) {
@@ -90,6 +118,18 @@
     const item = document.createElement("li");
     item.innerHTML = `<strong>${escapeHtml(title)}:</strong> ${escapeHtml(detail)}`;
     list.prepend(item);
+  }
+
+  function runVisibleWorkflow(workflow, sendResponse) {
+    Promise.resolve()
+      .then(workflow)
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((error) => {
+        const message = cleanError(error);
+        showWorkflowError(message);
+        sendResponse({ ok: false, error: message });
+      });
+    return true;
   }
 
   // --- Core Automation Functions ---
@@ -102,18 +142,37 @@
     // Get settings from storage if not provided
     const stored = await chrome.storage.local.get(["scoutDashboard", "validateBeforeCommenting"]);
     const settings = stored.scoutDashboard?.settings || {};
-    const maxPosts = options.postEngagements ?? settings.postEngagements ?? 2;
+    const maxPosts = clampInteger(
+      options.postEngagements ?? settings.postEngagements ?? 2,
+      0,
+      10,
+    );
     const validate = options.validateBeforeCommenting ?? stored.validateBeforeCommenting ?? true;
 
     addLog("Settings", `Posts: ${maxPosts}, Validate AI comment: ${validate ? "Yes" : "No"}`);
 
-    // Wait for posts container to load
-    await sleep(1500);
+    if (maxPosts === 0) {
+      updateStatus("Post engagement is disabled; skipping directly to connection.");
+      return { engagedCount: 0, totalProcessed: 0, skipped: true };
+    }
 
-    // Query posts on recent-activity page or feed
-    const posts = await findPostElements();
+    if (!window.location.pathname.includes("/recent-activity/")) {
+      throw new Error(
+        "Post engagement must run on the lead's /recent-activity/all/ page.",
+      );
+    }
+
+    // LinkedIn renders the activity feed after the document load event. Wait for
+    // the actual post/action DOM from doc.md instead of taking one early snapshot.
+    updateStatus("Waiting for recent posts to load...");
+    const posts = await findPostElements({
+      timeoutMs: 30_000,
+      minimumCount: maxPosts,
+    });
     if (!posts || posts.length === 0) {
-      throw new Error("No recent posts found on this page. Please make sure you are on /recent-activity/all/");
+      throw new Error(
+        "No recent posts loaded within 30 seconds. Confirm LinkedIn shows the lead's Posts activity and is not displaying a sign-in, checkpoint, or empty-activity page.",
+      );
     }
 
     const countToEngage = Math.min(posts.length, maxPosts);
@@ -130,15 +189,24 @@
       await sleep(1000);
 
       // 1. Click 'Like' button
-      const liked = await handleLikeButton(postEl, i + 1);
-      if (liked) addLog("Liked", `Liked post #${i + 1}`);
+      const likeResult = await handleLikeButton(postEl);
+      if (!likeResult.success) {
+        addLog("Error", `Could not confirm Like on post #${i + 1}`);
+        continue;
+      }
+      addLog(
+        likeResult.changed ? "Liked" : "Like",
+        likeResult.changed
+          ? `Liked post #${i + 1}`
+          : `Post #${i + 1} was already liked`,
+      );
 
       // 2. Click 'see more' if present and extract full post commentary text
       await handleSeeMore(postEl);
       const postText = extractPostText(postEl);
 
-      if (!postText || postText.length < 5) {
-        addLog("Skipped Text", `Post #${i + 1} had no commentary text`);
+      if (!postText || postText.length < 30) {
+        addLog("Skipped Text", `Post #${i + 1} did not contain enough readable text`);
         continue;
       }
 
@@ -146,17 +214,12 @@
 
       // 3. Request GPT-5.6 Luna draft comment
       updateStatus(`Generating comment with GPT-5.6 Luna for post ${i + 1}...`);
-      let draftText = "";
-      try {
-        const response = await ScoutApi.authenticatedAction("scouts:draftComment", { postText });
-        draftText = response?.draft?.trim() || "";
-      } catch (err) {
-        addLog("GPT-5.6 Error", err.message || String(err));
-        draftText = `Great insights! Thanks for sharing this perspective.`;
-      }
-
+      const response = await ScoutApi.authenticatedAction("scouts:draftComment", {
+        postText: postText.slice(0, 8_000),
+      });
+      let draftText = response?.draft?.trim() || "";
       if (!draftText) {
-        draftText = "Great insights! Thanks for sharing.";
+        throw new Error(`GPT-5.6 Luna returned an empty comment for post #${i + 1}.`);
       }
 
       // 4. Handle Comment Validation Option
@@ -203,6 +266,12 @@
       await sleep(2000);
     }
 
+    if (engagedCount !== countToEngage) {
+      throw new Error(
+        `Only ${engagedCount} of ${countToEngage} configured post engagements completed. The lead was not marked engaged and no connection request was sent.`,
+      );
+    }
+
     updateStatus(`Completed post engagement on ${engagedCount} post(s)!`);
     return { engagedCount, totalProcessed: countToEngage };
   }
@@ -212,22 +281,58 @@
     if (overlayContainer) overlayContainer.style.display = "block";
     updateStatus("Initiating connection request on profile...");
 
+    const currentProfileSlug = getLinkedInProfileSlug(window.location.href);
+    const expectedProfileSlug = getLinkedInProfileSlug(
+      options.expectedProfileUrl,
+    );
+    if (!currentProfileSlug) {
+      throw new Error(
+        "Connection requests can only run on a LinkedIn /in/ profile page.",
+      );
+    }
+    if (
+      expectedProfileSlug &&
+      normalizeProfileSlug(currentProfileSlug) !==
+        normalizeProfileSlug(expectedProfileSlug)
+    ) {
+      throw new Error(
+        "LinkedIn is showing a different profile than the selected lead. No connection request was sent.",
+      );
+    }
+
+    const targetProfileName =
+      getCurrentProfileName(options.expectedProfileName) ||
+      String(options.expectedProfileName || "").trim();
+    if (!targetProfileName) {
+      throw new Error(
+        "Could not verify the current LinkedIn profile name. No connection request was sent.",
+      );
+    }
+    addLog("Target", `Connecting only with ${targetProfileName}`);
+
     await sleep(1500);
 
     // 1. Click 'More' button on profile
     updateStatus("Looking for profile 'More' button...");
-    const moreBtn = await findMoreButton();
+    const moreBtn = await findMoreButton(targetProfileName);
     if (!moreBtn) {
       throw new Error("Could not find 'More' button on LinkedIn profile header.");
     }
 
-    clickElement(moreBtn);
-    addLog("Click", "Clicked 'More' button on profile");
-    await sleep(1200);
+    if (moreBtn.getAttribute("aria-expanded") === "true") {
+      addLog("Menu", "Profile 'More' menu is already open");
+    } else {
+      clickElement(moreBtn);
+      addLog("Click", "Clicked 'More' button on profile");
+      await sleep(1200);
+    }
 
     // 2. Click 'Connect' in the dropdown menu / popover
     updateStatus("Looking for 'Connect' option in menu...");
-    const connectEl = await findConnectOption();
+    const connectEl = await findConnectOption({
+      targetProfileName,
+      targetProfileSlug: currentProfileSlug,
+    });
     if (!connectEl) {
       throw new Error("Could not find 'Connect' option in 'More' menu.");
     }
@@ -236,18 +341,46 @@
     addLog("Click", "Clicked 'Connect' option");
     await sleep(1500);
 
-    // 3. Click 'Send without a note' in the invitation modal
-    updateStatus("Looking for 'Send without a note' in modal...");
-    const sendBtn = await findSendWithoutNoteButton();
+    // 3. Verify the modal belongs to the profile before sending anything.
+    updateStatus(`Verifying invitation recipient is ${targetProfileName}...`);
+    const invitationDialog = await waitForMatch(
+      findActiveInvitationDialog,
+      20_000,
+    );
+    if (!invitationDialog) {
+      throw new Error("Could not find LinkedIn's invitation modal.");
+    }
+
+    const invitationRecipient = getInvitationRecipient(invitationDialog);
+    if (
+      !invitationRecipient ||
+      !personNamesMatch(invitationRecipient, targetProfileName)
+    ) {
+      dismissInvitationDialog(invitationDialog);
+      const openedFor = invitationRecipient
+        ? `LinkedIn opened the invitation for ${invitationRecipient}, not ${targetProfileName}`
+        : `Could not verify that the invitation is for ${targetProfileName}`;
+      throw new Error(`${openedFor}. Request cancelled before sending.`);
+    }
+
+    updateStatus("Looking for 'Send without a note' in verified modal...");
+    const sendBtn = await findSendWithoutNoteButton(invitationDialog);
     if (!sendBtn) {
       throw new Error("Could not find 'Send without a note' button in invitation modal.");
     }
 
     clickElement(sendBtn);
     addLog("Sent", "Clicked 'Send without a note'!");
+    const modalClosed = await waitForMatch(
+      () => (!findActiveInvitationDialog() ? true : null),
+      10_000,
+    );
+    if (!modalClosed) {
+      throw new Error(
+        "LinkedIn did not confirm that the connection request modal closed.",
+      );
+    }
     updateStatus("Connection request sent successfully!");
-
-    await sleep(1500);
     return { success: true };
   }
 
@@ -264,39 +397,89 @@
       updateStatus("Finished posts engagement. Navigating to profile root for connection...");
       return engageResult;
     } else {
-      const connectResult = await runConnectionRequest(options);
+      const connectResult = await runConnectionRequest({
+        ...options,
+        expectedProfileName: lead?.fullName || options.expectedProfileName,
+        expectedProfileUrl: lead?.linkedinUrl || options.expectedProfileUrl,
+      });
       return connectResult;
     }
   }
 
   // --- Element Finder & Action Helpers ---
 
-  async function findPostElements() {
-    // Try multiple selector patterns for LinkedIn recent activity and feed updates
+  async function findPostElements({ timeoutMs = 30_000, minimumCount = 1 } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    let bestMatch = [];
+    let lastNewPostAt = Date.now();
+    let lastProgressAt = 0;
+    let lastScrollAt = 0;
+
+    while (Date.now() < deadline) {
+      const posts = queryPostElements();
+      if (posts.length > bestMatch.length) {
+        bestMatch = posts;
+        lastNewPostAt = Date.now();
+      }
+      if (bestMatch.length >= minimumCount) return bestMatch;
+
+      if (bestMatch.length > 0 && Date.now() - lastScrollAt >= 2_000) {
+        bestMatch.at(-1)?.scrollIntoView({ behavior: "smooth", block: "end" });
+        lastScrollAt = Date.now();
+      }
+      if (bestMatch.length > 0 && Date.now() - lastNewPostAt >= 6_000) {
+        return bestMatch;
+      }
+
+      if (Date.now() - lastProgressAt >= 5_000) {
+        const secondsLeft = Math.max(1, Math.ceil((deadline - Date.now()) / 1000));
+        addLog("Waiting", `LinkedIn is still loading posts (${secondsLeft}s remaining)`);
+        lastProgressAt = Date.now();
+      }
+      await sleep(500);
+    }
+
+    return bestMatch;
+  }
+
+  function queryPostElements() {
+    // These selectors mirror the recent-activity DOM captured in doc.md. Prefer
+    // the outer feed-update node so all Like, Comment, and editor controls stay
+    // scoped to one post.
     const selectorLists = [
+      "div[data-view-name='feed-full-update']",
+      "[role='article'][data-urn^='urn:li:activity:']",
+      "div.feed-shared-update-v2",
       ".scaffold-finite-scroll__content ul > li",
       "ul.display-flex.flex-wrap.list-style-none > li",
-      "div.feed-shared-update-v2",
-      "div[data-view-name='feed-full-update']",
-      ".artdeco-card .feed-shared-update-v2"
     ];
 
-    for (const sel of selectorLists) {
-      const items = Array.from(document.querySelectorAll(sel)).filter((el) => {
-        return el.querySelector(".feed-shared-social-action-bar") || el.querySelector("button[aria-label*='Like']");
-      });
+    for (const selector of selectorLists) {
+      const items = uniqueElements(
+        Array.from(document.querySelectorAll(selector)).filter(hasPostActions),
+      );
       if (items.length > 0) return items;
     }
 
-    // Fallback: any list item containing a social action bar
-    const fallback = Array.from(document.querySelectorAll("li")).filter((el) => {
-      return el.querySelector(".feed-shared-social-action-bar") || el.querySelector(".react-button__trigger");
-    });
-
-    return fallback;
+    return uniqueElements(
+      Array.from(document.querySelectorAll("li")).filter(hasPostActions),
+    );
   }
 
-  async function handleLikeButton(postEl, index) {
+  function hasPostActions(element) {
+    return Boolean(
+      element.querySelector(".feed-shared-social-action-bar") ||
+        element.querySelector("button.react-button__trigger") ||
+        element.querySelector("button[aria-label^='React']") ||
+        element.querySelector("button[aria-label='Comment']"),
+    );
+  }
+
+  function uniqueElements(elements) {
+    return [...new Set(elements)];
+  }
+
+  async function handleLikeButton(postEl) {
     const likeSelectors = [
       "button.react-button__trigger",
       "button[aria-label^='React Like']",
@@ -317,7 +500,7 @@
       likeBtn = btns.find((b) => b.textContent?.trim().startsWith("Like"));
     }
 
-    if (!likeBtn) return false;
+    if (!likeBtn) return { success: false, changed: false };
 
     // Check if already liked
     const isPressed = likeBtn.getAttribute("aria-pressed") === "true";
@@ -325,10 +508,20 @@
 
     if (!isPressed && !isActive) {
       clickElement(likeBtn);
-      return true;
+      const confirmed = await waitForMatch(
+        () => {
+          const active =
+            likeBtn.getAttribute("aria-pressed") === "true" ||
+            likeBtn.classList.contains("react-button--active") ||
+            likeBtn.textContent?.includes("Unlike");
+          return active ? likeBtn : null;
+        },
+        5_000,
+      );
+      return { success: Boolean(confirmed), changed: Boolean(confirmed) };
     }
 
-    return false;
+    return { success: true, changed: false };
   }
 
   async function handleSeeMore(postEl) {
@@ -341,7 +534,7 @@
 
     for (const sel of seeMoreSelectors) {
       const btn = postEl.querySelector(sel);
-      if (btn && btn.offsetParent !== null) {
+      if (btn && isElementVisible(btn)) {
         clickElement(btn);
         await sleep(300);
         break;
@@ -395,30 +588,48 @@
   }
 
   async function typeCommentInQuill(postEl, text) {
-    // Wait up to 3 seconds for comment editor to appear inside post
-    let editorEl = null;
-    for (let attempts = 0; attempts < 15; attempts++) {
-      editorEl = postEl.querySelector(".comments-comment-box-comment__text-editor .ql-editor") ||
-                 postEl.querySelector("div.ql-editor[contenteditable='true']") ||
-                 postEl.querySelector("div[data-placeholder='Add a comment…']") ||
-                 document.querySelector("div.ql-editor[contenteditable='true']");
-      if (editorEl) break;
-      await sleep(200);
-    }
+    const editorEl = await waitForMatch(
+      () =>
+        postEl.querySelector("[data-test-ql-editor-contenteditable='true']") ||
+        postEl.querySelector(".comments-comment-box-comment__text-editor .ql-editor") ||
+        postEl.querySelector("div.ql-editor[contenteditable='true']") ||
+        postEl.querySelector("div[data-placeholder='Add a comment…']"),
+      5_000,
+    );
 
     if (!editorEl) return false;
 
     editorEl.focus();
-    editorEl.innerHTML = `<p>${escapeHtml(text)}</p>`;
-
-    // Trigger input events for Quill contenteditable
     editorEl.dispatchEvent(new Event("focus", { bubbles: true }));
-    editorEl.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true }));
-    editorEl.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: "insertText" }));
+
+    // Quill listens to the browser's editing events. execCommand produces the
+    // same editable-DOM mutation as typing; the fallback covers LinkedIn builds
+    // where that command is disabled.
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(editorEl);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    const inserted = document.execCommand?.("insertText", false, text);
+    if (!inserted || editorEl.textContent?.trim() !== text.trim()) {
+      editorEl.replaceChildren();
+      const paragraph = document.createElement("p");
+      paragraph.textContent = text;
+      editorEl.appendChild(paragraph);
+    }
+
+    editorEl.dispatchEvent(
+      new InputEvent("input", {
+        bubbles: true,
+        cancelable: false,
+        data: text,
+        inputType: "insertText",
+      }),
+    );
     editorEl.dispatchEvent(new Event("change", { bubbles: true }));
     editorEl.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true }));
 
-    return true;
+    return editorEl.textContent?.trim().length > 0;
   }
 
   async function submitComment(postEl) {
@@ -453,96 +664,308 @@
       await sleep(200);
     }
 
-    if (!submitBtn) return false;
+    if (!submitBtn || submitBtn.disabled) return false;
 
+    const editor =
+      postEl.querySelector("[data-test-ql-editor-contenteditable='true']") ||
+      postEl.querySelector("div.ql-editor[contenteditable='true']");
     clickElement(submitBtn);
-    return true;
+    return Boolean(
+      await waitForMatch(
+        () => {
+          if (!submitBtn.isConnected || !isElementVisible(submitBtn)) return true;
+          if (editor && !(editor.textContent || "").trim()) return true;
+          return null;
+        },
+        8_000,
+      ),
+    );
   }
 
-  async function findMoreButton() {
-    const selectors = [
-      "button[aria-label='More']",
-      "button[aria-label='More actions']",
-      "button[componentkey*='More']",
-      "button[aria-label='More options']"
-    ];
+  async function findMoreButton(targetProfileName) {
+    return waitForMatch(() => {
+      const candidates = uniqueElements([
+        ...document.querySelectorAll(
+          "button[aria-label='More'], button[aria-label='More actions'], button[aria-label='More options']",
+        ),
+        ...document.querySelectorAll("button"),
+      ]).filter(
+        (button) => isProfileMoreButton(button) && isElementVisible(button),
+      );
 
-    for (const sel of selectors) {
-      const btn = document.querySelector(sel);
-      if (btn && btn.offsetParent !== null) return btn;
-    }
-
-    // Search profile buttons by text "More"
-    const buttons = Array.from(document.querySelectorAll("button"));
-    const moreByText = buttons.find((b) => {
-      const text = b.textContent?.trim();
-      return (text === "More" || b.getAttribute("aria-label")?.includes("More")) && b.offsetParent !== null;
-    });
-
-    return moreByText || null;
-  }
-
-  async function findConnectOption() {
-    // Wait for popover menu
-    await sleep(500);
-
-    const selectors = [
-      "a[href*='/preload/custom-invite/']",
-      "a[componentkey*='ConnectButton']",
-      "div[componentkey*='ConnectButton']",
-      "a[aria-label*='Invite']",
-      "div[aria-label*='Invite']"
-    ];
-
-    for (const sel of selectors) {
-      const el = document.querySelector(sel);
-      if (el) return el;
-    }
-
-    // Search menuitems/links containing "Connect"
-    const items = Array.from(document.querySelectorAll("[role='menuitem'], [role='menu'] a, [popover] a, [popover] div, .artdeco-dropdown__content a, .artdeco-dropdown__content div"));
-    const connectItem = items.find((item) => {
-      const text = item.textContent?.trim();
-      return text && /\bConnect\b/i.test(text);
-    });
-
-    return connectItem || null;
-  }
-
-  async function findSendWithoutNoteButton() {
-    // Wait up to 3 seconds for invitation modal
-    let sendBtn = null;
-    for (let attempts = 0; attempts < 15; attempts++) {
-      const selectors = [
-        "button[aria-label='Send without a note']",
-        "button#ember57",
-        "#artdeco-modal-outlet button.artdeco-button--primary",
-        ".send-invite button.artdeco-button--primary",
-        "div[data-test-modal-id='send-invite-modal'] button.artdeco-button--primary"
-      ];
-
-      for (const sel of selectors) {
-        sendBtn = document.querySelector(sel);
-        if (sendBtn) break;
-      }
-
-      if (sendBtn) break;
-
-      // Find by text "Send without a note"
-      const modal = document.querySelector("#artdeco-modal-outlet, .send-invite, [data-test-modal]");
-      if (modal) {
-        const btns = Array.from(modal.querySelectorAll("button"));
-        const found = btns.find((b) => b.textContent?.trim().includes("Send without a note"));
-        if (found) {
-          sendBtn = found;
-          break;
+      // Prefer the More/three-dot action in the main profile card containing
+      // the current member's heading. This excludes recommendation cards.
+      const main = document.querySelector("main");
+      const targetHeading = main
+        ? Array.from(main.querySelectorAll("h1, h2, h3")).find(
+            (heading) =>
+              personNamesMatch(heading.textContent, targetProfileName) &&
+              isElementVisible(heading),
+          )
+        : null;
+      if (targetHeading) {
+        let scope = targetHeading.parentElement;
+        while (scope && scope !== main.parentElement) {
+          const scopedButton = candidates.find((button) =>
+            scope.contains(button),
+          );
+          if (scopedButton) return scopedButton;
+          if (scope === main) break;
+          scope = scope.parentElement;
         }
       }
 
-      await sleep(200);
-    }
+      // A profile-photo/name link to the current URL is another stable anchor
+      // when LinkedIn changes the heading markup.
+      for (const button of candidates) {
+        const main = button.closest("main");
+        if (!main || button.closest("aside")) continue;
+        let scope = button.parentElement;
+        while (scope && scope !== main.parentElement) {
+          if (containerReferencesCurrentProfile(scope)) return button;
+          if (scope === main) break;
+          scope = scope.parentElement;
+        }
+      }
 
-    return sendBtn;
+      // LinkedIn sometimes replaces the main action row with a sticky toolbar.
+      // Only accept its More/three-dot button when that same toolbar links to
+      // the profile currently in the address bar.
+      return (
+        candidates.find((button) => {
+          const toolbar = button.closest("[role='toolbar']");
+          return toolbar && toolbarReferencesCurrentProfile(toolbar);
+        }) || null
+      );
+    }, 20_000);
+  }
+
+  function isProfileMoreButton(button) {
+    const label = button.getAttribute("aria-label")?.trim() || "";
+    const text = button.textContent?.trim() || "";
+    const hasOverflowIcon = Boolean(
+      button.querySelector(
+        "svg[data-test-icon*='overflow'], svg[data-test-icon*='ellipsis'], use[href*='overflow'], use[href*='ellipsis']",
+      ),
+    );
+    return (
+      /^(More|More actions|More options)$/i.test(label) ||
+      /^More$/i.test(text) ||
+      hasOverflowIcon
+    );
+  }
+
+  function toolbarReferencesCurrentProfile(toolbar) {
+    return containerReferencesCurrentProfile(toolbar);
+  }
+
+  function containerReferencesCurrentProfile(container) {
+    const currentSlug = normalizeProfileSlug(
+      getLinkedInProfileSlug(window.location.href),
+    );
+    if (!currentSlug) return false;
+    return Array.from(container.querySelectorAll("a[href*='/in/']")).some(
+      (link) =>
+        normalizeProfileSlug(getLinkedInProfileSlug(link.href)) === currentSlug,
+    );
+  }
+
+  async function findConnectOption({ targetProfileName, targetProfileSlug }) {
+    return waitForMatch(() => {
+      const menus = Array.from(
+        document.querySelectorAll(
+          "[role='menu'], [popover], .artdeco-dropdown__content",
+        ),
+      ).filter(isElementVisible);
+
+      for (const menu of menus) {
+        const candidates = Array.from(
+          menu.querySelectorAll(
+            "a[href*='/preload/custom-invite/'], [role='menuitem'][aria-label*='Invite'], [role='menuitem'] [aria-label*='Invite']",
+          ),
+        );
+        for (const candidate of candidates) {
+          const clickable =
+            candidate.closest("a, button, [role='menuitem']") || candidate;
+          if (
+            isElementVisible(clickable) &&
+            connectOptionMatchesTarget(
+              clickable,
+              targetProfileName,
+              targetProfileSlug,
+            )
+          ) {
+            return clickable;
+          }
+        }
+      }
+      return null;
+    }, 10_000);
+  }
+
+  function connectOptionMatchesTarget(
+    element,
+    targetProfileName,
+    targetProfileSlug,
+  ) {
+    const anchor = element.matches("a") ? element : element.querySelector("a");
+    const labelledElement = element.matches("[aria-label]")
+      ? element
+      : element.querySelector("[aria-label]");
+    const inviteLabel = labelledElement?.getAttribute("aria-label") || "";
+    const labelMatches =
+      /\bInvite\b/i.test(inviteLabel) &&
+      /\bto connect\b/i.test(inviteLabel) &&
+      normalizePersonName(inviteLabel).includes(
+        normalizePersonName(targetProfileName),
+      );
+
+    let vanitySlug = "";
+    try {
+      vanitySlug = new URL(anchor?.href || "", window.location.origin)
+        .searchParams.get("vanityName") || "";
+    } catch {
+      vanitySlug = "";
+    }
+    const slugMatches =
+      vanitySlug &&
+      normalizeProfileSlug(vanitySlug) ===
+        normalizeProfileSlug(targetProfileSlug);
+
+    return Boolean(labelMatches || slugMatches);
+  }
+
+  async function findSendWithoutNoteButton(dialog) {
+    return waitForMatch(() => {
+      if (dialog && isElementActive(dialog)) {
+        const exactButton = Array.from(
+          dialog.querySelectorAll("button[aria-label='Send without a note']"),
+        ).find(isElementActive);
+        if (exactButton) return exactButton;
+
+        const buttons = Array.from(dialog.querySelectorAll("button"));
+        const textButton = buttons.find(
+          (button) =>
+            button.textContent?.trim() === "Send without a note" &&
+            isElementActive(button),
+        );
+        if (textButton) return textButton;
+      }
+
+      return null;
+    }, 20_000);
+  }
+
+  function findActiveInvitationDialog() {
+    const dialogs = getLinkedInModalRoots().flatMap((root) =>
+      Array.from(
+        root.querySelectorAll(
+          "div[data-test-modal][role='dialog'], div.send-invite[role='dialog'], div[role='dialog'][aria-labelledby='send-invite-modal']",
+        ),
+      ),
+    );
+
+    return (
+      dialogs.find((dialog) => {
+        if (!isElementActive(dialog)) return false;
+        const heading = dialog.querySelector("h2")?.textContent?.trim() || "";
+        return (
+          dialog.classList.contains("send-invite") ||
+          dialog.getAttribute("aria-labelledby") === "send-invite-modal" ||
+          /add a note to your invitation/i.test(heading)
+        );
+      }) || null
+    );
+  }
+
+  function getInvitationRecipient(dialog) {
+    const content =
+      dialog.querySelector(".artdeco-modal__content") || dialog;
+    const emphasizedName = Array.from(content.querySelectorAll("strong")).find(
+      (element) => element.textContent?.trim(),
+    );
+    if (emphasizedName) return emphasizedName.textContent.trim();
+
+    const text = content.textContent?.replace(/\s+/g, " ").trim() || "";
+    return (
+      text.match(/Personalize your invitation to (.+?) by adding a note/i)?.[1]
+        ?.trim() || ""
+    );
+  }
+
+  function dismissInvitationDialog(dialog) {
+    const dismissButton = Array.from(dialog.querySelectorAll("button")).find(
+      (button) =>
+        (button.getAttribute("aria-label")?.trim() === "Dismiss" ||
+          button.hasAttribute("data-test-modal-close-btn")) &&
+        isElementActive(button),
+    );
+    if (dismissButton) clickElement(dismissButton);
+  }
+
+  function getCurrentProfileName(expectedProfileName) {
+    const main = document.querySelector("main");
+    const visibleHeadings = Array.from(
+      main?.querySelectorAll("h1, h2") || [],
+    ).filter(isElementVisible);
+    const expectedHeading = visibleHeadings.find((heading) =>
+      personNamesMatch(heading.textContent, expectedProfileName),
+    );
+    if (expectedHeading) return expectedHeading.textContent.trim();
+
+    const firstProfileHeading = visibleHeadings.find((heading) => {
+      const text = heading.textContent?.trim() || "";
+      return text && text.length <= 100;
+    });
+    if (firstProfileHeading) return firstProfileHeading.textContent.trim();
+
+    const titleName = document.title
+      .replace(/^\(\d+\)\s*/, "")
+      .match(/^(.+?)\s*\|\s*LinkedIn$/i)?.[1]
+      ?.trim();
+    if (titleName) return titleName;
+    return "";
+  }
+
+  function getLinkedInProfileSlug(value) {
+    try {
+      return new URL(String(value || ""), window.location.origin).pathname
+        .match(/^\/in\/([^/]+)/i)?.[1] || "";
+    } catch {
+      return "";
+    }
+  }
+
+  function normalizeProfileSlug(value) {
+    return decodeURIComponent(String(value || "")).trim().toLowerCase();
+  }
+
+  function normalizePersonName(value) {
+    return String(value || "")
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, " ")
+      .trim();
+  }
+
+  function personNamesMatch(left, right) {
+    const normalizedLeft = normalizePersonName(left);
+    const normalizedRight = normalizePersonName(right);
+    return Boolean(normalizedLeft && normalizedLeft === normalizedRight);
+  }
+
+  function getLinkedInModalRoots() {
+    const roots = [document];
+    const hosts = document.querySelectorAll(
+      "#interop-outlet, [data-testid='interop-shadowdom']",
+    );
+    for (const host of hosts) {
+      if (host.shadowRoot && !roots.includes(host.shadowRoot)) {
+        roots.push(host.shadowRoot);
+      }
+    }
+    return roots;
   }
 
   // --- Validation UI Overlay for Comment Approval ---
@@ -589,6 +1012,49 @@
     el.dispatchEvent(new MouseEvent("mousedown", opts));
     el.dispatchEvent(new MouseEvent("mouseup", opts));
     el.click();
+  }
+
+  async function waitForMatch(find, timeoutMs, intervalMs = 250) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const match = find();
+      if (match) return match;
+      await sleep(intervalMs);
+    }
+    return null;
+  }
+
+  function isElementVisible(element) {
+    if (!element?.isConnected || element.getClientRects().length === 0) {
+      return false;
+    }
+    const style = window.getComputedStyle(element);
+    return style.visibility !== "hidden" && style.display !== "none";
+  }
+
+  function isElementActive(element) {
+    if (
+      !element?.isConnected ||
+      element.closest("[hidden], [aria-hidden='true']")
+    ) {
+      return false;
+    }
+    const style = window.getComputedStyle(element);
+    return style.visibility !== "hidden" && style.display !== "none";
+  }
+
+  function clampInteger(value, minimum, maximum) {
+    const number = Math.trunc(Number(value));
+    return Math.max(
+      minimum,
+      Math.min(maximum, Number.isFinite(number) ? number : minimum),
+    );
+  }
+
+  function cleanError(error) {
+    return String(error instanceof Error ? error.message : error || "Automation failed.")
+      .replace(/^Error:\s*/i, "")
+      .split("\n")[0];
   }
 
   function sleep(ms) {

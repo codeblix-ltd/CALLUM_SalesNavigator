@@ -1,8 +1,8 @@
 "use node";
 
 import { v } from "convex/values";
+import { internal } from "./_generated/api";
 import { action } from "./_generated/server";
-import { assertAdminAccess } from "./lib/adminAccess";
 import { requestCodexGateway } from "./lib/codexGateway";
 
 type Account = {
@@ -42,19 +42,19 @@ const loginStatusValidator = v.object({
 });
 
 export const getStatus = action({
-  args: { accessToken: v.string() },
+  args: {},
   returns: statusValidator,
-  handler: async (_ctx, args): Promise<GatewayStatus> => {
-    assertAdminAccess(args.accessToken);
+  handler: async (ctx): Promise<GatewayStatus> => {
+    await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
     return requestCodexGateway<GatewayStatus>("/v1/status");
   },
 });
 
 export const startDeviceLogin = action({
-  args: { accessToken: v.string() },
+  args: {},
   returns: loginValidator,
-  handler: async (_ctx, args) => {
-    assertAdminAccess(args.accessToken);
+  handler: async (ctx) => {
+    await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
     const result = await requestCodexGateway<{
       connected: boolean;
       account?: Account | null;
@@ -74,12 +74,11 @@ export const startDeviceLogin = action({
 
 export const getDeviceLoginStatus = action({
   args: {
-    accessToken: v.string(),
     loginId: v.string(),
   },
   returns: loginStatusValidator,
-  handler: async (_ctx, args) => {
-    assertAdminAccess(args.accessToken);
+  handler: async (ctx, args) => {
+    await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
     const loginId = args.loginId.trim();
     if (!loginId || loginId.length > 200) {
       throw new Error("Invalid Codex login ID.");
@@ -94,10 +93,10 @@ export const getDeviceLoginStatus = action({
 });
 
 export const logout = action({
-  args: { accessToken: v.string() },
+  args: {},
   returns: v.null(),
-  handler: async (_ctx, args) => {
-    assertAdminAccess(args.accessToken);
+  handler: async (ctx) => {
+    await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
     await requestCodexGateway<{ ok: boolean }>("/v1/auth/logout", {
       method: "POST",
     });

@@ -2,8 +2,8 @@
 
 import pg from "pg";
 import { v } from "convex/values";
+import { internal } from "./_generated/api";
 import { action } from "./_generated/server";
-import { assertAdminAccess } from "./lib/adminAccess";
 
 const optionalText = v.union(v.string(), v.null());
 
@@ -50,7 +50,8 @@ export const getStats = action({
     updatedAt: v.string(),
     niches: v.array(nicheValidator),
   }),
-  handler: async () => {
+  handler: async (ctx) => {
+    await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
     if (statsCache && statsCache.expiresAt > Date.now()) {
       return statsCache.value;
     }
@@ -91,7 +92,6 @@ export const getStats = action({
 
 export const list = action({
   args: {
-    accessToken: v.string(),
     niche: v.union(v.string(), v.null()),
     search: v.union(v.string(), v.null()),
     cursor: v.union(v.string(), v.null()),
@@ -102,8 +102,8 @@ export const list = action({
     nextCursor: v.union(v.string(), v.null()),
     hasMore: v.boolean(),
   }),
-  handler: async (_ctx, args) => {
-    assertAdminAccess(args.accessToken);
+  handler: async (ctx, args) => {
+    await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
     const database = getPool();
     const limit = Math.max(1, Math.min(100, Math.trunc(args.limit)));
     const niche = args.niche?.trim().slice(0, 120) || null;

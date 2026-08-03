@@ -128,6 +128,19 @@ All writes are authenticated and checked against the signed-in scout's own
 assignment. Status changes and extension errors are recorded in
 `lead_assignment_events`.
 
+## Internal admin analytics
+
+The React dashboard is private. Sign in with the internal administrator
+credentials (`callum2024` / `callum2024`) to view lead inventory and scout
+analytics. The browser receives an authenticated Convex session; aggregate
+counts, per-scout activity, lead details, and Codex gateway controls all verify
+the admin role on the server. The former lead access token is no longer used.
+
+The overview includes all-time or 7/30/90-day activity, assigned and fresh
+queues, engaged leads, connection requests, pending requests, acceptances,
+collected emails, failures, conversion rates, recent events, and searchable
+per-scout drill-downs.
+
 ## Run the automatic mock simulator
 
 The signed-in extension popup includes **Automatic simulation**. Choose a
@@ -186,5 +199,5 @@ npm run check
 npm run smoke
 ```
 
-The existing React admin dashboard continues to use `LEADS_API_TOKEN` from
-`.env.local` for its unlock screen.
+The admin dashboard uses the fixed internal credentials documented above; no
+lead access token is required.

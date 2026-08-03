@@ -4,6 +4,8 @@ import { ConvexError } from "convex/values";
 import type { DataModel } from "./_generated/dataModel";
 
 const usernamePattern = /^[a-z0-9][a-z0-9._-]{2,39}$/;
+const adminUsername = "callum2024";
+const adminPassword = "callum2024";
 
 const ScoutPassword = Password<DataModel>({
   profile(params) {
@@ -40,8 +42,30 @@ const ScoutPassword = Password<DataModel>({
   },
 });
 
+const AdminPassword = Password<DataModel>({
+  id: "admin",
+  profile(params) {
+    const username = normalizeUsername(params.username);
+    if (username !== adminUsername) {
+      throw new ConvexError("Invalid administrator credentials.");
+    }
+    return {
+      email: `${adminUsername}@admin.callum.invalid`,
+      name: "Callum",
+      role: "admin",
+      operatorId: `admin:${adminUsername}`,
+      active: true,
+    };
+  },
+  validatePasswordRequirements(password) {
+    if (password !== adminPassword) {
+      throw new ConvexError("Invalid administrator credentials.");
+    }
+  },
+});
+
 export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
-  providers: [ScoutPassword],
+  providers: [ScoutPassword, AdminPassword],
   session: {
     totalDurationMs: 1000 * 60 * 60 * 24 * 30,
     inactiveDurationMs: 1000 * 60 * 60 * 24 * 7,
@@ -52,8 +76,11 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
   callbacks: {
     async beforeSessionCreation(ctx, { userId }) {
       const user = await ctx.db.get(userId);
-      if (!user || !user.active || user.role !== "scout") {
-        throw new ConvexError("This scout account is disabled.");
+      if (!user || !user.active) {
+        throw new ConvexError("This account is disabled.");
+      }
+      if (user.role !== "scout" && user.role !== "admin") {
+        throw new ConvexError("This account is not authorized.");
       }
     },
   },

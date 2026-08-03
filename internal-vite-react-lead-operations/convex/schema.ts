@@ -21,5 +21,6 @@ export default defineSchema({
   })
     .index("email", ["email"])
     .index("phone", ["phone"])
-    .index("by_operator_id", ["operatorId"]),
+    .index("by_operator_id", ["operatorId"])
+    .index("by_role", ["role"]),
 });

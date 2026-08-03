@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import vm from "node:vm";
 import {
   assertSafeSimulatorLocation,
   createLeadFixture,
@@ -18,13 +19,11 @@ const manifest = JSON.parse(
   await readFile(path.join(extensionRoot, "manifest.json"), "utf8"),
 );
 
-assert.equal(manifest.version, "0.3.0");
-assert.equal(
-  manifest.host_permissions.some((permission) =>
-    permission.includes("linkedin.com"),
-  ),
-  false,
-  "Simulator must not gain LinkedIn host permissions.",
+assert.equal(manifest.version, "0.4.0");
+assert.deepEqual(
+  manifest.content_scripts[0].matches,
+  ["https://*.linkedin.com/*"],
+  "Real automation must run on LinkedIn without an invalid chrome-extension match pattern.",
 );
 assert.doesNotThrow(() =>
   assertSafeSimulatorLocation({
@@ -147,6 +146,149 @@ assert.equal(
   "Simulator source must not contain a real LinkedIn URL.",
 );
 
+const contentSource = await readFile(
+  path.join(extensionRoot, "content.js"),
+  "utf8",
+);
+const backgroundSource = await readFile(
+  path.join(extensionRoot, "background.js"),
+  "utf8",
+);
+const popupSource = await readFile(
+  path.join(extensionRoot, "popup.html"),
+  "utf8",
+);
+const scoutsSource = await readFile(
+  path.join(projectRoot, "convex", "scouts.ts"),
+  "utf8",
+);
+const databaseSchemaSource = await readFile(
+  path.join(projectRoot, "database", "schema.sql"),
+  "utf8",
+);
+for (const selectorContract of [
+  "data-view-name='feed-full-update'",
+  "aria-label^='React'",
+  "data-test-ql-editor-contenteditable='true'",
+  "comments-comment-box__submit-button--cr",
+  "button[aria-label='More']",
+  "/preload/custom-invite/",
+  "button[aria-label='Send without a note']",
+]) {
+  assert.ok(
+    contentSource.includes(selectorContract),
+    `LinkedIn automation is missing the doc.md selector contract: ${selectorContract}`,
+  );
+}
+assert.match(
+  contentSource,
+  /findPostElements\(\{[\s\S]*?timeoutMs: 30_000,[\s\S]*?minimumCount: maxPosts,/,
+);
+assert.match(contentSource, /showWorkflowError/);
+assert.match(contentSource, /findActiveInvitationDialog/);
+assert.match(contentSource, /getLinkedInModalRoots/);
+assert.match(contentSource, /connectOptionMatchesTarget/);
+assert.match(contentSource, /getInvitationRecipient/);
+assert.match(contentSource, /Request cancelled before sending/);
+assert.match(contentSource, /toolbarReferencesCurrentProfile/);
+assert.equal(
+  contentSource.includes(
+    'document.querySelectorAll("a[href*=\'/preload/custom-invite/\']")',
+  ),
+  false,
+  "Connect lookup must never scan the entire page where recommendation cards can appear first.",
+);
+assert.match(contentSource, /data-testid='interop-shadowdom'/);
+assert.match(contentSource, /host\.shadowRoot/);
+assert.match(
+  contentSource,
+  /div\[data-test-modal\]\[role='dialog'\]/,
+);
+assert.match(backgroundSource, /type: "SHOW_AUTOMATION_ERROR"/);
+assert.match(backgroundSource, /automationOptions\.postEngagements > 0/);
+assert.match(backgroundSource, /type: "SHOW_AUTOMATION_STATUS"/);
+assert.match(backgroundSource, /waitForResolvedLinkedInProfileUrl/);
+assert.match(backgroundSource, /expectedProfileName: lead\.fullName/);
+assert.match(backgroundSource, /expectedProfileUrl: profileUrl/);
+assert.ok(
+  backgroundSource.indexOf("url: requestedProfileUrl") <
+    backgroundSource.indexOf("url: recentActivityUrl"),
+  "The imported profile URL must load and resolve before opening recent activity.",
+);
+assert.match(backgroundSource, /status: "engaged",\s+email: null,/);
+assert.match(
+  backgroundSource,
+  /status: "connection_requested",\s+email: null,/,
+);
+assert.match(
+  popupSource,
+  /id="post-engagements" type="number" min="0" max="10"/,
+);
+assert.match(
+  scoutsSource,
+  /postEngagements: clampInteger\(args\.postEngagements, 0, 10\)/,
+);
+assert.match(
+  databaseSchemaSource,
+  /CHECK \(post_engagements BETWEEN 0 AND 10\)/,
+);
+
+const listenerStub = () => ({ addListener() {}, removeListener() {} });
+const backgroundContext = {
+  URL,
+  clearTimeout,
+  console,
+  importScripts() {},
+  setTimeout,
+  chrome: {
+    action: {},
+    alarms: { create() {}, onAlarm: listenerStub() },
+    runtime: {
+      onInstalled: listenerStub(),
+      onMessage: listenerStub(),
+      onStartup: listenerStub(),
+    },
+    tabs: { onUpdated: listenerStub() },
+  },
+};
+vm.runInNewContext(backgroundSource, backgroundContext);
+assert.equal(backgroundContext.clampInteger(0, 0, 10), 0);
+assert.equal(
+  backgroundContext.normalizeLinkedInProfileUrl(
+    "https://linkedin.com/in/taylor-example/recent-activity/all/?x=1",
+  ),
+  "https://www.linkedin.com/in/taylor-example",
+);
+assert.throws(
+  () => backgroundContext.normalizeLinkedInProfileUrl("https://example.com/in/test"),
+  /LinkedIn profile URL/,
+);
+assert.equal(
+  backgroundContext.isOpaqueLinkedInProfileSlug(
+    "ACwAAAAA_40BB4SgUAstyDVvhPe-b63ueqoSlZ0",
+  ),
+  true,
+);
+assert.equal(
+  backgroundContext.isOpaqueLinkedInProfileSlug("mark-butler-3b691849"),
+  false,
+);
+let redirectPolls = 0;
+backgroundContext.chrome.tabs.get = async () => ({
+  url:
+    redirectPolls++ < 2
+      ? "https://www.linkedin.com/in/ACwAAAAA_40BB4SgUAstyDVvhPe-b63ueqoSlZ0"
+      : "https://www.linkedin.com/in/mark-butler-3b691849/",
+});
+assert.equal(
+  await backgroundContext.waitForResolvedLinkedInProfileUrl(
+    123,
+    "https://www.linkedin.com/in/ACwAAAAA_40BB4SgUAstyDVvhPe-b63ueqoSlZ0",
+    5_000,
+  ),
+  "https://www.linkedin.com/in/mark-butler-3b691849",
+);
+
 console.log(
-  "Extension simulator passed: 3 fixture posts reacted/commented, invitation accepted, email extracted, and four database transitions emitted.",
+  "Extension checks passed: simulator transitions, manifest matches, doc.md selectors, and LinkedIn profile URL normalization are valid.",
 );

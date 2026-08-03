@@ -160,7 +160,7 @@ CREATE INDEX IF NOT EXISTS lead_assignments_by_operator_id_and_status
 CREATE TABLE IF NOT EXISTS operator_settings (
   operator_id STRING PRIMARY KEY,
   post_engagements INT4 NOT NULL DEFAULT 3
-    CHECK (post_engagements BETWEEN 1 AND 10),
+    CHECK (post_engagements BETWEEN 0 AND 10),
   engagement_interval_minutes INT8 NOT NULL DEFAULT 60
     CHECK (engagement_interval_minutes BETWEEN 1 AND 43200),
   connection_delay_minutes INT8 NOT NULL DEFAULT 1440
@@ -168,6 +168,13 @@ CREATE TABLE IF NOT EXISTS operator_settings (
   include_note BOOL NOT NULL DEFAULT false,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE operator_settings
+  DROP CONSTRAINT IF EXISTS check_post_engagements;
+
+ALTER TABLE operator_settings
+  ADD CONSTRAINT check_post_engagements
+  CHECK (post_engagements BETWEEN 0 AND 10);
 
 CREATE TABLE IF NOT EXISTS lead_assignment_events (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -28,10 +28,6 @@ if (!databaseUrl) {
     "Set CRDB_PASSWORD or add COCKROACH_DATABASE_URL to .env.local.",
   );
 }
-const shouldRotateToken = process.env.ROTATE_LEADS_API_TOKEN === "1";
-const accessToken = !shouldRotateToken && values.get("LEADS_API_TOKEN")
-  ? values.get("LEADS_API_TOKEN")
-  : randomBytes(32).toString("base64url");
 const provisioningKey = values.get("SCOUT_PROVISIONING_KEY")
   ?? randomBytes(32).toString("base64url");
 const gatewaySharedSecret = values.get("CODEX_GATEWAY_SHARED_SECRET")
@@ -41,9 +37,9 @@ const authEncryptionKey = values.get("CODEX_AUTH_ENCRYPTION_KEY")
 const gatewayUrl = process.env.CODEX_GATEWAY_URL?.trim()
   || values.get("CODEX_GATEWAY_URL")?.trim();
 const hadLegacyOpenAiKey = values.delete("OPENAI_API_KEY");
+values.delete("LEADS_API_TOKEN");
 
 values.set("COCKROACH_DATABASE_URL", databaseUrl);
-values.set("LEADS_API_TOKEN", accessToken);
 values.set("SCOUT_PROVISIONING_KEY", provisioningKey);
 values.set("CODEX_GATEWAY_SHARED_SECRET", gatewaySharedSecret);
 values.set("CODEX_AUTH_ENCRYPTION_KEY", authEncryptionKey);
@@ -63,7 +59,6 @@ writeFileSync(envPath, output, { encoding: "utf8", mode: 0o600 });
 const convexCli = path.join(projectRoot, "node_modules", "convex", "bin", "main.js");
 for (const [name, value] of [
   ["COCKROACH_DATABASE_URL", databaseUrl],
-  ["LEADS_API_TOKEN", accessToken],
   ["SCOUT_PROVISIONING_KEY", provisioningKey],
   ["CODEX_GATEWAY_SHARED_SECRET", gatewaySharedSecret],
   ...(gatewayUrl
@@ -82,11 +77,7 @@ if (hadLegacyOpenAiKey) {
   });
 }
 
-console.log(
-  shouldRotateToken
-    ? "Server secrets are configured and the lead access token was rotated."
-    : "Server secrets are configured locally and in Convex.",
-);
+console.log("Server secrets are configured locally and in Convex.");
 if (!gatewayUrl) {
   console.log(
     "CODEX_GATEWAY_URL is not set yet. Add the VPS HTTPS URL, then rerun this command.",

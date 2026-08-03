@@ -8,11 +8,12 @@
  * @module
  */
 
+import type * as adminAnalytics from "../adminAnalytics.js";
+import type * as adminIdentity from "../adminIdentity.js";
 import type * as auth from "../auth.js";
 import type * as codexGateway from "../codexGateway.js";
 import type * as http from "../http.js";
 import type * as leads from "../leads.js";
-import type * as lib_adminAccess from "../lib/adminAccess.js";
 import type * as lib_cockroach from "../lib/cockroach.js";
 import type * as lib_codexGateway from "../lib/codexGateway.js";
 import type * as scoutAdmin from "../scoutAdmin.js";
@@ -27,11 +28,12 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  adminAnalytics: typeof adminAnalytics;
+  adminIdentity: typeof adminIdentity;
   auth: typeof auth;
   codexGateway: typeof codexGateway;
   http: typeof http;
   leads: typeof leads;
-  "lib/adminAccess": typeof lib_adminAccess;
   "lib/cockroach": typeof lib_cockroach;
   "lib/codexGateway": typeof lib_codexGateway;
   scoutAdmin: typeof scoutAdmin;

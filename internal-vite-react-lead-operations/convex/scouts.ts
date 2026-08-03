@@ -304,7 +304,7 @@ export const updateSettings = action({
   handler: async (ctx, args) => {
     const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
     const settings = {
-      postEngagements: clampInteger(args.postEngagements, 1, 10),
+      postEngagements: clampInteger(args.postEngagements, 0, 10),
       engagementIntervalMinutes: clampInteger(
         args.engagementIntervalMinutes,
         1,
