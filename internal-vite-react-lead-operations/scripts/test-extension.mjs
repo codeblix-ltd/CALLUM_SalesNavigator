@@ -23,7 +23,7 @@ const [manifestSource, popupSource, popupScript, backgroundSource, contentSource
   ]);
 const manifest = JSON.parse(manifestSource);
 
-assert.equal(manifest.version, "0.7.1");
+assert.equal(manifest.version, "0.7.2");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -52,6 +52,12 @@ assert.match(popupSource, /id="onboarding-next"[\s\S]*disabled/);
 assert.match(popupSource, /id="connection-daily-limit"/);
 assert.doesNotMatch(popupSource, /id="engagement-daily-limit"/);
 assert.match(popupSource, /Calculated daily likes/);
+assert.match(
+  popupSource,
+  /id="onboarding-validate-comment"[^>]*disabled/,
+);
+assert.match(popupSource, /id="validate-comment"[^>]*disabled/);
+assert.doesNotMatch(popupSource, /id="validate-comment"[^>]*checked/);
 assert.match(popupScript, /Math\.floor\(limits\.likes \/ requests\)/);
 assert.doesNotMatch(
   popupSource,
@@ -68,6 +74,7 @@ assert.match(popupScript, /onboardingCompleted: true/);
 assert.match(popupScript, /connectionDailyLimit/);
 assert.doesNotMatch(popupScript, /values\.engagementDailyLimit/);
 assert.match(popupScript, /premiumVerified/);
+assert.match(popupScript, /validateBeforeCommenting: false/);
 assert.match(popupScript, /scouts:resetOnboarding/);
 assert.match(popupScript, /leads, assignments, and usage history will not be changed/);
 
@@ -91,6 +98,7 @@ assert.match(contentSource, /Connected on\\s\+/);
 assert.match(contentSource, /EXTRACT_CONTACT_INFO/);
 assert.match(contentSource, /a\[href\^='mailto:'\]/);
 assert.match(contentSource, /recordPostActivity/);
+assert.match(contentSource, /const validate = false/);
 assert.match(contentSource, /feed\/update\/urn:li:activity/);
 assert.match(contentSource, /INSPECT_PREMIUM_ACCOUNT/);
 assert.match(contentSource, /plan recommendation/i);
@@ -98,6 +106,7 @@ assert.match(contentSource, /manage-premium-account/);
 assert.match(backgroundSource, /CHECK_LINKEDIN_PREMIUM/);
 assert.match(backgroundSource, /premium\/my-premium/);
 assert.match(backgroundSource, /INSPECT_PREMIUM_ACCOUNT/);
+assert.match(backgroundSource, /validateBeforeCommenting: false/);
 assert.match(backgroundSource, /settings\.includeNote && settings\.linkedinPremium/);
 assert.match(backgroundSource, /getConnectionReviewPlan/);
 assert.match(backgroundSource, /recordConnectionReview/);

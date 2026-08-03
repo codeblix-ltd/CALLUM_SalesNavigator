@@ -233,6 +233,7 @@ async function saveOnboarding(event) {
       onboardingCompleted: true,
       includeNote: false,
     });
+    await chrome.storage.local.set({ validateBeforeCommenting: false });
     dashboard.settings = settings;
     showSuccess("Setup saved. Your daily workflow is ready.");
     await refreshDashboard();
@@ -319,7 +320,7 @@ async function saveSettings(event) {
       includeNote,
     });
     await chrome.storage.local.set({
-      validateBeforeCommenting: elements.validateComment.checked,
+      validateBeforeCommenting: false,
       invitationNote: invitationNote || DEFAULT_INVITATION_NOTE,
     });
     dashboard.settings = settings;
@@ -397,9 +398,9 @@ function renderSettings(settings) {
   updateLimitControls("settings");
   syncPremiumNoteGate();
   void chrome.storage.local
-    .get(["validateBeforeCommenting", "invitationNote"])
+    .get(["invitationNote"])
     .then((stored) => {
-      elements.validateComment.checked = stored.validateBeforeCommenting ?? true;
+      elements.validateComment.checked = false;
       elements.invitationNote.value =
         stored.invitationNote?.trim() || DEFAULT_INVITATION_NOTE;
     });

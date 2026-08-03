@@ -2,6 +2,23 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import {
+  LUNA_SYSTEM_PROMPT,
+  normalizeLunaDraft,
+} from "./app-server-client.mjs";
+
+if (!LUNA_SYSTEM_PROMPT.includes("clear, everyday English")) {
+  throw new Error("Luna's system prompt is missing the plain-English rule.");
+}
+if (!LUNA_SYSTEM_PROMPT.includes("Never use em dashes")) {
+  throw new Error("Luna's system prompt is missing the em-dash rule.");
+}
+if (LUNA_SYSTEM_PROMPT.includes("\u2014")) {
+  throw new Error("Luna's system prompt contains an em dash.");
+}
+if (normalizeLunaDraft("Clear\u2014direct") !== "Clear, direct") {
+  throw new Error("Luna's output guard did not remove an em dash.");
+}
 
 const sharedSecret = process.env.CODEX_GATEWAY_SHARED_SECRET;
 if (!sharedSecret) {
