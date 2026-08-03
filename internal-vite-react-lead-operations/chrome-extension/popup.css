@@ -125,6 +125,122 @@ input:focus, select:focus, textarea:focus {
 .welcome-row { display: flex; align-items: center; justify-content: space-between; }
 .welcome-row h1 { margin-bottom: 12px; text-transform: capitalize; }
 .onboarding-card { margin-top: 2px; }
+.setup-progress {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  margin: 3px 0 15px;
+}
+.setup-progress span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #9aa2b1;
+  font-size: 9px;
+}
+.setup-progress span::first-letter { font-weight: 900; }
+.setup-progress span.is-active { color: #5c42c3; }
+.setup-progress span b { font-size: 9px; }
+.setup-progress i { height: 1px; background: #dfe3eb; }
+.setup-step { display: grid; gap: 11px; }
+.setup-step h1 { margin-bottom: -5px; }
+.plan-choice-grid { display: grid; gap: 8px; }
+.plan-choice {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  align-items: center;
+  gap: 10px;
+  min-height: 61px;
+  padding: 10px 12px;
+  color: #303a54;
+  text-align: left;
+  background: #fff;
+  border: 1px solid #dce2ec;
+  border-radius: 12px;
+}
+.plan-choice:hover { border-color: #bcb0e9; background: #faf9ff; }
+.plan-choice.is-selected {
+  border-color: #7558da;
+  background: #f3efff;
+  box-shadow: 0 0 0 1px #7558da inset;
+}
+.plan-choice-icon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  color: #5d677c;
+  background: #edf0f5;
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 900;
+}
+.plan-choice-icon.premium { color: #6b4ccf; background: #e7e0ff; }
+.plan-choice strong, .plan-choice small { display: block; }
+.plan-choice strong { font-size: 11px; }
+.plan-choice small { margin-top: 3px; color: #7f899c; font-size: 9px; line-height: 1.35; }
+.premium-validation {
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+  color: #4d426f;
+  background: #f8f5ff;
+  border: 1px solid #dcd3fb;
+  border-radius: 12px;
+}
+.premium-validation[hidden], .setup-step[hidden] { display: none; }
+.premium-validation strong { font-size: 10px; }
+.premium-validation p { margin: 4px 0 0; color: #766b96; font-size: 9px; line-height: 1.45; }
+.premium-validation .secondary { width: 100%; }
+.validation-status {
+  color: #8a7698;
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: .35px;
+  text-align: center;
+  text-transform: uppercase;
+}
+.validation-status.is-verified { color: #25704e; }
+.validation-status.is-error { color: #a44242; }
+.back-button {
+  justify-self: start;
+  min-height: auto;
+  padding: 0;
+  color: #6752bd;
+  background: transparent;
+  border: 0;
+  font-size: 9px;
+  font-weight: 800;
+}
+.selected-plan-summary {
+  padding: 8px 10px;
+  color: #614ab8;
+  background: #f1edff;
+  border-radius: 9px;
+  font-size: 9px;
+  font-weight: 800;
+}
+.daily-calculation {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  color: #5b4a9f;
+  background: #f1edff;
+  border: 1px solid #d9d0fb;
+  border-radius: 11px;
+}
+.daily-calculation > span {
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: .45px;
+  text-transform: uppercase;
+}
+.daily-calculation strong { color: #3d2b87; font-size: 12px; }
+.daily-calculation small { color: #766c96; font-size: 9px; line-height: 1.35; }
+.capacity-track { height: 5px; margin-top: 3px; overflow: hidden; background: #ddd5f6; border-radius: 999px; }
+.capacity-track i { display: block; width: 0; height: 100%; background: linear-gradient(90deg, #7455dd, #9a7cec); border-radius: inherit; transition: width .2s ease; }
+.compact-calculation { padding: 10px 11px; }
 .daily-usage {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -163,7 +279,9 @@ input:focus, select:focus, textarea:focus {
 .automation-controls { margin-top: 7px; }
 .automation-controls .primary { width: 100%; min-height: 42px; }
 
-.utility-row { display: flex; justify-content: flex-end; margin: 8px 1px; }
+.utility-row { display: flex; justify-content: space-between; margin: 8px 1px; }
+.reset-button { color: #9b5360; }
+.reset-button:hover { color: #7d3542; background: #fff0f2; border-radius: 7px; }
 .settings-card { margin-top: 8px; }
 .recommended-card {
   display: grid;

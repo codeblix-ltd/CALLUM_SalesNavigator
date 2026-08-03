@@ -45,6 +45,15 @@
       return false;
     }
 
+    if (message?.type === "INSPECT_PREMIUM_ACCOUNT") {
+      try {
+        sendResponse({ ok: true, ...inspectPremiumAccount() });
+      } catch (error) {
+        sendResponse({ ok: false, error: cleanError(error) });
+      }
+      return false;
+    }
+
     if (message?.type === "SHOW_AUTOMATION_ERROR") {
       showWorkflowError(message.error || "Automation failed.");
       sendResponse({ ok: true });
@@ -59,6 +68,82 @@
       return false;
     }
   });
+
+  function inspectPremiumAccount() {
+    const premiumRoute =
+      window.location.pathname.replace(/\/+$/, "") === "/premium/my-premium";
+    if (!premiumRoute) {
+      return {
+        premium: false,
+        evidence: "LinkedIn redirected away from the Premium account page.",
+      };
+    }
+
+    const root = document.querySelector("main") || document.body;
+    const visibleSignals = Array.from(
+      root.querySelectorAll(
+        "h1, h2, h3, [role='group'], [role='progressbar'], a, button",
+      ),
+    )
+      .filter(
+        (element) =>
+          isElementVisible(element) &&
+          !element.closest("#callum-scout-overlay"),
+      )
+      .slice(0, 120)
+      .map((element) => element.textContent?.replace(/\s+/g, " ").trim())
+      .filter(Boolean);
+    const pageSignals = `${document.title} ${visibleSignals.join(" ")}`;
+    const purchaseSignals = [
+      /plan recommendation/i,
+      /personalizing your plan/i,
+      /get noticed by the right people with premium/i,
+      /what could you use support with today/i,
+      /reactivate premium/i,
+      /try premium/i,
+      /start (?:a )?free trial/i,
+      /choose (?:a|your) premium plan/i,
+    ];
+    if (purchaseSignals.some((pattern) => pattern.test(pageSignals))) {
+      return {
+        premium: false,
+        evidence:
+          "LinkedIn showed its Premium plan recommendation flow, so the signed-in account does not have an active Premium subscription.",
+      };
+    }
+
+    const hasManagementLink = Array.from(
+      root.querySelectorAll(
+        "a[href*='manage-premium-account'], a[href*='manage-subscription'], a[href*='subscription-management']",
+      ),
+    ).some(isElementVisible);
+    const subscriberSignals = [
+      /manage premium account/i,
+      /manage (?:your )?subscription/i,
+      /subscription details/i,
+      /your premium subscription/i,
+      /premium subscription is active/i,
+      /billing (?:details|information)/i,
+      /renewal date/i,
+      /(^|\s)my premium($|\s)/i,
+    ];
+    if (
+      hasManagementLink ||
+      subscriberSignals.some((pattern) => pattern.test(pageSignals))
+    ) {
+      return {
+        premium: true,
+        evidence:
+          "LinkedIn showed the active Premium subscription dashboard for the signed-in account.",
+      };
+    }
+
+    return {
+      premium: false,
+      evidence:
+        "LinkedIn did not show an active Premium subscription dashboard. Confirm the correct LinkedIn account is signed in and try again.",
+    };
+  }
 
   // Inject overlay widget automatically on LinkedIn pages
   if (window.location.hostname.includes("linkedin.com")) {

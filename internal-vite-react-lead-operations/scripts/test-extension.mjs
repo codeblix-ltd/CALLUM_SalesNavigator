@@ -23,7 +23,7 @@ const [manifestSource, popupSource, popupScript, backgroundSource, contentSource
   ]);
 const manifest = JSON.parse(manifestSource);
 
-assert.equal(manifest.version, "0.6.0");
+assert.equal(manifest.version, "0.7.1");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -44,11 +44,15 @@ assert.doesNotMatch(
   /claimNextLead|updateLeadStatus|generateDraft|copyDraft|contactInfoUrl/,
 );
 assert.match(popupSource, /id="start-auto-lead"/);
+assert.match(popupSource, /id="reset-onboarding"/);
 assert.match(popupSource, /id="onboarding-form"/);
+assert.match(popupSource, /Do you have LinkedIn Premium\?/);
+assert.match(popupSource, /verify your real LinkedIn account/i);
+assert.match(popupSource, /id="onboarding-next"[\s\S]*disabled/);
 assert.match(popupSource, /id="connection-daily-limit"/);
-assert.match(popupSource, /id="engagement-daily-limit"/);
-assert.match(popupSource, /20 connection requests · 150 likes per day/);
-assert.match(popupScript, /40 connection requests · 250 likes per day/);
+assert.doesNotMatch(popupSource, /id="engagement-daily-limit"/);
+assert.match(popupSource, /Calculated daily likes/);
+assert.match(popupScript, /Math\.floor\(limits\.likes \/ requests\)/);
 assert.doesNotMatch(
   popupSource,
   /Review sent invitations|Review interval|Wait before connecting|id="open-sent"/i,
@@ -62,7 +66,10 @@ assert.match(popupScript, /verifyPremiumAndUnlockNote/);
 assert.match(popupScript, /invitationNote/);
 assert.match(popupScript, /onboardingCompleted: true/);
 assert.match(popupScript, /connectionDailyLimit/);
-assert.match(popupScript, /engagementDailyLimit/);
+assert.doesNotMatch(popupScript, /values\.engagementDailyLimit/);
+assert.match(popupScript, /premiumVerified/);
+assert.match(popupScript, /scouts:resetOnboarding/);
+assert.match(popupScript, /leads, assignments, and usage history will not be changed/);
 
 for (const selectorContract of [
   "button[aria-label='Add a note']",
@@ -85,8 +92,12 @@ assert.match(contentSource, /EXTRACT_CONTACT_INFO/);
 assert.match(contentSource, /a\[href\^='mailto:'\]/);
 assert.match(contentSource, /recordPostActivity/);
 assert.match(contentSource, /feed\/update\/urn:li:activity/);
+assert.match(contentSource, /INSPECT_PREMIUM_ACCOUNT/);
+assert.match(contentSource, /plan recommendation/i);
+assert.match(contentSource, /manage-premium-account/);
 assert.match(backgroundSource, /CHECK_LINKEDIN_PREMIUM/);
 assert.match(backgroundSource, /premium\/my-premium/);
+assert.match(backgroundSource, /INSPECT_PREMIUM_ACCOUNT/);
 assert.match(backgroundSource, /settings\.includeNote && settings\.linkedinPremium/);
 assert.match(backgroundSource, /getConnectionReviewPlan/);
 assert.match(backgroundSource, /recordConnectionReview/);

@@ -400,12 +400,31 @@ async function inspectLinkedInPremium() {
   if (!tab?.id) throw new Error("Unable to open LinkedIn for the Premium check.");
   try {
     const finalUrl = await waitForStableTabUrl(tab.id);
-    const premium = isLinkedInPremiumUrl(finalUrl);
+    let inspection = {
+      premium: false,
+      evidence: "LinkedIn redirected away from the Premium account page.",
+    };
+    if (isLinkedInPremiumUrl(finalUrl)) {
+      await waitForContentScript(tab.id);
+      const response = await sendMessageToTab(tab.id, {
+        type: "INSPECT_PREMIUM_ACCOUNT",
+      });
+      if (!response?.ok) {
+        throw new Error(
+          response?.error || "Unable to inspect the LinkedIn Premium account page.",
+        );
+      }
+      inspection = {
+        premium: response.premium === true,
+        evidence: String(response.evidence || "").trim(),
+      };
+    }
     await chrome.storage.local.set({
-      linkedInPremium: premium,
+      linkedInPremium: inspection.premium,
       linkedInPremiumCheckedAt: Date.now(),
+      linkedInPremiumEvidence: inspection.evidence,
     });
-    return { premium };
+    return inspection;
   } finally {
     await chrome.tabs.remove(tab.id).catch(() => {});
   }
@@ -447,8 +466,8 @@ async function disableInvitationNoteSetting(settings) {
   await ScoutApi.authenticatedAction("scouts:updateSettings", {
     postEngagements: Number(settings.postEngagements ?? 3),
     linkedinPremium: Boolean(settings.linkedinPremium),
+    premiumVerified: Boolean(settings.linkedinPremiumVerified),
     connectionDailyLimit: Number(settings.connectionDailyLimit ?? 20),
-    engagementDailyLimit: Number(settings.engagementDailyLimit ?? 150),
     onboardingCompleted: Boolean(settings.onboardingCompleted),
     includeNote: false,
   });

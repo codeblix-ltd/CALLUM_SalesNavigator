@@ -17,6 +17,7 @@ type ScoutIdentity = {
 type ScoutSettings = {
   postEngagements: number;
   linkedinPremium: boolean;
+  linkedinPremiumVerified: boolean;
   connectionDailyLimit: number;
   engagementDailyLimit: number;
   onboardingCompleted: boolean;
@@ -74,6 +75,7 @@ const optionalText = v.union(v.string(), v.null());
 const settingsValidator = v.object({
   postEngagements: v.number(),
   linkedinPremium: v.boolean(),
+  linkedinPremiumVerified: v.boolean(),
   connectionDailyLimit: v.number(),
   engagementDailyLimit: v.number(),
   onboardingCompleted: v.boolean(),
@@ -907,8 +909,8 @@ export const updateSettings = action({
   args: {
     postEngagements: v.number(),
     linkedinPremium: v.boolean(),
+    premiumVerified: v.boolean(),
     connectionDailyLimit: v.number(),
-    engagementDailyLimit: v.number(),
     onboardingCompleted: v.boolean(),
     includeNote: v.boolean(),
   },
@@ -917,19 +919,27 @@ export const updateSettings = action({
     const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
     const connectionMaximum = args.linkedinPremium ? 40 : 20;
     const engagementMaximum = args.linkedinPremium ? 250 : 150;
+    if (args.linkedinPremium && !args.premiumVerified) {
+      throw new Error(
+        "LinkedIn Premium must be verified against the signed-in account before it can be selected.",
+      );
+    }
+    const connectionDailyLimit = clampInteger(
+      args.connectionDailyLimit,
+      1,
+      connectionMaximum,
+    );
+    const postMaximum = Math.min(
+      10,
+      Math.floor(engagementMaximum / connectionDailyLimit),
+    );
     const settings: ScoutSettings = {
-      postEngagements: clampInteger(args.postEngagements, 1, 10),
+      postEngagements: clampInteger(args.postEngagements, 1, postMaximum),
       linkedinPremium: args.linkedinPremium,
-      connectionDailyLimit: clampInteger(
-        args.connectionDailyLimit,
-        1,
-        connectionMaximum,
-      ),
-      engagementDailyLimit: clampInteger(
-        args.engagementDailyLimit,
-        1,
-        engagementMaximum,
-      ),
+      linkedinPremiumVerified:
+        args.linkedinPremium && args.premiumVerified,
+      connectionDailyLimit,
+      engagementDailyLimit: engagementMaximum,
       onboardingCompleted: args.onboardingCompleted,
       includeNote: args.linkedinPremium && args.includeNote,
     };
@@ -939,12 +949,13 @@ export const updateSettings = action({
          operator_id,
          post_engagements,
          linkedin_premium,
+         linkedin_premium_verified_at,
          connection_daily_limit,
          engagement_daily_limit,
          onboarding_completed,
          include_note,
          updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, now())`,
+       ) VALUES ($1, $2, $3, CASE WHEN $3 THEN now() ELSE NULL END, $4, $5, $6, $7, now())`,
       [
         scout.operatorId,
         settings.postEngagements,
@@ -953,6 +964,44 @@ export const updateSettings = action({
         settings.engagementDailyLimit,
         settings.onboardingCompleted,
         settings.includeNote,
+      ],
+    );
+    return settings;
+  },
+});
+
+export const resetOnboarding = action({
+  args: {},
+  returns: settingsValidator,
+  handler: async (ctx): Promise<ScoutSettings> => {
+    const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
+    const settings: ScoutSettings = {
+      postEngagements: 3,
+      linkedinPremium: false,
+      linkedinPremiumVerified: false,
+      connectionDailyLimit: 20,
+      engagementDailyLimit: 150,
+      onboardingCompleted: false,
+      includeNote: false,
+    };
+    const database = getPool();
+    await database.query(
+      `UPSERT INTO operator_settings (
+         operator_id,
+         post_engagements,
+         linkedin_premium,
+         linkedin_premium_verified_at,
+         connection_daily_limit,
+         engagement_daily_limit,
+         onboarding_completed,
+         include_note,
+         updated_at
+       ) VALUES ($1, $2, false, NULL, $3, $4, false, false, now())`,
+      [
+        scout.operatorId,
+        settings.postEngagements,
+        settings.connectionDailyLimit,
+        settings.engagementDailyLimit,
       ],
     );
     return settings;
@@ -1028,6 +1077,7 @@ async function getOrCreateSettings(operatorId: string): Promise<ScoutSettings> {
     `SELECT
        post_engagements::FLOAT8 AS post_engagements,
        linkedin_premium,
+       linkedin_premium_verified_at IS NOT NULL AS linkedin_premium_verified,
        connection_daily_limit::FLOAT8 AS connection_daily_limit,
        engagement_daily_limit::FLOAT8 AS engagement_daily_limit,
        onboarding_completed,
@@ -1040,6 +1090,7 @@ async function getOrCreateSettings(operatorId: string): Promise<ScoutSettings> {
   return {
     postEngagements: Number(row.post_engagements ?? 3),
     linkedinPremium: Boolean(row.linkedin_premium),
+    linkedinPremiumVerified: Boolean(row.linkedin_premium_verified),
     connectionDailyLimit: Number(row.connection_daily_limit ?? 20),
     engagementDailyLimit: Number(row.engagement_daily_limit ?? 150),
     onboardingCompleted: Boolean(row.onboarding_completed),

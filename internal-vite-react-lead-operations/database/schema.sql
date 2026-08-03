@@ -166,6 +166,7 @@ CREATE TABLE IF NOT EXISTS operator_settings (
   post_engagements INT4 NOT NULL DEFAULT 3
     CHECK (post_engagements BETWEEN 1 AND 10),
   linkedin_premium BOOL NOT NULL DEFAULT false,
+  linkedin_premium_verified_at TIMESTAMPTZ NULL,
   connection_daily_limit INT4 NOT NULL DEFAULT 20
     CHECK (connection_daily_limit BETWEEN 1 AND 40),
   engagement_daily_limit INT4 NOT NULL DEFAULT 150
@@ -177,6 +178,7 @@ CREATE TABLE IF NOT EXISTS operator_settings (
 
 ALTER TABLE operator_settings
   ADD COLUMN IF NOT EXISTS linkedin_premium BOOL NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS linkedin_premium_verified_at TIMESTAMPTZ NULL,
   ADD COLUMN IF NOT EXISTS connection_daily_limit INT4 NOT NULL DEFAULT 20,
   ADD COLUMN IF NOT EXISTS engagement_daily_limit INT4 NOT NULL DEFAULT 150,
   ADD COLUMN IF NOT EXISTS onboarding_completed BOOL NOT NULL DEFAULT false;
@@ -211,12 +213,52 @@ ALTER TABLE operator_settings
 ALTER TABLE operator_settings
   DROP CONSTRAINT IF EXISTS check_engagement_daily_limit;
 
+-- The likes limit is a plan cap, not a separate operator setting. Every run can
+-- like at most one post engagement for each request × recent-post combination.
+UPDATE operator_settings
+   SET connection_daily_limit = LEAST(
+         connection_daily_limit,
+         CASE WHEN linkedin_premium THEN 40 ELSE 20 END
+       ),
+       engagement_daily_limit = CASE
+         WHEN linkedin_premium THEN 250
+         ELSE 150
+       END;
+
 ALTER TABLE operator_settings
   ADD CONSTRAINT check_engagement_daily_limit
   CHECK (
-    engagement_daily_limit BETWEEN 1 AND
+    engagement_daily_limit =
       CASE WHEN linkedin_premium THEN 250 ELSE 150 END
   );
+
+UPDATE operator_settings
+   SET post_engagements = LEAST(
+         post_engagements,
+         CASE
+           WHEN linkedin_premium
+             THEN floor(250.0 / connection_daily_limit)::INT4
+           ELSE floor(150.0 / connection_daily_limit)::INT4
+         END
+       );
+
+ALTER TABLE operator_settings
+  DROP CONSTRAINT IF EXISTS check_daily_engagement_product;
+
+ALTER TABLE operator_settings
+  ADD CONSTRAINT check_daily_engagement_product
+  CHECK (
+    connection_daily_limit * post_engagements <=
+      CASE WHEN linkedin_premium THEN 250 ELSE 150 END
+  );
+
+-- Premium rows saved before live-account verification must pass through the new
+-- gated setup once before automation can run again.
+UPDATE operator_settings
+   SET onboarding_completed = false,
+       include_note = false
+ WHERE linkedin_premium
+   AND linkedin_premium_verified_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS operator_daily_usage (
   operator_id STRING NOT NULL,

@@ -38,35 +38,65 @@
 
       <section id="onboarding-view" class="card onboarding-card" hidden>
         <p class="eyebrow">First-time setup</p>
-        <h1>Set your daily workflow</h1>
-        <p class="muted">
-          Choose your LinkedIn plan first, then confirm how many assigned leads and post engagements to run each day.
-        </p>
+        <div class="setup-progress" aria-label="Setup progress">
+          <span id="plan-step-marker" class="is-active">1 <b>Plan</b></span>
+          <i></i>
+          <span id="workflow-step-marker">2 <b>Daily pace</b></span>
+        </div>
         <form id="onboarding-form">
-          <label>
-            LinkedIn plan
-            <select id="onboarding-plan">
-              <option value="free">Free LinkedIn</option>
-              <option value="premium">LinkedIn Premium</option>
-            </select>
-          </label>
-          <div class="recommended-card">
-            <strong>Recommended</strong>
-            <span id="onboarding-recommendation">20 connection requests · 150 likes per day</span>
+          <div id="onboarding-plan-step" class="setup-step">
+            <h1>Do you have LinkedIn Premium?</h1>
+            <p class="muted">
+              Choose the plan used by the LinkedIn account currently signed in to this browser.
+            </p>
+            <div class="plan-choice-grid" role="group" aria-label="LinkedIn plan">
+              <button id="onboarding-free-plan" class="plan-choice" type="button" aria-pressed="false">
+                <span class="plan-choice-icon">F</span>
+                <span><strong>No, I use Free</strong><small>Up to 20 requests · 150 daily likes</small></span>
+              </button>
+              <button id="onboarding-premium-plan" class="plan-choice" type="button" aria-pressed="false">
+                <span class="plan-choice-icon premium">P</span>
+                <span><strong>Yes, I have Premium</strong><small>Up to 40 requests · 250 daily likes</small></span>
+              </button>
+            </div>
+            <section id="onboarding-premium-check" class="premium-validation" hidden>
+              <div>
+                <strong>We’ll verify your real LinkedIn account</strong>
+                <p>
+                  The extension will securely open LinkedIn’s Premium page and confirm the signed-in account has an active Premium subscription. You cannot continue until it is verified.
+                </p>
+              </div>
+              <button id="onboarding-verify-premium" class="secondary" type="button">Verify with LinkedIn</button>
+              <span id="onboarding-premium-status" class="validation-status">Not verified</span>
+            </section>
+            <button id="onboarding-next" class="primary" type="button" disabled>Continue to daily pace</button>
           </div>
-          <label>
-            Connection requests per day
-            <input id="onboarding-connection-limit" type="number" min="1" max="20" required />
-          </label>
-          <label>
-            Engagements (likes) per day
-            <input id="onboarding-engagement-limit" type="number" min="1" max="150" required />
-          </label>
-          <label>
-            Recent posts to engage per lead
-            <input id="onboarding-posts-per-lead" type="number" min="1" max="10" required />
-          </label>
-          <button class="primary" type="submit">Save and open my queue</button>
+
+          <div id="onboarding-workflow-step" class="setup-step" hidden>
+            <button id="onboarding-back" class="back-button" type="button">← Back to plan</button>
+            <p class="eyebrow">Your daily pace</p>
+            <h1>How much should run each day?</h1>
+            <p class="muted">
+              Likes are calculated automatically from requests × recent posts per lead.
+            </p>
+            <div id="onboarding-plan-summary" class="selected-plan-summary">Free LinkedIn limits</div>
+            <label>
+              Connection requests per day
+              <input id="onboarding-connection-limit" type="number" min="1" max="20" required />
+            </label>
+            <label>
+              Recent posts to engage per lead
+              <input id="onboarding-posts-per-lead" type="number" min="1" max="7" required />
+              <span id="onboarding-post-help" class="field-help"></span>
+            </label>
+            <div class="daily-calculation" aria-live="polite">
+              <span>Calculated daily likes</span>
+              <strong id="onboarding-calculation">20 requests × 3 posts = 60 likes</strong>
+              <small id="onboarding-capacity">90 likes remain below the Free limit of 150.</small>
+              <div class="capacity-track"><i id="onboarding-capacity-bar"></i></div>
+            </div>
+            <button class="primary" type="submit">Save and open my queue</button>
+          </div>
         </form>
       </section>
 
@@ -109,6 +139,9 @@
         </section>
 
         <div class="utility-row">
+          <button id="reset-onboarding" class="text-button reset-button" type="button">
+            Restart onboarding
+          </button>
           <button id="toggle-settings" class="text-button" type="button">Settings</button>
         </div>
 
@@ -124,22 +157,21 @@
               <option value="premium">LinkedIn Premium</option>
             </select>
           </label>
-          <div class="recommended-card compact-recommendation">
-            <strong>Recommended</strong>
-            <span id="settings-recommendation">20 connection requests · 150 likes per day</span>
-          </div>
           <label>
             Connection requests per day
             <input id="connection-daily-limit" type="number" min="1" max="20" required />
           </label>
           <label>
-            Engagements (likes) per day
-            <input id="engagement-daily-limit" type="number" min="1" max="150" required />
-          </label>
-          <label>
             Recent posts to engage per lead
-            <input id="post-engagements" type="number" min="1" max="10" required />
+            <input id="post-engagements" type="number" min="1" max="7" required />
+            <span id="settings-post-help" class="field-help"></span>
           </label>
+          <div class="daily-calculation compact-calculation" aria-live="polite">
+            <span>Calculated daily likes</span>
+            <strong id="settings-calculation">20 requests × 3 posts = 60 likes</strong>
+            <small id="settings-capacity">90 likes remain below the Free limit of 150.</small>
+            <div class="capacity-track"><i id="settings-capacity-bar"></i></div>
+          </div>
           <label class="check-row">
             <input id="validate-comment" type="checkbox" checked />
             Review generated replies before commenting
@@ -164,7 +196,7 @@
               <span class="field-help">Sent exactly as written. Maximum 300 characters.</span>
             </label>
           </section>
-          <button class="primary" type="submit">Save settings</button>
+          <button id="save-settings" class="primary" type="submit">Save settings</button>
         </form>
       </section>
 

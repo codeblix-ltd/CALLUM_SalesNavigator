@@ -18,26 +18,45 @@ const elements = {
   requestUsage: document.querySelector("#request-usage"),
   engagementUsage: document.querySelector("#engagement-usage"),
   startAutoLead: document.querySelector("#start-auto-lead"),
+  resetOnboarding: document.querySelector("#reset-onboarding"),
   toggleSettings: document.querySelector("#toggle-settings"),
   settingsForm: document.querySelector("#settings-form"),
+  saveSettings: document.querySelector("#save-settings"),
   linkedinPlan: document.querySelector("#linkedin-plan"),
   connectionDailyLimit: document.querySelector("#connection-daily-limit"),
-  engagementDailyLimit: document.querySelector("#engagement-daily-limit"),
   postEngagements: document.querySelector("#post-engagements"),
-  settingsRecommendation: document.querySelector("#settings-recommendation"),
-  onboardingPlan: document.querySelector("#onboarding-plan"),
+  settingsCalculation: document.querySelector("#settings-calculation"),
+  settingsCapacity: document.querySelector("#settings-capacity"),
+  settingsCapacityBar: document.querySelector("#settings-capacity-bar"),
+  settingsPostHelp: document.querySelector("#settings-post-help"),
+  onboardingPlanStep: document.querySelector("#onboarding-plan-step"),
+  onboardingWorkflowStep: document.querySelector("#onboarding-workflow-step"),
+  planStepMarker: document.querySelector("#plan-step-marker"),
+  workflowStepMarker: document.querySelector("#workflow-step-marker"),
+  onboardingFreePlan: document.querySelector("#onboarding-free-plan"),
+  onboardingPremiumPlan: document.querySelector("#onboarding-premium-plan"),
+  onboardingPremiumCheck: document.querySelector(
+    "#onboarding-premium-check",
+  ),
+  onboardingVerifyPremium: document.querySelector(
+    "#onboarding-verify-premium",
+  ),
+  onboardingPremiumStatus: document.querySelector(
+    "#onboarding-premium-status",
+  ),
+  onboardingNext: document.querySelector("#onboarding-next"),
+  onboardingBack: document.querySelector("#onboarding-back"),
+  onboardingPlanSummary: document.querySelector("#onboarding-plan-summary"),
   onboardingConnectionLimit: document.querySelector(
     "#onboarding-connection-limit",
-  ),
-  onboardingEngagementLimit: document.querySelector(
-    "#onboarding-engagement-limit",
   ),
   onboardingPostsPerLead: document.querySelector(
     "#onboarding-posts-per-lead",
   ),
-  onboardingRecommendation: document.querySelector(
-    "#onboarding-recommendation",
-  ),
+  onboardingCalculation: document.querySelector("#onboarding-calculation"),
+  onboardingCapacity: document.querySelector("#onboarding-capacity"),
+  onboardingCapacityBar: document.querySelector("#onboarding-capacity-bar"),
+  onboardingPostHelp: document.querySelector("#onboarding-post-help"),
   validateComment: document.querySelector("#validate-comment"),
   premiumNoteGate: document.querySelector("#premium-note-gate"),
   premiumNoteTitle: document.querySelector("#premium-note-title"),
@@ -55,24 +74,55 @@ const elements = {
 const DEFAULT_INVITATION_NOTE =
   "Hi, I came across your profile and would be glad to connect and keep in touch.";
 const RECOMMENDED_POSTS_PER_LEAD = 3;
+const PLAN_LIMITS = {
+  free: { requests: 20, likes: 150, label: "Free" },
+  premium: { requests: 40, likes: 250, label: "Premium" },
+};
 
 let dashboard = null;
 let premiumVerified = false;
+let onboardingSelectedPlan = null;
+let savedPlanIsPremium = false;
 
 elements.loginForm.addEventListener("submit", handleLogin);
 elements.onboardingForm.addEventListener("submit", saveOnboarding);
 elements.signOut.addEventListener("click", handleSignOut);
 elements.refresh.addEventListener("click", refreshDashboard);
 elements.startAutoLead.addEventListener("click", startAutoLead);
+elements.resetOnboarding.addEventListener("click", restartOnboarding);
 elements.toggleSettings.addEventListener("click", () => {
   elements.settingsForm.hidden = !elements.settingsForm.hidden;
 });
 elements.settingsForm.addEventListener("submit", saveSettings);
 elements.verifyPremium.addEventListener("click", verifyPremiumAndUnlockNote);
-elements.onboardingPlan.addEventListener("change", () =>
-  applyRecommendedLimits("onboarding"),
+elements.onboardingFreePlan.addEventListener("click", () =>
+  selectOnboardingPlan("free"),
+);
+elements.onboardingPremiumPlan.addEventListener("click", () =>
+  selectOnboardingPlan("premium"),
+);
+elements.onboardingVerifyPremium.addEventListener(
+  "click",
+  verifyOnboardingPremium,
+);
+elements.onboardingNext.addEventListener("click", showOnboardingWorkflowStep);
+elements.onboardingBack.addEventListener("click", () => setOnboardingStep(1));
+elements.onboardingConnectionLimit.addEventListener("input", () =>
+  updateLimitControls("onboarding"),
+);
+elements.onboardingPostsPerLead.addEventListener("input", () =>
+  updateLimitControls("onboarding"),
+);
+elements.connectionDailyLimit.addEventListener("input", () =>
+  updateLimitControls("settings"),
+);
+elements.postEngagements.addEventListener("input", () =>
+  updateLimitControls("settings"),
 );
 elements.linkedinPlan.addEventListener("change", () => {
+  if (elements.linkedinPlan.value === "premium" && !savedPlanIsPremium) {
+    premiumVerified = false;
+  }
   applyRecommendedLimits("settings");
   syncPremiumNoteGate();
 });
@@ -80,6 +130,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local" || !changes.linkedInPremium) return;
   premiumVerified = changes.linkedInPremium.newValue === true;
   syncPremiumNoteGate();
+  syncOnboardingPlanGate();
 });
 
 void hydrate().catch((error) => {
@@ -164,11 +215,20 @@ async function saveOnboarding(event) {
   clearMessages();
   setBusy(elements.onboardingForm, true);
   try {
-    const premium = elements.onboardingPlan.value === "premium";
+    const premium = onboardingSelectedPlan === "premium";
+    if (!onboardingSelectedPlan) {
+      throw new Error("Choose your LinkedIn plan before continuing.");
+    }
+    if (premium && !premiumVerified) {
+      setOnboardingStep(1);
+      throw new Error(
+        "Verify Premium with the signed-in LinkedIn account before continuing.",
+      );
+    }
     const settings = await updateSettings({
       premium,
+      premiumVerified: premium && premiumVerified,
       connectionDailyLimit: Number(elements.onboardingConnectionLimit.value),
-      engagementDailyLimit: Number(elements.onboardingEngagementLimit.value),
       postEngagements: Number(elements.onboardingPostsPerLead.value),
       onboardingCompleted: true,
       includeNote: false,
@@ -204,12 +264,47 @@ async function startAutoLead() {
   }
 }
 
+async function restartOnboarding() {
+  const confirmed = window.confirm(
+    "Restart onboarding? This resets your LinkedIn plan and daily pace. Your leads, assignments, and usage history will not be changed.",
+  );
+  if (!confirmed) return;
+
+  clearMessages();
+  setBusy(elements.resetOnboarding, true);
+  try {
+    const settings = await ScoutApi.authenticatedAction(
+      "scouts:resetOnboarding",
+      {},
+    );
+    await chrome.storage.local.set({ linkedInPremium: false });
+    await chrome.storage.local.remove([
+      "linkedInPremiumCheckedAt",
+      "linkedInPremiumEvidence",
+    ]);
+    premiumVerified = false;
+    savedPlanIsPremium = false;
+    dashboard = { ...dashboard, settings };
+    renderDashboard(dashboard, Date.now());
+    showSuccess("Onboarding reset. Choose a plan to test the setup again.");
+  } catch (error) {
+    showError(error);
+  } finally {
+    setBusy(elements.resetOnboarding, false);
+  }
+}
+
 async function saveSettings(event) {
   event.preventDefault();
   clearMessages();
   setBusy(elements.settingsForm, true);
   try {
     const premium = elements.linkedinPlan.value === "premium";
+    if (premium && !premiumVerified) {
+      throw new Error(
+        "Verify Premium with the signed-in LinkedIn account before saving.",
+      );
+    }
     const invitationNote = elements.invitationNote.value.trim();
     const includeNote = premium && premiumVerified;
     if (includeNote && !invitationNote) {
@@ -217,8 +312,8 @@ async function saveSettings(event) {
     }
     const settings = await updateSettings({
       premium,
+      premiumVerified: premium && premiumVerified,
       connectionDailyLimit: Number(elements.connectionDailyLimit.value),
-      engagementDailyLimit: Number(elements.engagementDailyLimit.value),
       postEngagements: Number(elements.postEngagements.value),
       onboardingCompleted: true,
       includeNote,
@@ -243,8 +338,8 @@ function updateSettings(values) {
   return ScoutApi.authenticatedAction("scouts:updateSettings", {
     postEngagements: values.postEngagements,
     linkedinPremium: values.premium,
+    premiumVerified: values.premiumVerified,
     connectionDailyLimit: values.connectionDailyLimit,
-    engagementDailyLimit: values.engagementDailyLimit,
     onboardingCompleted: values.onboardingCompleted,
     includeNote: values.includeNote,
   });
@@ -278,19 +373,26 @@ function renderDashboard(value, updatedAt) {
 function showOnboarding(settings) {
   elements.dashboardView.hidden = true;
   elements.onboardingView.hidden = false;
-  elements.onboardingPlan.value = settings.linkedinPremium ? "premium" : "free";
+  onboardingSelectedPlan = null;
+  premiumVerified = false;
+  elements.onboardingFreePlan.classList.remove("is-selected");
+  elements.onboardingPremiumPlan.classList.remove("is-selected");
+  elements.onboardingFreePlan.setAttribute("aria-pressed", "false");
+  elements.onboardingPremiumPlan.setAttribute("aria-pressed", "false");
+  elements.onboardingPremiumCheck.hidden = true;
+  setOnboardingStep(1);
+  syncOnboardingPlanGate();
   elements.onboardingConnectionLimit.value = settings.connectionDailyLimit || 20;
-  elements.onboardingEngagementLimit.value = settings.engagementDailyLimit || 150;
   elements.onboardingPostsPerLead.value =
     settings.postEngagements || RECOMMENDED_POSTS_PER_LEAD;
-  updateLimitControls("onboarding");
   elements.updated.textContent = "Complete setup to start automation";
 }
 
 function renderSettings(settings) {
+  savedPlanIsPremium = settings.linkedinPremium === true;
+  premiumVerified = settings.linkedinPremiumVerified === true || premiumVerified;
   elements.linkedinPlan.value = settings.linkedinPremium ? "premium" : "free";
   elements.connectionDailyLimit.value = settings.connectionDailyLimit;
-  elements.engagementDailyLimit.value = settings.engagementDailyLimit;
   elements.postEngagements.value = settings.postEngagements;
   updateLimitControls("settings");
   syncPremiumNoteGate();
@@ -305,46 +407,165 @@ function renderSettings(settings) {
 
 function applyRecommendedLimits(scope) {
   const controls = limitControls(scope);
-  const premium = controls.plan.value === "premium";
-  controls.connection.value = premium ? "40" : "20";
-  controls.engagement.value = premium ? "250" : "150";
-  if (controls.posts) controls.posts.value = String(RECOMMENDED_POSTS_PER_LEAD);
+  const limits = getPlanLimits(scope);
+  controls.connection.value = String(limits.requests);
+  controls.posts.value = String(RECOMMENDED_POSTS_PER_LEAD);
   updateLimitControls(scope);
 }
 
 function updateLimitControls(scope) {
   const controls = limitControls(scope);
-  const premium = controls.plan.value === "premium";
-  controls.connection.max = premium ? "40" : "20";
-  controls.engagement.max = premium ? "250" : "150";
-  controls.connection.value = String(
-    Math.min(Number(controls.connection.value || 1), premium ? 40 : 20),
+  const limits = getPlanLimits(scope);
+  const requests = clampNumber(
+    controls.connection.value,
+    1,
+    limits.requests,
   );
-  controls.engagement.value = String(
-    Math.min(Number(controls.engagement.value || 1), premium ? 250 : 150),
-  );
-  controls.recommendation.textContent = premium
-    ? "40 connection requests · 250 likes per day"
-    : "20 connection requests · 150 likes per day";
+  const maximumPosts = Math.min(10, Math.floor(limits.likes / requests));
+  const posts = clampNumber(controls.posts.value, 1, maximumPosts);
+  const calculatedLikes = requests * posts;
+  const remaining = limits.likes - calculatedLikes;
+
+  controls.connection.max = String(limits.requests);
+  controls.connection.value = String(requests);
+  controls.posts.max = String(maximumPosts);
+  controls.posts.value = String(posts);
+  controls.calculation.textContent =
+    `${requests} request${requests === 1 ? "" : "s"} × ${posts} post${posts === 1 ? "" : "s"} = ${calculatedLikes} likes`;
+  controls.capacity.textContent =
+    `${remaining} like${remaining === 1 ? "" : "s"} remain below the ${limits.label} limit of ${limits.likes}.`;
+  controls.capacityBar.style.width =
+    `${Math.min(100, Math.round((calculatedLikes / limits.likes) * 100))}%`;
+  controls.postHelp.textContent =
+    `Maximum ${maximumPosts} at ${requests} request${requests === 1 ? "" : "s"} per day.`;
+
+  if (scope === "onboarding") {
+    elements.onboardingPlanSummary.textContent =
+      `${limits.label} LinkedIn · ${limits.requests} request / ${limits.likes} like daily caps`;
+  }
 }
 
 function limitControls(scope) {
   if (scope === "onboarding") {
     return {
-      plan: elements.onboardingPlan,
       connection: elements.onboardingConnectionLimit,
-      engagement: elements.onboardingEngagementLimit,
       posts: elements.onboardingPostsPerLead,
-      recommendation: elements.onboardingRecommendation,
+      calculation: elements.onboardingCalculation,
+      capacity: elements.onboardingCapacity,
+      capacityBar: elements.onboardingCapacityBar,
+      postHelp: elements.onboardingPostHelp,
     };
   }
   return {
-    plan: elements.linkedinPlan,
     connection: elements.connectionDailyLimit,
-    engagement: elements.engagementDailyLimit,
     posts: elements.postEngagements,
-    recommendation: elements.settingsRecommendation,
+    calculation: elements.settingsCalculation,
+    capacity: elements.settingsCapacity,
+    capacityBar: elements.settingsCapacityBar,
+    postHelp: elements.settingsPostHelp,
   };
+}
+
+function getPlanLimits(scope) {
+  const plan =
+    scope === "onboarding"
+      ? onboardingSelectedPlan || "free"
+      : elements.linkedinPlan.value;
+  return PLAN_LIMITS[plan] || PLAN_LIMITS.free;
+}
+
+function clampNumber(value, minimum, maximum) {
+  const parsed = Math.trunc(Number(value));
+  return Math.max(
+    minimum,
+    Math.min(maximum, Number.isFinite(parsed) ? parsed : minimum),
+  );
+}
+
+function selectOnboardingPlan(plan) {
+  onboardingSelectedPlan = plan;
+  premiumVerified = false;
+  elements.onboardingFreePlan.classList.toggle("is-selected", plan === "free");
+  elements.onboardingPremiumPlan.classList.toggle(
+    "is-selected",
+    plan === "premium",
+  );
+  elements.onboardingFreePlan.setAttribute(
+    "aria-pressed",
+    String(plan === "free"),
+  );
+  elements.onboardingPremiumPlan.setAttribute(
+    "aria-pressed",
+    String(plan === "premium"),
+  );
+  elements.onboardingPremiumCheck.hidden = plan !== "premium";
+  elements.onboardingPremiumStatus.textContent =
+    plan === "premium" ? "Not verified" : "";
+  elements.onboardingPremiumStatus.classList.remove("is-verified", "is-error");
+  syncOnboardingPlanGate();
+  applyRecommendedLimits("onboarding");
+}
+
+function syncOnboardingPlanGate() {
+  const premiumSelected = onboardingSelectedPlan === "premium";
+  const canContinue =
+    onboardingSelectedPlan === "free" || (premiumSelected && premiumVerified);
+  elements.onboardingNext.disabled = !canContinue;
+  if (premiumSelected && premiumVerified) {
+    elements.onboardingPremiumStatus.textContent = "Premium verified";
+    elements.onboardingPremiumStatus.classList.add("is-verified");
+    elements.onboardingPremiumStatus.classList.remove("is-error");
+  }
+}
+
+function showOnboardingWorkflowStep() {
+  if (
+    !onboardingSelectedPlan ||
+    (onboardingSelectedPlan === "premium" && !premiumVerified)
+  ) {
+    return;
+  }
+  updateLimitControls("onboarding");
+  setOnboardingStep(2);
+}
+
+function setOnboardingStep(step) {
+  const showPlan = step === 1;
+  elements.onboardingPlanStep.hidden = !showPlan;
+  elements.onboardingWorkflowStep.hidden = showPlan;
+  elements.planStepMarker.classList.toggle("is-active", showPlan);
+  elements.workflowStepMarker.classList.toggle("is-active", !showPlan);
+}
+
+async function verifyOnboardingPremium() {
+  clearMessages();
+  elements.onboardingVerifyPremium.disabled = true;
+  elements.onboardingVerifyPremium.textContent = "Checking LinkedIn...";
+  elements.onboardingPremiumStatus.textContent = "Checking real account";
+  elements.onboardingPremiumStatus.classList.remove("is-verified", "is-error");
+  try {
+    const result = await checkPremiumEligibility();
+    if (!result.premium) {
+      premiumVerified = false;
+      elements.onboardingPremiumStatus.textContent = "Premium not detected";
+      elements.onboardingPremiumStatus.classList.add("is-error");
+      throw new Error(
+        result.evidence ||
+          "LinkedIn showed a plan purchase flow instead of an active Premium account.",
+      );
+    }
+    premiumVerified = true;
+    syncOnboardingPlanGate();
+    showSuccess("Premium verified against the signed-in LinkedIn account.");
+  } catch (error) {
+    syncOnboardingPlanGate();
+    showError(error);
+  } finally {
+    elements.onboardingVerifyPremium.disabled = false;
+    elements.onboardingVerifyPremium.textContent = premiumVerified
+      ? "Verify again"
+      : "Try verification again";
+  }
 }
 
 async function verifyPremiumAndUnlockNote() {
@@ -352,12 +573,13 @@ async function verifyPremiumAndUnlockNote() {
   setPremiumCheckPending(true);
   try {
     showSuccess("Checking LinkedIn Premium eligibility...");
-    const premium = await checkPremiumEligibility();
-    if (!premium) {
+    const result = await checkPremiumEligibility();
+    if (!result.premium) {
       premiumVerified = false;
       syncPremiumNoteGate();
       throw new Error(
-        "LinkedIn Premium was not detected for the current account. Sign in to the correct LinkedIn account, then try again.",
+        result.evidence ||
+          "LinkedIn Premium was not detected for the current account. Sign in to the correct LinkedIn account, then try again.",
       );
     }
     premiumVerified = true;
@@ -392,6 +614,7 @@ function syncPremiumNoteGate() {
     : "Verify my Premium";
   elements.invitationNoteField.hidden = !unlocked;
   elements.invitationNote.required = unlocked;
+  elements.saveSettings.disabled = premiumSelected && !premiumVerified;
 }
 
 function setPremiumCheckPending(pending) {
@@ -427,7 +650,10 @@ async function checkPremiumEligibility() {
       response?.error || "Unable to verify LinkedIn Premium eligibility.",
     );
   }
-  return response.premium === true;
+  return {
+    premium: response.premium === true,
+    evidence: String(response.evidence || "").trim(),
+  };
 }
 
 function showLogin() {
