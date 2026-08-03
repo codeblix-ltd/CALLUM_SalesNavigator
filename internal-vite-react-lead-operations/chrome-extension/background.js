@@ -2,18 +2,23 @@ importScripts("config.js");
 importScripts("convex-client.js");
 
 const REFRESH_ALARM = "refresh-lead-total";
+const PREMIUM_URL = "https://www.linkedin.com/premium/my-premium/";
+const DEFAULT_INVITATION_NOTE =
+  "Hi, I came across your profile and would be glad to connect and keep in touch.";
+
+let premiumCheckPromise = null;
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create(REFRESH_ALARM, { periodInMinutes: 30 });
-  void updateBadge();
+  refreshBadgeInBackground();
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  void updateBadge();
+  refreshBadgeInBackground();
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === REFRESH_ALARM) void updateBadge();
+  if (alarm.name === REFRESH_ALARM) refreshBadgeInBackground();
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -31,9 +36,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
-  if (message?.type === "AUTOMATE_ACTIVE_TAB") {
-    automateActiveTab(message.action)
-      .then((result) => sendResponse({ ok: true, result }))
+  if (message?.type === "CHECK_LINKEDIN_PREMIUM") {
+    verifyLinkedInPremium()
+      .then((result) => sendResponse({ ok: true, ...result }))
       .catch((error) => sendResponse({ ok: false, error: String(error) }));
     return true;
   }
@@ -46,6 +51,19 @@ async function runAutoLeadWorkflow(specificLeadId) {
   let workflowTabId = null;
   try {
     const dashboard = await ScoutApi.authenticatedAction("scouts:getDashboard");
+    let includeNote = Boolean(dashboard.settings?.includeNote);
+    let noteDisabledForEligibility = false;
+
+    if (includeNote) {
+      const eligibility = await verifyLinkedInPremium();
+      if (!eligibility.premium) {
+        includeNote = false;
+        noteDisabledForEligibility = true;
+        await disableInvitationNoteSetting(dashboard.settings).catch(() => {});
+        dashboard.settings.includeNote = false;
+      }
+    }
+
     if (specificLeadId) {
       lead = dashboard.activeLead;
       if (!lead || lead.id !== specificLeadId) {
@@ -60,7 +78,10 @@ async function runAutoLeadWorkflow(specificLeadId) {
     }
 
     const requestedProfileUrl = normalizeLinkedInProfileUrl(lead.linkedinUrl);
-    const localSettings = await chrome.storage.local.get("validateBeforeCommenting");
+    const localSettings = await chrome.storage.local.get([
+      "validateBeforeCommenting",
+      "invitationNote",
+    ]);
     const automationOptions = {
       postEngagements: clampInteger(
         dashboard.settings?.postEngagements ?? 2,
@@ -69,6 +90,12 @@ async function runAutoLeadWorkflow(specificLeadId) {
       ),
       validateBeforeCommenting:
         localSettings.validateBeforeCommenting ?? true,
+      includeNote,
+      invitationNote: String(
+        localSettings.invitationNote || DEFAULT_INVITATION_NOTE,
+      )
+        .trim()
+        .slice(0, 300),
     };
 
     // Lead imports can contain LinkedIn's opaque /in/AC... member URL. Open it
@@ -127,14 +154,23 @@ async function runAutoLeadWorkflow(specificLeadId) {
       });
     }
 
-    // Step 2 from doc.md: return to the profile root and use
-    // More -> Connect -> Send without a note.
+    // Step 2 from doc.md: return to the profile root and use More -> Connect,
+    // adding the configured note only for a verified Premium account.
     await waitForContentScript(tab.id);
+    if (noteDisabledForEligibility) {
+      await sendMessageToTab(tab.id, {
+        type: "SHOW_AUTOMATION_STATUS",
+        status:
+          "LinkedIn Premium was not detected. Continuing without an invitation note.",
+      });
+    }
     const connectResponse = await sendMessageToTab(tab.id, {
       type: "EXECUTE_CONNECTION_REQUEST",
       options: {
         expectedProfileName: lead.fullName,
         expectedProfileUrl: profileUrl,
+        includeNote: automationOptions.includeNote,
+        invitationNote: automationOptions.invitationNote,
       },
     });
 
@@ -176,21 +212,6 @@ async function runAutoLeadWorkflow(specificLeadId) {
   }
 }
 
-async function automateActiveTab(action) {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab || !tab.id) {
-    throw new Error("No active tab found.");
-  }
-
-  if (action === "post_engagement") {
-    return sendMessageToTab(tab.id, { type: "EXECUTE_POST_ENGAGEMENT" });
-  } else if (action === "connection_request") {
-    return sendMessageToTab(tab.id, { type: "EXECUTE_CONNECTION_REQUEST" });
-  } else {
-    return sendMessageToTab(tab.id, { type: "EXECUTE_FULL_LEAD_AUTOMATION" });
-  }
-}
-
 function sendMessageToTab(tabId, message) {
   return new Promise((resolve) => {
     chrome.tabs.sendMessage(tabId, message, (response) => {
@@ -200,6 +221,83 @@ function sendMessageToTab(tabId, message) {
         resolve(response);
       }
     });
+  });
+}
+
+function verifyLinkedInPremium() {
+  if (premiumCheckPromise) return premiumCheckPromise;
+  premiumCheckPromise = inspectLinkedInPremium()
+    .finally(() => {
+      premiumCheckPromise = null;
+    });
+  return premiumCheckPromise;
+}
+
+async function inspectLinkedInPremium() {
+  const tab = await chrome.tabs.create({ url: PREMIUM_URL, active: false });
+  if (!tab?.id) {
+    throw new Error("Unable to open LinkedIn for the Premium check.");
+  }
+
+  try {
+    const finalUrl = await waitForStableTabUrl(tab.id);
+    const premium = isLinkedInPremiumUrl(finalUrl);
+    await chrome.storage.local.set({
+      linkedInPremium: premium,
+      linkedInPremiumCheckedAt: Date.now(),
+    });
+    return { premium };
+  } finally {
+    await chrome.tabs.remove(tab.id).catch(() => {});
+  }
+}
+
+async function waitForStableTabUrl(tabId, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastUrl = "";
+  let stableSince = Date.now();
+
+  while (Date.now() < deadline) {
+    const tab = await chrome.tabs.get(tabId);
+    const currentUrl = tab.pendingUrl || tab.url || "";
+    if (currentUrl !== lastUrl) {
+      lastUrl = currentUrl;
+      stableSince = Date.now();
+    }
+    if (
+      lastUrl &&
+      tab.status === "complete" &&
+      Date.now() - stableSince >= 2_500
+    ) {
+      return lastUrl;
+    }
+    await sleep(250);
+  }
+
+  if (lastUrl) return lastUrl;
+  throw new Error("LinkedIn did not complete the Premium eligibility check.");
+}
+
+function isLinkedInPremiumUrl(value) {
+  try {
+    const url = new URL(String(value));
+    return (
+      /(^|\.)linkedin\.com$/i.test(url.hostname) &&
+      url.pathname.replace(/\/+$/, "") === "/premium/my-premium"
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function disableInvitationNoteSetting(settings) {
+  await ScoutApi.authenticatedAction("scouts:updateSettings", {
+    postEngagements: Number(settings?.postEngagements ?? 2),
+    engagementIntervalMinutes: Number(
+      settings?.engagementIntervalMinutes ?? 60,
+    ),
+    connectionDelayMinutes: Number(settings?.connectionDelayMinutes ?? 0),
+    includeNote: false,
   });
 }
 
@@ -356,6 +454,13 @@ async function updateBadge() {
     text: compactNumber(dashboard.counts.fresh),
   });
   return dashboard;
+}
+
+function refreshBadgeInBackground() {
+  void updateBadge().catch(async (error) => {
+    await chrome.action.setBadgeText({ text: "" }).catch(() => {});
+    console.warn("Callum Scout badge refresh failed:", cleanError(error));
+  });
 }
 
 function compactNumber(value) {

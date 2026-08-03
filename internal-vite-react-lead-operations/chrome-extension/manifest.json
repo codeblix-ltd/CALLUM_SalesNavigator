@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Callum Leads",
-  "description": "Automated LinkedIn lead engagement, post commenting with GPT-5.6 Luna, and connection requests.",
-  "version": "0.4.0",
+  "description": "Automated LinkedIn lead engagement, post commenting, and connection requests.",
+  "version": "0.5.1",
   "action": {
     "default_title": "Callum Leads",
     "default_popup": "popup.html",
@@ -20,7 +20,7 @@
     "48": "icon.png",
     "128": "icon.png"
   },
-  "permissions": ["alarms", "clipboardWrite", "storage", "tabs", "scripting", "activeTab"],
+  "permissions": ["alarms", "storage", "tabs"],
   "host_permissions": [
     "https://*.convex.cloud/*",
     "https://*.convex.site/*",

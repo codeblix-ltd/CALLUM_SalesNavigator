@@ -14,28 +14,6 @@ const elements = {
   emailCount: document.querySelector("#email-count"),
   failedCount: document.querySelector("#failed-count"),
   startAutoLead: document.querySelector("#start-auto-lead"),
-  automateActiveTab: document.querySelector("#automate-active-tab"),
-  simulationBatch: document.querySelector("#simulation-batch"),
-  startSimulation: document.querySelector("#start-simulation"),
-  nextLead: document.querySelector("#next-lead"),
-  leadCard: document.querySelector("#lead-card"),
-  leadName: document.querySelector("#lead-name"),
-  leadMeta: document.querySelector("#lead-meta"),
-  leadStatus: document.querySelector("#lead-status"),
-  openProfile: document.querySelector("#open-profile"),
-  openContact: document.querySelector("#open-contact"),
-  postText: document.querySelector("#post-text"),
-  generateDraft: document.querySelector("#generate-draft"),
-  draftResult: document.querySelector("#draft-result"),
-  draftText: document.querySelector("#draft-text"),
-  copyDraft: document.querySelector("#copy-draft"),
-  emailPanel: document.querySelector("#email-panel"),
-  leadEmail: document.querySelector("#lead-email"),
-  markEngaged: document.querySelector("#mark-engaged"),
-  markRequested: document.querySelector("#mark-requested"),
-  markAccepted: document.querySelector("#mark-accepted"),
-  saveEmail: document.querySelector("#save-email"),
-  skipLead: document.querySelector("#skip-lead"),
   openSent: document.querySelector("#open-sent"),
   toggleSettings: document.querySelector("#toggle-settings"),
   settingsForm: document.querySelector("#settings-form"),
@@ -45,36 +23,30 @@ const elements = {
   connectionDelay: document.querySelector("#connection-delay"),
   connectionUnit: document.querySelector("#connection-unit"),
   validateComment: document.querySelector("#validate-comment"),
-  includeNote: document.querySelector("#include-note"),
+  premiumNoteGate: document.querySelector("#premium-note-gate"),
+  premiumNoteTitle: document.querySelector("#premium-note-title"),
+  premiumNoteStatus: document.querySelector("#premium-note-status"),
+  premiumNoteDescription: document.querySelector("#premium-note-description"),
+  verifyPremium: document.querySelector("#verify-premium"),
+  invitationNoteField: document.querySelector("#invitation-note-field"),
+  invitationNote: document.querySelector("#invitation-note"),
   error: document.querySelector("#error"),
   success: document.querySelector("#success"),
   updated: document.querySelector("#updated"),
   connection: document.querySelector("#connection"),
 };
 
+const DEFAULT_INVITATION_NOTE =
+  "Hi, I came across your profile and would be glad to connect and keep in touch.";
+
 let dashboard = null;
 let activeLead = null;
+let premiumVerified = false;
 
 elements.loginForm.addEventListener("submit", handleLogin);
 elements.signOut.addEventListener("click", handleSignOut);
 elements.refresh.addEventListener("click", refreshDashboard);
-elements.startAutoLead?.addEventListener("click", startRealAutoLead);
-elements.automateActiveTab?.addEventListener("click", startAutomateActiveTab);
-elements.startSimulation.addEventListener("click", startSimulation);
-elements.nextLead.addEventListener("click", claimNextLead);
-elements.openProfile.addEventListener("click", () => openUrl(activeLead?.linkedinUrl));
-elements.openContact.addEventListener("click", () =>
-  openUrl(contactInfoUrl(activeLead?.linkedinUrl)),
-);
-elements.generateDraft.addEventListener("click", generateDraft);
-elements.copyDraft.addEventListener("click", copyDraft);
-elements.markEngaged.addEventListener("click", () => updateStatus("engaged"));
-elements.markRequested.addEventListener("click", () =>
-  updateStatus("connection_requested"),
-);
-elements.markAccepted.addEventListener("click", () => updateStatus("accepted"));
-elements.saveEmail.addEventListener("click", () => updateStatus("email_collected"));
-elements.skipLead.addEventListener("click", () => updateStatus("skipped"));
+elements.startAutoLead?.addEventListener("click", startAutoLead);
 elements.openSent.addEventListener("click", () =>
   openUrl("https://www.linkedin.com/mynetwork/invitation-manager/sent/"),
 );
@@ -82,10 +54,20 @@ elements.toggleSettings.addEventListener("click", () => {
   elements.settingsForm.hidden = !elements.settingsForm.hidden;
 });
 elements.settingsForm.addEventListener("submit", saveSettings);
+elements.verifyPremium.addEventListener("click", verifyPremiumAndUnlockNote);
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== "local" || !changes.linkedInPremium) return;
+  premiumVerified = changes.linkedInPremium.newValue === true;
+  syncPremiumNoteGate();
+});
 
-void hydrate();
+void hydrate().catch((error) => {
+  showLogin();
+  showError(error);
+});
 
 async function hydrate() {
+  await loadPremiumNoteState();
   const auth = await ScoutApi.getAuth();
   if (!auth) {
     showLogin();
@@ -151,107 +133,11 @@ async function refreshDashboard() {
   }
 }
 
-async function claimNextLead() {
-  setBusy(elements.nextLead, true);
-  clearMessages();
-  try {
-    const lead = await ScoutApi.authenticatedAction("scouts:claimNextLead");
-    if (!lead) {
-      showSuccess("No fresh leads remain in your queue.");
-      await refreshDashboard();
-      return;
-    }
-    activeLead = lead;
-    renderLead(lead);
-    await openUrl(lead.linkedinUrl);
-    await refreshDashboard();
-  } catch (error) {
-    showError(error, true);
-  } finally {
-    setBusy(elements.nextLead, false);
-  }
-}
-
-async function startSimulation() {
-  clearMessages();
-  const batch = Math.max(
-    1,
-    Math.min(10, Math.trunc(Number(elements.simulationBatch.value) || 1)),
-  );
-  elements.simulationBatch.value = String(batch);
-  setBusy(elements.startSimulation, true);
-  try {
-    const simulatorUrl = new URL(
-      "mock-linkedin/simulator.html",
-      chrome.runtime.getURL("/"),
-    );
-    simulatorUrl.searchParams.set("batch", String(batch));
-    simulatorUrl.searchParams.set("auto", "1");
-    await chrome.tabs.create({ url: simulatorUrl.toString() });
-    showSuccess(
-      `Opened the isolated simulator for ${batch} lead${batch === 1 ? "" : "s"}.`,
-    );
-  } catch (error) {
-    showError(error, true);
-  } finally {
-    setBusy(elements.startSimulation, false);
-  }
-}
-
-async function updateStatus(status) {
-  if (!activeLead) return;
-  clearMessages();
-  const email =
-    status === "email_collected" ? elements.leadEmail.value.trim() : null;
-  const trigger = statusButton(status);
-  setBusy(trigger, true);
-  try {
-    await ScoutApi.authenticatedAction("scouts:updateLeadStatus", {
-      leadId: activeLead.id,
-      status,
-      email,
-      error: null,
-    });
-    showSuccess(statusMessage(status));
-    activeLead =
-      status === "email_collected" || status === "skipped"
-        ? null
-        : { ...activeLead, status };
-    await refreshDashboard();
-  } catch (error) {
-    showError(error, true);
-  } finally {
-    setBusy(trigger, false);
-  }
-}
-
-async function generateDraft() {
-  clearMessages();
-  setBusy(elements.generateDraft, true);
-  try {
-    const result = await ScoutApi.authenticatedAction("scouts:draftComment", {
-      postText: elements.postText.value,
-    });
-    elements.draftText.textContent = result.draft;
-    elements.draftResult.hidden = false;
-    showSuccess("Draft generated for your review. Nothing was posted.");
-  } catch (error) {
-    showError(error, true);
-  } finally {
-    setBusy(elements.generateDraft, false);
-  }
-}
-
-async function copyDraft() {
-  await navigator.clipboard.writeText(elements.draftText.textContent || "");
-  showSuccess("Draft copied. Review it before posting.");
-}
-
-async function startRealAutoLead() {
+async function startAutoLead() {
   clearMessages();
   setBusy(elements.startAutoLead, true);
   try {
-    showSuccess("Starting real automation workflow on LinkedIn...");
+    showSuccess("Starting automation on LinkedIn...");
     const response = await chrome.runtime.sendMessage({
       type: "START_AUTO_LEAD",
       leadId: activeLead?.id,
@@ -268,31 +154,18 @@ async function startRealAutoLead() {
   }
 }
 
-async function startAutomateActiveTab() {
-  clearMessages();
-  setBusy(elements.automateActiveTab, true);
-  try {
-    showSuccess("Triggering automation on current active LinkedIn tab...");
-    const response = await chrome.runtime.sendMessage({
-      type: "AUTOMATE_ACTIVE_TAB",
-    });
-    if (!response?.ok) {
-      throw new Error(response?.error || "Active tab automation failed. Ensure you are on a LinkedIn profile or activity page.");
-    }
-    showSuccess("Active tab automation completed!");
-    await refreshDashboard();
-  } catch (error) {
-    showError(error, true);
-  } finally {
-    setBusy(elements.automateActiveTab, false);
-  }
-}
-
 async function saveSettings(event) {
   event.preventDefault();
   clearMessages();
   setBusy(elements.settingsForm, true);
   try {
+    const includeNote = premiumVerified;
+    const invitationNote = elements.invitationNote.value.trim();
+
+    if (includeNote && !invitationNote) {
+      throw new Error("Enter an invitation note before saving your settings.");
+    }
+
     const settings = await ScoutApi.authenticatedAction(
       "scouts:updateSettings",
       {
@@ -305,11 +178,12 @@ async function saveSettings(event) {
           elements.connectionDelay,
           elements.connectionUnit,
         ),
-        includeNote: elements.includeNote.checked,
+        includeNote,
       },
     );
     await chrome.storage.local.set({
       validateBeforeCommenting: elements.validateComment.checked,
+      invitationNote: invitationNote || DEFAULT_INVITATION_NOTE,
     });
     dashboard.settings = settings;
     renderSettings(settings);
@@ -341,25 +215,6 @@ function renderDashboard(value, updatedAt) {
   elements.connection.classList.remove("error");
   elements.connection.lastChild.textContent = " Scout queue connected";
   renderSettings(value.settings);
-  renderLead(activeLead);
-}
-
-function renderLead(lead) {
-  elements.leadCard.hidden = !lead;
-  if (!lead) return;
-  elements.leadName.textContent = lead.fullName || "Unnamed lead";
-  elements.leadMeta.textContent = [lead.currentTitle, lead.companyName]
-    .filter(Boolean)
-    .join(" · ");
-  elements.leadStatus.textContent = formatStatus(lead.status);
-  elements.emailPanel.hidden = lead.status !== "accepted";
-  elements.markEngaged.hidden = lead.status !== "viewed";
-  elements.markRequested.hidden = !["viewed", "engaged"].includes(lead.status);
-  elements.markAccepted.hidden = ![
-    "connected",
-    "connection_requested",
-  ].includes(lead.status);
-  elements.saveEmail.hidden = lead.status !== "accepted";
 }
 
 function renderSettings(settings) {
@@ -374,12 +229,93 @@ function renderSettings(settings) {
     elements.connectionUnit,
     settings.connectionDelayMinutes,
   );
-  elements.includeNote.checked = settings.includeNote;
-  void chrome.storage.local.get("validateBeforeCommenting").then((res) => {
+  syncPremiumNoteGate();
+  void chrome.storage.local
+    .get(["validateBeforeCommenting", "invitationNote"])
+    .then((res) => {
     if (elements.validateComment) {
       elements.validateComment.checked = res.validateBeforeCommenting ?? true;
     }
+    elements.invitationNote.value =
+      res.invitationNote?.trim() || DEFAULT_INVITATION_NOTE;
+    });
+}
+
+async function verifyPremiumAndUnlockNote() {
+  clearMessages();
+  setPremiumCheckPending(true);
+  try {
+    showSuccess("Checking LinkedIn Premium eligibility...");
+    const premium = await checkPremiumEligibility();
+    if (!premium) {
+      premiumVerified = false;
+      syncPremiumNoteGate();
+      throw new Error(
+        "LinkedIn Premium was not detected for the current account. Sign in to the correct LinkedIn account, then try again.",
+      );
+    }
+    premiumVerified = true;
+    syncPremiumNoteGate();
+    showSuccess("LinkedIn Premium verified. Custom invitation notes are now unlocked.");
+    elements.invitationNote.focus();
+  } catch (error) {
+    showError(error);
+  } finally {
+    setPremiumCheckPending(false);
+  }
+}
+
+function syncPremiumNoteGate() {
+  elements.premiumNoteGate.classList.toggle("is-verified", premiumVerified);
+  elements.premiumNoteStatus.textContent = premiumVerified ? "Verified" : "Locked";
+  elements.premiumNoteTitle.textContent = premiumVerified
+    ? "LinkedIn Premium verified"
+    : "Do you have LinkedIn Premium?";
+  elements.premiumNoteDescription.textContent = premiumVerified
+    ? "Your custom note will be included with connection requests."
+    : "Verify your LinkedIn account to unlock a custom note for connection requests.";
+  elements.verifyPremium.textContent = premiumVerified
+    ? "Verify again"
+    : "Yes — verify my Premium";
+  elements.invitationNoteField.hidden = !premiumVerified;
+  elements.invitationNote.required = premiumVerified;
+}
+
+function setPremiumCheckPending(pending) {
+  elements.verifyPremium.disabled = pending;
+  elements.premiumNoteGate.classList.toggle("is-checking", pending);
+  if (!pending) {
+    syncPremiumNoteGate();
+    return;
+  }
+  elements.premiumNoteStatus.textContent = "Checking";
+  elements.premiumNoteTitle.textContent = "Checking your LinkedIn account...";
+  elements.premiumNoteDescription.textContent =
+    "The extension is securely confirming your Premium eligibility.";
+  elements.verifyPremium.textContent = "Verifying...";
+}
+
+async function loadPremiumNoteState() {
+  const stored = await chrome.storage.local.get([
+    "invitationNote",
+    "linkedInPremium",
+  ]);
+  elements.invitationNote.value =
+    stored.invitationNote?.trim() || DEFAULT_INVITATION_NOTE;
+  premiumVerified = stored.linkedInPremium === true;
+  syncPremiumNoteGate();
+}
+
+async function checkPremiumEligibility() {
+  const response = await chrome.runtime.sendMessage({
+    type: "CHECK_LINKEDIN_PREMIUM",
   });
+  if (!response?.ok) {
+    throw new Error(
+      response?.error || "Unable to verify LinkedIn Premium eligibility.",
+    );
+  }
+  return response.premium === true;
 }
 
 function showLogin() {
@@ -391,6 +327,7 @@ function showLogin() {
 
 function showError(error, report = false) {
   const message = cleanError(error);
+  elements.success.hidden = true;
   elements.error.textContent = message;
   elements.error.hidden = false;
   elements.connection.classList.add("error");
@@ -404,6 +341,7 @@ function showError(error, report = false) {
 }
 
 function showSuccess(message) {
+  elements.error.hidden = true;
   elements.success.textContent = message;
   elements.success.hidden = false;
 }
@@ -426,15 +364,6 @@ async function openUrl(url) {
   await chrome.tabs.create({ url });
 }
 
-function contactInfoUrl(profileUrl) {
-  if (!profileUrl) return null;
-  const url = new URL(profileUrl);
-  url.search = "";
-  url.hash = "";
-  url.pathname = `${url.pathname.replace(/\/+$/, "")}/overlay/contact-info/`;
-  return url.toString();
-}
-
 function toMinutes(input, unit) {
   return Math.round(Number(input.value) * Number(unit.value));
 }
@@ -446,32 +375,6 @@ function setDuration(input, unit, totalMinutes) {
   ) ?? 1;
   unit.value = String(selected);
   input.value = String(totalMinutes / selected);
-}
-
-function statusButton(status) {
-  return {
-    engaged: elements.markEngaged,
-    connection_requested: elements.markRequested,
-    accepted: elements.markAccepted,
-    email_collected: elements.saveEmail,
-    skipped: elements.skipLead,
-  }[status];
-}
-
-function statusMessage(status) {
-  return {
-    engaged: "Lead marked engaged.",
-    connection_requested: "Connection request recorded.",
-    accepted: "Connection acceptance recorded.",
-    email_collected: "Email saved.",
-    skipped: "Lead skipped.",
-  }[status];
-}
-
-function formatStatus(status) {
-  return String(status)
-    .replaceAll("_", " ")
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function formatNumber(value) {

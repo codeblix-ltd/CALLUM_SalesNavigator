@@ -72,88 +72,22 @@
           </article>
         </div>
 
-        <section class="card simulator-launch">
-          <div class="simulator-title-row">
+        <section class="card automation-launch">
+          <div class="automation-title-row">
             <div>
-              <p class="eyebrow">Real LinkedIn Automation</p>
+              <p class="eyebrow">LinkedIn automation</p>
               <h2>Auto Engage & Connect</h2>
             </div>
-            <span class="simulation-badge" style="background: #10b981; color: white;">Real Mode</span>
           </div>
           <p class="muted">
-            Automatically likes & comments on recent posts using GPT-5.6 Luna, then sends a connection request without a note on LinkedIn.
+            Likes and comments on recent posts, then sends a connection request using your workflow settings.
           </p>
-          <div class="simulation-controls" style="flex-direction: column; gap: 8px;">
-            <button id="start-auto-lead" class="primary" type="button" style="background: #0a66c2;">
-              ⚡ Run Real Auto-Lead
-            </button>
-            <button id="automate-active-tab" class="secondary" type="button">
-              🎯 Automate Active LinkedIn Tab
+          <div class="automation-controls">
+            <button id="start-auto-lead" class="primary" type="button">
+              ⚡ Run Auto-Lead
             </button>
           </div>
         </section>
-
-        <section class="card simulator-launch">
-          <div class="simulator-title-row">
-            <div>
-              <p class="eyebrow">Local training environment</p>
-              <h2>Automatic simulation</h2>
-            </div>
-            <span class="simulation-badge">Mock only</span>
-          </div>
-          <p class="muted">
-            Runs the full workflow on extension-owned fixture pages.
-          </p>
-          <label for="simulation-batch">Leads to simulate</label>
-          <div class="simulation-controls">
-            <input id="simulation-batch" type="number" min="1" max="10" value="1" />
-            <button id="start-simulation" class="secondary" type="button">
-              Run simulation
-            </button>
-          </div>
-        </section>
-
-        <button id="next-lead" class="primary execute" type="button">
-          Open next fresh lead
-        </button>
-
-        <article id="lead-card" class="card lead-card" hidden>
-          <div class="lead-heading">
-            <div>
-              <p class="eyebrow">Current lead</p>
-              <h2 id="lead-name">Lead</h2>
-              <p id="lead-meta" class="muted"></p>
-            </div>
-            <span id="lead-status" class="status-pill">Viewed</span>
-          </div>
-          <div class="link-row">
-            <button id="open-profile" class="secondary" type="button">Open profile</button>
-            <button id="open-contact" class="secondary" type="button">Contact info</button>
-          </div>
-
-          <div id="draft-panel" class="draft-panel">
-            <label for="post-text">Paste post text for a reviewed draft</label>
-            <textarea id="post-text" rows="4" placeholder="Paste the post text here. Nothing is scraped automatically."></textarea>
-            <button id="generate-draft" class="secondary" type="button">Draft with GPT-5.6 Luna</button>
-            <div id="draft-result" class="draft-result" hidden>
-              <p id="draft-text"></p>
-              <button id="copy-draft" class="text-button" type="button">Copy draft</button>
-            </div>
-          </div>
-
-          <div id="email-panel" class="email-panel" hidden>
-            <label for="lead-email">Email found manually</label>
-            <input id="lead-email" type="email" placeholder="name@company.com" />
-          </div>
-
-          <div class="status-actions">
-            <button id="mark-engaged" class="secondary" type="button">Mark engaged</button>
-            <button id="mark-requested" class="secondary" type="button">Connection sent</button>
-            <button id="mark-accepted" class="secondary" type="button">Mark accepted</button>
-            <button id="save-email" class="secondary" type="button">Save email</button>
-            <button id="skip-lead" class="text-button danger-text" type="button">Skip lead</button>
-          </div>
-        </article>
 
         <div class="utility-row">
           <button id="open-sent" class="text-button" type="button">Review sent invitations</button>
@@ -193,12 +127,28 @@
           </div>
           <label class="check-row">
             <input id="validate-comment" type="checkbox" checked />
-            Validate returned GPT-5.6 Luna reply before commenting
+            Review generated replies before commenting
           </label>
-          <label class="check-row">
-            <input id="include-note" type="checkbox" />
-            Include a note when you send a request
-          </label>
+          <section id="premium-note-gate" class="premium-note-gate" aria-labelledby="premium-note-title">
+            <div class="premium-note-heading">
+              <div>
+                <span class="premium-note-kicker">Invitation notes</span>
+                <strong id="premium-note-title">Do you have LinkedIn Premium?</strong>
+              </div>
+              <span id="premium-note-status" class="premium-note-status">Locked</span>
+            </div>
+            <p id="premium-note-description" class="premium-note-description">
+              Verify your LinkedIn account to unlock a custom note for connection requests.
+            </p>
+            <button id="verify-premium" class="secondary premium-verify" type="button">
+              Yes — verify my Premium
+            </button>
+            <label id="invitation-note-field" class="invitation-note-field" hidden>
+              Customize your invitation note
+              <textarea id="invitation-note" rows="4" maxlength="300"></textarea>
+              <span class="field-help">Sent exactly as written. Maximum 300 characters.</span>
+            </label>
+          </section>
           <button class="primary" type="submit">Save settings</button>
         </form>
       </section>

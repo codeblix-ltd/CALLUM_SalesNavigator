@@ -17,7 +17,7 @@
     "leads:assign": "node --env-file=.env.local scripts/assign-leads.mjs",
     "setup:secrets": "node scripts/configure-secrets.mjs",
     "extension:config": "node scripts/sync-extension-config.mjs",
-    "extension:simulator:test": "node scripts/test-extension-simulator.mjs",
+    "extension:test": "node scripts/test-extension.mjs",
     "gateway:start": "node --env-file=.env.gateway gateway/server.mjs",
     "gateway:dev": "node --env-file=.env.local --watch gateway/server.mjs",
     "gateway:smoke": "node --env-file=.env.local gateway/smoke-test.mjs",

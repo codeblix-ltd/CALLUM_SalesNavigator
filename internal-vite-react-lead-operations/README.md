@@ -117,12 +117,10 @@ assignments.
 The popup shows fresh, engaged, connection-requested, accepted,
 email-collected, and failed counts. It also lets a scout:
 
-- open the next assigned profile;
-- save manually confirmed engagement/request/acceptance stages;
-- open LinkedIn's sent-invitations and contact-info pages;
-- save a manually observed email address;
-- configure engagement count, pacing, connection delay, and note preference;
-- paste post text, generate a `gpt-5.6-luna` draft, review it, and copy it.
+- configure engagement count, pacing, connection delay, and an editable
+  invitation note for LinkedIn Premium accounts;
+- run the assigned-lead engagement and connection workflow on LinkedIn;
+- open LinkedIn's sent-invitations page.
 
 All writes are authenticated and checked against the signed-in scout's own
 assignment. Status changes and extension errors are recorded in
@@ -141,40 +139,20 @@ queues, engaged leads, connection requests, pending requests, acceptances,
 collected emails, failures, conversion rates, recent events, and searchable
 per-scout drill-downs.
 
-## Run the automatic mock simulator
-
-The signed-in extension popup includes **Automatic simulation**. Choose a
-batch size from 1 to 10 and select **Run simulation**. The extension opens its
-own mock LinkedIn page and automatically completes the whole fixture workflow:
-
-- render and visit a local fixture profile;
-- read the configured number of fixture posts;
-- ask the connected `gpt-5.6-luna` gateway for each fixture comment;
-- react and post those comments into the local DOM;
-- send and accept a simulated invitation;
-- open the fixture contact-info overlay and extract its `.simulated.example`
-  email address;
-- record every simulated status or error in CockroachDB.
-
-Simulation uses assigned lead names, titles, and companies only to seed the
-fixtures. Its state is stored separately in `lead_simulation_runs` and
-`lead_simulation_events`; it never changes `lead_assignments`, real lifecycle
-timestamps, or collected lead emails. Timers are compressed to keep a test run
-short. Reload the unpacked extension after pulling simulator changes.
-
-Run the deterministic workflow and safety checks without making model calls:
+Run the extension's deterministic production checks without opening LinkedIn
+or making model calls:
 
 ```powershell
-npm run extension:simulator:test
+npm run extension:test
 ```
 
-## LinkedIn safety boundary
+## LinkedIn automation boundary
 
-The extension intentionally does not scrape LinkedIn, call private LinkedIn
-network endpoints, auto-scroll result pages, or automatically like, comment,
-send invitations, detect acceptances, or extract contact details. Those steps
-remain human-confirmed because LinkedIn prohibits third-party software that
-scrapes or automates activity on its service.
+The extension operates against the visible DOM in the scout's signed-in
+LinkedIn tabs and does not call private LinkedIn network endpoints. It verifies
+the selected profile and invitation recipient before posting comments or
+sending a request. Invitation notes are enabled only after the extension opens
+LinkedIn's Premium status page and confirms that it did not redirect.
 
 ## Import leads
 

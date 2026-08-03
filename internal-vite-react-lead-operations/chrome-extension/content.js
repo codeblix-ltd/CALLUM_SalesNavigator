@@ -1,4 +1,4 @@
-// Callum Leads - Content Script for LinkedIn Real Automation
+// Callum Leads - Content Script for LinkedIn Automation
 
 (() => {
   if (window.__CALLUM_SCOUT_CONTENT_LOADED__) return;
@@ -18,13 +18,6 @@
     if (message?.type === "EXECUTE_CONNECTION_REQUEST") {
       return runVisibleWorkflow(
         () => runConnectionRequest(message.options || {}),
-        sendResponse,
-      );
-    }
-
-    if (message?.type === "EXECUTE_FULL_LEAD_AUTOMATION") {
-      return runVisibleWorkflow(
-        () => runFullLeadAutomation(message.lead, message.options || {}),
         sendResponse,
       );
     }
@@ -54,7 +47,7 @@
   });
 
   // Inject overlay widget automatically on LinkedIn pages
-  if (window.location.hostname.includes("linkedin.com") || window.location.pathname.includes("simulator")) {
+  if (window.location.hostname.includes("linkedin.com")) {
     window.addEventListener("DOMContentLoaded", initOverlay);
     if (document.readyState === "complete" || document.readyState === "interactive") {
       initOverlay();
@@ -212,14 +205,14 @@
 
       addLog("Read Post", `"${postText.substring(0, 60)}..."`);
 
-      // 3. Request GPT-5.6 Luna draft comment
-      updateStatus(`Generating comment with GPT-5.6 Luna for post ${i + 1}...`);
+      // 3. Request a draft comment
+      updateStatus(`Generating comment for post ${i + 1}...`);
       const response = await ScoutApi.authenticatedAction("scouts:draftComment", {
         postText: postText.slice(0, 8_000),
       });
       let draftText = response?.draft?.trim() || "";
       if (!draftText) {
-        throw new Error(`GPT-5.6 Luna returned an empty comment for post #${i + 1}.`);
+        throw new Error(`The generated comment was empty for post #${i + 1}.`);
       }
 
       // 4. Handle Comment Validation Option
@@ -363,14 +356,54 @@
       throw new Error(`${openedFor}. Request cancelled before sending.`);
     }
 
-    updateStatus("Looking for 'Send without a note' in verified modal...");
-    const sendBtn = await findSendWithoutNoteButton(invitationDialog);
-    if (!sendBtn) {
-      throw new Error("Could not find 'Send without a note' button in invitation modal.");
+    let sendBtn = null;
+    if (options.includeNote) {
+      const note = String(options.invitationNote || "").trim().slice(0, 300);
+      if (!note) {
+        throw new Error("The invitation note is empty. Request cancelled before sending.");
+      }
+
+      updateStatus("Adding the invitation note...");
+      const addNoteBtn = await findAddNoteButton(invitationDialog);
+      if (!addNoteBtn) {
+        throw new Error(
+          "Could not find the 'Add a note' button in the invitation modal.",
+        );
+      }
+      clickElement(addNoteBtn);
+
+      const noteInput = await findInvitationNoteInput();
+      if (!noteInput) {
+        throw new Error("LinkedIn did not open the invitation note editor.");
+      }
+      fillInvitationNote(noteInput, note);
+
+      updateStatus("Looking for 'Send' in the invitation note modal...");
+      const noteDialog = noteInput.closest("[role='dialog']") || invitationDialog;
+      sendBtn = await findSendInvitationButton(noteDialog);
+      if (!sendBtn) {
+        throw new Error(
+          "Could not find an enabled 'Send' button after adding the invitation note.",
+        );
+      }
+      addLog("Note", "Added the configured invitation note");
+    } else {
+      updateStatus("Looking for 'Send without a note' in verified modal...");
+      sendBtn = await findSendWithoutNoteButton(invitationDialog);
+      if (!sendBtn) {
+        throw new Error(
+          "Could not find 'Send without a note' button in invitation modal.",
+        );
+      }
     }
 
     clickElement(sendBtn);
-    addLog("Sent", "Clicked 'Send without a note'!");
+    addLog(
+      "Sent",
+      options.includeNote
+        ? "Sent the connection request with a note"
+        : "Sent the connection request without a note",
+    );
     const modalClosed = await waitForMatch(
       () => (!findActiveInvitationDialog() ? true : null),
       10_000,
@@ -382,28 +415,6 @@
     }
     updateStatus("Connection request sent successfully!");
     return { success: true };
-  }
-
-  async function runFullLeadAutomation(lead, options = {}) {
-    initOverlay();
-    if (overlayContainer) overlayContainer.style.display = "block";
-    updateStatus(`Automating lead: ${lead?.fullName || "Current Lead"}`);
-
-    // Check current page
-    const isRecentActivity = window.location.pathname.includes("/recent-activity");
-    
-    if (isRecentActivity) {
-      const engageResult = await runPostEngagement(options);
-      updateStatus("Finished posts engagement. Navigating to profile root for connection...");
-      return engageResult;
-    } else {
-      const connectResult = await runConnectionRequest({
-        ...options,
-        expectedProfileName: lead?.fullName || options.expectedProfileName,
-        expectedProfileUrl: lead?.linkedinUrl || options.expectedProfileUrl,
-      });
-      return connectResult;
-    }
   }
 
   // --- Element Finder & Action Helpers ---
@@ -856,6 +867,92 @@
     }, 20_000);
   }
 
+  async function findAddNoteButton(dialog) {
+    return waitForMatch(() => {
+      if (!dialog || !isElementActive(dialog)) return null;
+      const exactButton = Array.from(
+        dialog.querySelectorAll("button[aria-label='Add a note']"),
+      ).find(isElementActive);
+      if (exactButton) return exactButton;
+
+      return (
+        Array.from(dialog.querySelectorAll("button")).find(
+          (button) =>
+            button.textContent?.trim() === "Add a note" &&
+            isElementActive(button),
+        ) || null
+      );
+    }, 20_000);
+  }
+
+  async function findInvitationNoteInput() {
+    return waitForMatch(() => {
+      for (const root of getLinkedInModalRoots()) {
+        const input = Array.from(
+          root.querySelectorAll(
+            "textarea#custom-message, textarea[name='message'], textarea.connect-button-send-invite__custom-message",
+          ),
+        ).find(isElementActive);
+        if (input) return input;
+      }
+      return null;
+    }, 20_000);
+  }
+
+  function fillInvitationNote(input, note) {
+    input.focus();
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value",
+    )?.set;
+    if (valueSetter) valueSetter.call(input, note);
+    else input.value = note;
+    input.dispatchEvent(
+      new InputEvent("input", {
+        bubbles: true,
+        cancelable: false,
+        data: note,
+        inputType: "insertText",
+      }),
+    );
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  async function findSendInvitationButton(dialog) {
+    return waitForMatch(() => {
+      const dialogs = uniqueElements([
+        dialog,
+        findActiveInvitationDialog(),
+      ]).filter((candidate) => candidate && isElementActive(candidate));
+
+      for (const currentDialog of dialogs) {
+        const exactButton = Array.from(
+          currentDialog.querySelectorAll(
+            "button[aria-label='Send invitation']",
+          ),
+        ).find(
+          (button) =>
+            isElementActive(button) &&
+            !button.disabled &&
+            button.getAttribute("aria-disabled") !== "true",
+        );
+        if (exactButton) return exactButton;
+
+        const textButton = Array.from(
+          currentDialog.querySelectorAll("button"),
+        ).find(
+          (button) =>
+            button.textContent?.trim() === "Send" &&
+            isElementActive(button) &&
+            !button.disabled &&
+            button.getAttribute("aria-disabled") !== "true",
+        );
+        if (textButton) return textButton;
+      }
+      return null;
+    }, 20_000);
+  }
+
   function findActiveInvitationDialog() {
     const dialogs = getLinkedInModalRoots().flatMap((root) =>
       Array.from(
@@ -978,7 +1075,7 @@
       container.style.display = "block";
       container.innerHTML = `
         <div class="callum-validation-box">
-          <span class="callum-validation-label">Review GPT-5.6 Luna Reply (Post #${postIndex})</span>
+          <span class="callum-validation-label">Review Reply (Post #${postIndex})</span>
           <div class="callum-post-preview">"${escapeHtml(postExcerpt.substring(0, 150))}${postExcerpt.length > 150 ? "..." : ""}"</div>
           <textarea class="callum-textarea" id="callum-draft-editor">${escapeHtml(generatedDraft)}</textarea>
           <div class="callum-actions">
