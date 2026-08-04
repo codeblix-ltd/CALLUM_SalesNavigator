@@ -12,6 +12,7 @@ import {
   Clock3,
   Copy,
   Database,
+  Download,
   ExternalLink,
   KeyRound,
   LockKeyhole,
@@ -33,7 +34,7 @@ import { api } from "../convex/_generated/api";
 import "./App.css";
 
 type Range = "7d" | "30d" | "90d" | "all";
-type View = "overview" | "leads";
+type View = "overview" | "operations" | "leads";
 type ScoutSort = "activity" | "emails" | "accepted" | "assigned" | "name";
 
 type Stats = {
@@ -158,6 +159,47 @@ type DeviceLogin = {
   userCode: string;
 };
 
+type Operations = {
+  generatedAt: string;
+  summary: {
+    oldRequests: number;
+    followupsDue: number;
+    followupsPending: number;
+    checklistDone: number;
+    checklistTotal: number;
+    leadsToCheck: number;
+    openEscalations: number;
+    crmPending: number;
+    crmFailed: number;
+    crmSent: number;
+  };
+  escalations: Array<{
+    id: string;
+    operatorId: string;
+    leadName: string | null;
+    subject: string;
+    message: string;
+    createdAt: string;
+  }>;
+  crmRows: Array<{
+    id: string;
+    operatorId: string;
+    leadName: string | null;
+    email: string;
+    status: string;
+    attemptCount: number;
+    lastError: string | null;
+    createdAt: string;
+  }>;
+  oldRequests: Array<{
+    operatorId: string;
+    leadName: string | null;
+    profileUrl: string;
+    requestedAt: string;
+    ageDays: number;
+  }>;
+};
+
 function App() {
   const { isAuthenticated, isLoading } = useConvexAuth();
   const admin = useQuery(
@@ -273,6 +315,10 @@ function UnauthorizedScreen() {
 function Dashboard({ adminName }: { adminName: string }) {
   const { signOut } = useAuthActions();
   const getOverview = useAction(api.adminAnalytics.getOverview);
+  const getOperations = useAction(api.adminAnalytics.getOperations);
+  const exportCleanCsv = useAction(api.adminAnalytics.exportCleanCsv);
+  const resolveEscalation = useAction(api.adminAnalytics.resolveEscalation);
+  const retryCrmDelivery = useAction(api.adminAnalytics.retryCrmDelivery);
   const getStats = useAction(api.leads.getStats);
   const listLeads = useAction(api.leads.list);
   const getCodexStatus = useAction(api.codexGateway.getStatus);
@@ -284,6 +330,11 @@ function Dashboard({ adminName }: { adminName: string }) {
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(true);
   const [analyticsError, setAnalyticsError] = useState("");
+  const [operations, setOperations] = useState<Operations | null>(null);
+  const [operationsLoading, setOperationsLoading] = useState(false);
+  const [operationsError, setOperationsError] = useState("");
+  const [operationsNotice, setOperationsNotice] = useState("");
+  const [operationsBusy, setOperationsBusy] = useState(false);
   const [stats, setStats] = useState<Stats | null>(null);
   const [niche, setNiche] = useState("");
   const [search, setSearch] = useState("");
@@ -323,6 +374,18 @@ function Dashboard({ adminName }: { adminName: string }) {
       setLeadError(readError(error));
     }
   }, [getStats]);
+
+  const refreshOperations = useCallback(async () => {
+    setOperationsLoading(true);
+    setOperationsError("");
+    try {
+      setOperations(await getOperations({}));
+    } catch (error) {
+      setOperationsError(readError(error));
+    } finally {
+      setOperationsLoading(false);
+    }
+  }, [getOperations]);
 
   const loadLeads = useCallback(async () => {
     setLeadsLoading(true);
@@ -380,6 +443,10 @@ function Dashboard({ adminName }: { adminName: string }) {
   useEffect(() => {
     if (view === "leads") void loadLeads();
   }, [loadLeads, view]);
+
+  useEffect(() => {
+    if (view === "operations") void refreshOperations();
+  }, [refreshOperations, view]);
 
   useEffect(() => {
     if (settingsOpen) void refreshCodexStatus();
@@ -489,6 +556,65 @@ function Dashboard({ adminName }: { adminName: string }) {
     setCursorHistory(history);
   }
 
+  async function downloadCleanExport() {
+    setOperationsBusy(true);
+    setOperationsError("");
+    setOperationsNotice("");
+    try {
+      const result = await exportCleanCsv({});
+      const url = URL.createObjectURL(
+        new Blob([result.csv], { type: "text/csv;charset=utf-8" }),
+      );
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = result.fileName;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+      setOperationsNotice(
+        `Downloaded ${formatNumber(result.rowCount)} clean rows${result.invalidEmailsRemoved ? `; ${result.invalidEmailsRemoved} bad email values were left blank` : ""}.`,
+      );
+    } catch (error) {
+      setOperationsError(readError(error));
+    } finally {
+      setOperationsBusy(false);
+    }
+  }
+
+  async function sendWaitingCrmRows() {
+    setOperationsBusy(true);
+    setOperationsError("");
+    setOperationsNotice("");
+    try {
+      const result = await retryCrmDelivery({ outboxId: null });
+      setOperationsNotice(
+        result.attempted === 0
+          ? "There are no CRM records waiting."
+          : `Sent ${result.sent} of ${result.attempted} records. ${result.failed} need attention.`,
+      );
+      await refreshOperations();
+    } catch (error) {
+      setOperationsError(readError(error));
+    } finally {
+      setOperationsBusy(false);
+    }
+  }
+
+  async function closeEscalation(escalationId: string) {
+    setOperationsBusy(true);
+    setOperationsError("");
+    try {
+      await resolveEscalation({ escalationId });
+      setOperationsNotice("Question closed.");
+      await refreshOperations();
+    } catch (error) {
+      setOperationsError(readError(error));
+    } finally {
+      setOperationsBusy(false);
+    }
+  }
+
   const connectionError = analyticsError || leadError;
 
   return (
@@ -500,6 +626,7 @@ function Dashboard({ adminName }: { adminName: string }) {
         </a>
         <nav className="main-nav" aria-label="Workspace views">
           <button className={view === "overview" ? "active" : ""} onClick={() => setView("overview")}>Overview</button>
+          <button className={view === "operations" ? "active" : ""} onClick={() => setView("operations")}>Daily work</button>
           <button className={view === "leads" ? "active" : ""} onClick={() => setView("leads")}>Lead directory</button>
         </nav>
         <div className="topbar-actions">
@@ -550,6 +677,18 @@ function Dashboard({ adminName }: { adminName: string }) {
             activeScout={activeScout}
             scoutActivity={scoutActivity}
             scoutPosts={scoutPosts}
+          />
+        ) : view === "operations" ? (
+          <OperationsCenter
+            operations={operations}
+            loading={operationsLoading}
+            error={operationsError}
+            notice={operationsNotice}
+            busy={operationsBusy}
+            refresh={refreshOperations}
+            download={downloadCleanExport}
+            sendToCrm={sendWaitingCrmRows}
+            closeEscalation={closeEscalation}
           />
         ) : (
           <LeadDirectory
@@ -756,6 +895,116 @@ function Overview({
             icon={<Database size={18} />}
           />
           <Inventory summary={summary} />
+        </article>
+      </section>
+    </div>
+  );
+}
+
+function OperationsCenter({
+  operations,
+  loading,
+  error,
+  notice,
+  busy,
+  refresh,
+  download,
+  sendToCrm,
+  closeEscalation,
+}: {
+  operations: Operations | null;
+  loading: boolean;
+  error: string;
+  notice: string;
+  busy: boolean;
+  refresh: () => Promise<void>;
+  download: () => Promise<void>;
+  sendToCrm: () => Promise<void>;
+  closeEscalation: (id: string) => Promise<void>;
+}) {
+  if (!operations && loading) {
+    return <div className="overview-loading"><RefreshCw size={22} className="spin" /> Loading today’s work…</div>;
+  }
+  if (!operations) return <Notice message={error || "Daily work could not be loaded."} onRetry={refresh} />;
+  const summary = operations.summary;
+  const waitingForCrm = summary.crmPending + summary.crmFailed;
+
+  return (
+    <div className={`operations-stack ${loading ? "is-refreshing" : ""}`}>
+      <div className="operations-toolbar">
+        <div>
+          <p className="eyebrow">Team work</p>
+          <h2>Things that need attention</h2>
+          <span>Simple checks for scouts and managers.</span>
+        </div>
+        <div>
+          <button className="secondary-button" onClick={() => void refresh()} disabled={busy || loading}>
+            <RefreshCw size={15} className={loading ? "spin" : ""} /> Refresh
+          </button>
+          <button className="secondary-button" onClick={() => void download()} disabled={busy}>
+            <Download size={15} /> Download clean CSV
+          </button>
+          <button className="primary-button" onClick={() => void sendToCrm()} disabled={busy || waitingForCrm === 0}>
+            <Send size={15} /> Send waiting CRM rows
+          </button>
+        </div>
+      </div>
+      {error && <Notice message={error} onRetry={refresh} />}
+      {notice && <p className="operations-notice"><CheckCircle2 size={15} /> {notice}</p>}
+
+      <section className="operations-summary" aria-label="Work needing attention">
+        <article><Clock3 size={18} /><span>Follow-ups due</span><strong>{formatNumber(summary.followupsDue)}</strong><small>{summary.followupsPending} still open</small></article>
+        <article><Target size={18} /><span>Old requests</span><strong>{formatNumber(summary.oldRequests)}</strong><small>30 days or older</small></article>
+        <article><CheckCircle2 size={18} /><span>Checklist</span><strong>{summary.checklistDone} / {summary.checklistTotal}</strong><small>Finished today</small></article>
+        <article><Users size={18} /><span>Leads to check</span><strong>{formatNumber(summary.leadsToCheck)}</strong><small>Role and recent post</small></article>
+        <article><Mail size={18} /><span>CRM waiting</span><strong>{formatNumber(waitingForCrm)}</strong><small>{summary.crmSent} already sent</small></article>
+        <article><ShieldCheck size={18} /><span>Scout questions</span><strong>{formatNumber(summary.openEscalations)}</strong><small>Waiting for the team</small></article>
+      </section>
+
+      <section className="operations-grid">
+        <article className="panel operations-panel">
+          <PanelHeading eyebrow="Scout questions" title="Needs an answer" description="Questions scouts sent from the extension" icon={<Users size={18} />} />
+          <div className="operations-list">
+            {operations.escalations.length === 0 ? (
+              <p className="operations-empty">No open questions.</p>
+            ) : operations.escalations.map((item) => (
+              <article key={item.id}>
+                <div><strong>{item.subject}</strong><span>{item.operatorId} · {formatRelativeTime(item.createdAt)}</span></div>
+                <p>{item.message}</p>
+                {item.leadName && <small>Lead: {item.leadName}</small>}
+                <button className="secondary-button" onClick={() => void closeEscalation(item.id)} disabled={busy}>Mark answered</button>
+              </article>
+            ))}
+          </div>
+        </article>
+
+        <article className="panel operations-panel">
+          <PanelHeading eyebrow="30-day check" title="Old connection requests" description="Scouts withdraw these by hand on LinkedIn" icon={<Clock3 size={18} />} />
+          <div className="operations-list compact-rows">
+            {operations.oldRequests.length === 0 ? (
+              <p className="operations-empty">No old requests.</p>
+            ) : operations.oldRequests.map((item) => (
+              <article key={`${item.operatorId}-${item.profileUrl}`}>
+                <div><strong>{item.leadName || "Unnamed lead"}</strong><span>{item.operatorId} · {item.ageDays} days old</span></div>
+                <a href={item.profileUrl} target="_blank" rel="noreferrer">Open profile <ExternalLink size={12} /></a>
+              </article>
+            ))}
+          </div>
+        </article>
+
+        <article className="panel operations-panel operations-wide">
+          <PanelHeading eyebrow="CRM queue" title="Clean lead delivery" description="Only valid emails are queued; bad values never leave the app" icon={<Database size={18} />} />
+          <div className="operations-list crm-rows">
+            {operations.crmRows.length === 0 ? (
+              <p className="operations-empty">No CRM records are waiting.</p>
+            ) : operations.crmRows.map((item) => (
+              <article key={item.id}>
+                <div><strong>{item.leadName || item.email}</strong><span>{item.operatorId} · {item.status === "failed" ? "Needs attention" : "Waiting"}</span></div>
+                <p>{item.email}</p>
+                {item.lastError && <small>{item.lastError}</small>}
+              </article>
+            ))}
+          </div>
         </article>
       </section>
     </div>

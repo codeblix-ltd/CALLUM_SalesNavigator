@@ -82,6 +82,47 @@ const postActivityValidator = v.object({
   at: v.string(),
 });
 
+const operationsSummaryValidator = v.object({
+  oldRequests: v.number(),
+  followupsDue: v.number(),
+  followupsPending: v.number(),
+  checklistDone: v.number(),
+  checklistTotal: v.number(),
+  leadsToCheck: v.number(),
+  openEscalations: v.number(),
+  crmPending: v.number(),
+  crmFailed: v.number(),
+  crmSent: v.number(),
+});
+
+const escalationValidator = v.object({
+  id: v.string(),
+  operatorId: v.string(),
+  leadName: v.union(v.string(), v.null()),
+  subject: v.string(),
+  message: v.string(),
+  createdAt: v.string(),
+});
+
+const crmRowValidator = v.object({
+  id: v.string(),
+  operatorId: v.string(),
+  leadName: v.union(v.string(), v.null()),
+  email: v.string(),
+  status: v.string(),
+  attemptCount: v.number(),
+  lastError: v.union(v.string(), v.null()),
+  createdAt: v.string(),
+});
+
+const adminOldRequestValidator = v.object({
+  operatorId: v.string(),
+  leadName: v.union(v.string(), v.null()),
+  profileUrl: v.string(),
+  requestedAt: v.string(),
+  ageDays: v.number(),
+});
+
 type Range = "7d" | "30d" | "90d" | "all";
 
 type ScoutAccount = {
@@ -432,6 +473,335 @@ export const getOverview = action({
   },
 });
 
+export const getOperations = action({
+  args: {},
+  returns: v.object({
+    generatedAt: v.string(),
+    summary: operationsSummaryValidator,
+    escalations: v.array(escalationValidator),
+    crmRows: v.array(crmRowValidator),
+    oldRequests: v.array(adminOldRequestValidator),
+  }),
+  handler: async (ctx) => {
+    await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
+    const database = getPool();
+    const [
+      leadSummary,
+      followupSummary,
+      checklistSummary,
+      escalationSummary,
+      crmSummary,
+      escalations,
+      crmRows,
+      oldRequests,
+    ] = await Promise.all([
+      database.query(
+        `SELECT
+           count(*) FILTER (
+             WHERE status = 'connection_requested'
+               AND connection_requested_at <= now() - INTERVAL '30 days'
+           )::FLOAT8 AS old_requests,
+           count(*) FILTER (
+             WHERE status = 'assigned' AND qualification_status = 'pending'
+           )::FLOAT8 AS leads_to_check
+         FROM lead_assignments`,
+      ),
+      database.query(
+        `SELECT
+           count(*) FILTER (
+             WHERE status = 'pending' AND due_at <= now()
+           )::FLOAT8 AS due,
+           count(*) FILTER (WHERE status = 'pending')::FLOAT8 AS pending
+         FROM lead_followup_tasks`,
+      ),
+      database.query(
+        `SELECT
+           count(*) FILTER (WHERE completed)::FLOAT8 AS done,
+           count(*)::FLOAT8 AS total
+         FROM operator_daily_tasks
+         WHERE task_date = current_date`,
+      ),
+      database.query(
+        `SELECT count(*)::FLOAT8 AS count
+         FROM scout_escalations
+         WHERE status = 'open'`,
+      ),
+      database.query(
+        `SELECT
+           count(*) FILTER (WHERE status = 'pending')::FLOAT8 AS pending,
+           count(*) FILTER (WHERE status = 'failed')::FLOAT8 AS failed,
+           count(*) FILTER (WHERE status = 'sent')::FLOAT8 AS sent
+         FROM crm_delivery_outbox`,
+      ),
+      database.query(
+        `SELECT
+           e.id::STRING AS id,
+           e.operator_id,
+           l.full_name,
+           e.subject,
+           e.message,
+           e.created_at::STRING AS created_at
+         FROM scout_escalations AS e
+         LEFT JOIN leads AS l ON l.id = e.lead_id
+         WHERE e.status = 'open'
+         ORDER BY e.created_at DESC
+         LIMIT 100`,
+      ),
+      database.query(
+        `SELECT
+           o.id::STRING AS id,
+           o.operator_id,
+           l.full_name,
+           a.email,
+           o.status,
+           o.attempt_count::FLOAT8 AS attempt_count,
+           o.last_error,
+           o.created_at::STRING AS created_at
+         FROM crm_delivery_outbox AS o
+         INNER JOIN leads AS l ON l.id = o.lead_id
+         INNER JOIN lead_assignments AS a
+           ON a.lead_id = o.lead_id AND a.operator_id = o.operator_id
+         WHERE o.status IN ('pending', 'failed') AND a.email IS NOT NULL
+         ORDER BY CASE WHEN o.status = 'failed' THEN 0 ELSE 1 END, o.created_at
+         LIMIT 100`,
+      ),
+      database.query(
+        `SELECT
+           a.operator_id,
+           l.full_name,
+           coalesce(a.resolved_linkedin_url, l.linkedin_url) AS profile_url,
+           a.connection_requested_at::STRING AS requested_at,
+           (current_date - a.connection_requested_at::DATE)::FLOAT8 AS age_days
+         FROM lead_assignments AS a
+         INNER JOIN leads AS l ON l.id = a.lead_id
+         WHERE a.status = 'connection_requested'
+           AND a.connection_requested_at <= now() - INTERVAL '30 days'
+         ORDER BY a.connection_requested_at, a.lead_id
+         LIMIT 100`,
+      ),
+    ]);
+    const leadRow = leadSummary.rows[0] ?? {};
+    const followupRow = followupSummary.rows[0] ?? {};
+    const checklistRow = checklistSummary.rows[0] ?? {};
+    const crmRow = crmSummary.rows[0] ?? {};
+    return {
+      generatedAt: new Date().toISOString(),
+      summary: {
+        oldRequests: toNumber(leadRow.old_requests),
+        followupsDue: toNumber(followupRow.due),
+        followupsPending: toNumber(followupRow.pending),
+        checklistDone: toNumber(checklistRow.done),
+        checklistTotal: toNumber(checklistRow.total),
+        leadsToCheck: toNumber(leadRow.leads_to_check),
+        openEscalations: toNumber(escalationSummary.rows[0]?.count),
+        crmPending: toNumber(crmRow.pending),
+        crmFailed: toNumber(crmRow.failed),
+        crmSent: toNumber(crmRow.sent),
+      },
+      escalations: escalations.rows.map((row) => ({
+        id: String(row.id),
+        operatorId: String(row.operator_id),
+        leadName: nullableString(row.full_name),
+        subject: String(row.subject),
+        message: String(row.message),
+        createdAt: String(row.created_at),
+      })),
+      crmRows: crmRows.rows.map((row) => ({
+        id: String(row.id),
+        operatorId: String(row.operator_id),
+        leadName: nullableString(row.full_name),
+        email: String(row.email),
+        status: String(row.status),
+        attemptCount: toNumber(row.attempt_count),
+        lastError: nullableString(row.last_error),
+        createdAt: String(row.created_at),
+      })),
+      oldRequests: oldRequests.rows.map((row) => ({
+        operatorId: String(row.operator_id),
+        leadName: nullableString(row.full_name),
+        profileUrl: String(row.profile_url),
+        requestedAt: String(row.requested_at),
+        ageDays: toNumber(row.age_days),
+      })),
+    };
+  },
+});
+
+export const exportCleanCsv = action({
+  args: {},
+  returns: v.object({
+    fileName: v.string(),
+    csv: v.string(),
+    rowCount: v.number(),
+    invalidEmailsRemoved: v.number(),
+  }),
+  handler: async (ctx) => {
+    await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
+    const result = await getPool().query(
+      `SELECT
+         l.linkedin_url,
+         l.first_name,
+         l.last_name,
+         l.full_name,
+         l.current_title,
+         l.company_name,
+         a.email,
+         a.email_collected_at::STRING AS email_collected_at,
+         a.operator_id,
+         a.status,
+         a.accepted_at::STRING AS accepted_at
+       FROM lead_assignments AS a
+       INNER JOIN leads AS l ON l.id = a.lead_id
+       WHERE a.accepted_at IS NOT NULL OR a.status IN ('accepted', 'email_collected')
+       ORDER BY a.accepted_at DESC, a.lead_id
+       LIMIT 10000`,
+    );
+    let invalidEmailsRemoved = 0;
+    const rows = result.rows.map((row) => {
+      const emailValue = String(row.email ?? "").trim().toLowerCase();
+      const email = isCleanEmail(emailValue) ? emailValue : "";
+      if (emailValue && !email) invalidEmailsRemoved += 1;
+      const names = cleanNames(row.first_name, row.last_name, row.full_name);
+      return [
+        String(row.linkedin_url ?? ""),
+        names.firstName,
+        names.lastName,
+        String(row.current_title ?? ""),
+        email,
+        String(row.email_collected_at ?? "").slice(0, 10),
+        String(row.company_name ?? ""),
+        String(row.operator_id ?? ""),
+        String(row.status ?? ""),
+        String(row.accepted_at ?? "").slice(0, 10),
+      ];
+    });
+    const header = [
+      "LinkedIn URL",
+      "First Name",
+      "Last Name",
+      "Headline",
+      "Email Address",
+      "DO NOT EDIT - Date Added (Emails)",
+      "Company",
+      "Scout",
+      "Status",
+      "Accepted Date",
+    ];
+    return {
+      fileName: `clean-leads-${new Date().toISOString().slice(0, 10)}.csv`,
+      csv: [header, ...rows].map(csvLine).join("\r\n"),
+      rowCount: rows.length,
+      invalidEmailsRemoved,
+    };
+  },
+});
+
+export const resolveEscalation = action({
+  args: { escalationId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const admin = await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
+    const result = await getPool().query(
+      `UPDATE scout_escalations
+          SET status = 'resolved',
+              resolved_at = now(),
+              resolved_by = $2,
+              updated_at = now()
+        WHERE id = $1::UUID AND status = 'open'
+        RETURNING id`,
+      [args.escalationId, admin.username],
+    );
+    if (!result.rows[0]) throw new Error("This question is already closed.");
+    return null;
+  },
+});
+
+export const retryCrmDelivery = action({
+  args: { outboxId: v.union(v.string(), v.null()) },
+  returns: v.object({ attempted: v.number(), sent: v.number(), failed: v.number() }),
+  handler: async (ctx, args) => {
+    await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
+    const webhookUrl = crmWebhookUrl();
+    const database = getPool();
+    const result = await database.query(
+      `SELECT
+         o.id::STRING AS id,
+         o.lead_id::STRING AS lead_id,
+         o.operator_id,
+         l.first_name,
+         l.last_name,
+         l.full_name,
+         l.current_title,
+         l.company_name,
+         coalesce(a.resolved_linkedin_url, l.linkedin_url) AS linkedin_url,
+         a.email,
+         a.accepted_at::STRING AS accepted_at
+       FROM crm_delivery_outbox AS o
+       INNER JOIN leads AS l ON l.id = o.lead_id
+       INNER JOIN lead_assignments AS a
+         ON a.lead_id = o.lead_id AND a.operator_id = o.operator_id
+       WHERE o.status IN ('pending', 'failed')
+         AND ($1::UUID IS NULL OR o.id = $1::UUID)
+       ORDER BY o.created_at, o.id
+       LIMIT 25`,
+      [args.outboxId],
+    );
+    let sent = 0;
+    let failed = 0;
+    for (const row of result.rows) {
+      await database.query(
+        `UPDATE crm_delivery_outbox
+            SET attempt_count = attempt_count + 1,
+                last_attempt_at = now(),
+                updated_at = now()
+          WHERE id = $1::UUID`,
+        [row.id],
+      );
+      try {
+        const email = String(row.email ?? "").trim().toLowerCase();
+        if (!isCleanEmail(email)) throw new Error("The saved email is not valid.");
+        const response = await fetch(webhookUrl, {
+          method: "POST",
+          headers: crmWebhookHeaders(),
+          body: JSON.stringify({
+            id: String(row.lead_id),
+            firstName: nullableString(row.first_name),
+            lastName: nullableString(row.last_name),
+            fullName: nullableString(row.full_name),
+            title: nullableString(row.current_title),
+            company: nullableString(row.company_name),
+            linkedinUrl: String(row.linkedin_url),
+            email,
+            scout: String(row.operator_id),
+            acceptedAt: nullableString(row.accepted_at),
+          }),
+          signal: AbortSignal.timeout(15_000),
+        });
+        if (!response.ok) {
+          const detail = (await response.text()).trim().slice(0, 300);
+          throw new Error(`CRM returned ${response.status}${detail ? `: ${detail}` : ""}`);
+        }
+        await database.query(
+          `UPDATE crm_delivery_outbox
+              SET status = 'sent', sent_at = now(), last_error = NULL, updated_at = now()
+            WHERE id = $1::UUID`,
+          [row.id],
+        );
+        sent += 1;
+      } catch (error) {
+        await database.query(
+          `UPDATE crm_delivery_outbox
+              SET status = 'failed', last_error = $2, updated_at = now()
+            WHERE id = $1::UUID`,
+          [row.id, String(error instanceof Error ? error.message : error).slice(0, 1000)],
+        );
+        failed += 1;
+      }
+    }
+    return { attempted: result.rows.length, sent, failed };
+  },
+});
+
 function mapMetric(row: MetricRow) {
   return {
     assigned: toNumber(row.assigned),
@@ -487,4 +857,44 @@ function toNumber(value: unknown) {
 
 function nullableString(value: unknown) {
   return typeof value === "string" && value ? value : null;
+}
+
+function isCleanEmail(value: string) {
+  return Boolean(value && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value));
+}
+
+function cleanNames(firstValue: unknown, lastValue: unknown, fullValue: unknown) {
+  let firstName = String(firstValue ?? "").trim();
+  let lastName = String(lastValue ?? "").trim();
+  const fullName = String(fullValue ?? "").trim();
+  if (!firstName && fullName) firstName = fullName.split(/\s+/)[0] ?? "";
+  if (!lastName && fullName) {
+    lastName = fullName.split(/\s+/).slice(1).join(" ");
+  }
+  return { firstName, lastName };
+}
+
+function csvLine(values: unknown[]) {
+  return values
+    .map((value) => `"${String(value ?? "").replaceAll('"', '""')}"`)
+    .join(",");
+}
+
+function crmWebhookUrl() {
+  const value = process.env.CRM_WEBHOOK_URL?.trim();
+  if (!value) {
+    throw new Error(
+      "CRM delivery is not set up yet. Add CRM_WEBHOOK_URL, or use the clean CSV download.",
+    );
+  }
+  const url = new URL(value);
+  if (url.protocol !== "https:") throw new Error("CRM_WEBHOOK_URL must use HTTPS.");
+  return url.toString();
+}
+
+function crmWebhookHeaders() {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  const secret = process.env.CRM_WEBHOOK_SECRET?.trim();
+  if (secret) headers.authorization = `Bearer ${secret}`;
+  return headers;
 }

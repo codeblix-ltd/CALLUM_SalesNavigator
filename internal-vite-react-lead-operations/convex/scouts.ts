@@ -71,6 +71,47 @@ type ScoutDashboard = {
   activeLead: ScoutLead | null;
 };
 
+type ScoutOperations = {
+  generatedAt: string;
+  oldRequests: Array<{
+    leadId: string;
+    fullName: string | null;
+    profileUrl: string;
+    requestedAt: string;
+    ageDays: number;
+  }>;
+  followups: Array<{
+    id: string;
+    leadId: string;
+    fullName: string | null;
+    profileUrl: string;
+    step: number;
+    dueAt: string;
+    status: string;
+    messageText: string;
+    isDue: boolean;
+  }>;
+  dailyTasks: Array<{
+    taskKey: string;
+    label: string;
+    helpText: string;
+    completed: boolean;
+  }>;
+  leadsToCheck: Array<{
+    leadId: string;
+    fullName: string | null;
+    currentTitle: string | null;
+    companyName: string | null;
+    profileUrl: string;
+    qualificationStatus: string;
+    hasRecentPost: boolean | null;
+    icpScore: number;
+    icpReason: string;
+    note: string | null;
+  }>;
+  openEscalations: number;
+};
+
 const optionalText = v.union(v.string(), v.null());
 const settingsValidator = v.object({
   postEngagements: v.number(),
@@ -128,6 +169,55 @@ const dashboardValidator = v.object({
   activeLead: v.union(leadValidator, v.null()),
 });
 
+const oldRequestValidator = v.object({
+  leadId: v.string(),
+  fullName: optionalText,
+  profileUrl: v.string(),
+  requestedAt: v.string(),
+  ageDays: v.number(),
+});
+
+const followupTaskValidator = v.object({
+  id: v.string(),
+  leadId: v.string(),
+  fullName: optionalText,
+  profileUrl: v.string(),
+  step: v.number(),
+  dueAt: v.string(),
+  status: v.string(),
+  messageText: v.string(),
+  isDue: v.boolean(),
+});
+
+const dailyTaskValidator = v.object({
+  taskKey: v.string(),
+  label: v.string(),
+  helpText: v.string(),
+  completed: v.boolean(),
+});
+
+const qualificationLeadValidator = v.object({
+  leadId: v.string(),
+  fullName: optionalText,
+  currentTitle: optionalText,
+  companyName: optionalText,
+  profileUrl: v.string(),
+  qualificationStatus: v.string(),
+  hasRecentPost: v.union(v.boolean(), v.null()),
+  icpScore: v.number(),
+  icpReason: v.string(),
+  note: optionalText,
+});
+
+const scoutOperationsValidator = v.object({
+  generatedAt: v.string(),
+  oldRequests: v.array(oldRequestValidator),
+  followups: v.array(followupTaskValidator),
+  dailyTasks: v.array(dailyTaskValidator),
+  leadsToCheck: v.array(qualificationLeadValidator),
+  openEscalations: v.number(),
+});
+
 export const getDashboard = action({
   args: {},
   returns: dashboardValidator,
@@ -142,7 +232,9 @@ export const getDashboard = action({
       database.query(
         `SELECT
            count(*)::FLOAT8 AS total,
-           count(*) FILTER (WHERE status = 'assigned')::FLOAT8 AS fresh,
+           count(*) FILTER (
+             WHERE status = 'assigned' AND qualification_status <> 'not_qualified'
+           )::FLOAT8 AS fresh,
            count(*) FILTER (WHERE status = 'viewed')::FLOAT8 AS viewed,
            count(*) FILTER (
              WHERE engaged_at IS NOT NULL
@@ -240,8 +332,13 @@ export const claimNextLead = action({
       const selected = await client.query(
         `SELECT lead_id
            FROM lead_assignments
-          WHERE operator_id = $1 AND status = 'assigned'
-          ORDER BY assigned_at, lead_id
+          WHERE operator_id = $1
+            AND status = 'assigned'
+            AND qualification_status <> 'not_qualified'
+          ORDER BY
+            CASE WHEN qualification_status = 'qualified' THEN 0 ELSE 1 END,
+            assigned_at,
+            lead_id
           LIMIT 1
           FOR UPDATE SKIP LOCKED`,
         [scout.operatorId],
@@ -406,6 +503,8 @@ export const recordPostActivity = action({
         `UPDATE lead_assignments
             SET status = 'engaged',
                 engaged_at = coalesce(engaged_at, now()),
+                recent_post_checked_at = coalesce(recent_post_checked_at, now()),
+                has_recent_post = true,
                 resolved_linkedin_url = $3,
                 updated_at = now()
           WHERE lead_id = $1::UUID AND operator_id = $2`,
@@ -682,6 +781,7 @@ export const recordConnectionReview = action({
         `SELECT
            l.id::STRING AS id,
            l.full_name,
+           l.first_name,
            l.linkedin_url,
            a.resolved_linkedin_url,
            a.connection_requested_at::STRING AS requested_at
@@ -721,6 +821,12 @@ export const recordConnectionReview = action({
           connectedOn,
           source: "linkedin_connections_review",
         });
+        await createFollowupTasks(
+          client,
+          leadId,
+          scout.operatorId,
+          nullableString(row.first_name) ?? firstNameFrom(row.full_name),
+        );
         matchedLeadIds.add(leadId);
         acceptedLeads.push({
           id: leadId,
@@ -826,6 +932,21 @@ export const recordContactInfo = action({
           "email_collected",
           { profileUrl, email },
         );
+        await client.query(
+          `INSERT INTO crm_delivery_outbox (lead_id, operator_id, status, updated_at)
+           VALUES ($1::UUID, $2, 'pending', now())
+           ON CONFLICT (lead_id, operator_id) DO UPDATE SET
+             status = CASE
+               WHEN crm_delivery_outbox.status = 'sent' THEN 'sent'
+               ELSE 'pending'
+             END,
+             last_error = CASE
+               WHEN crm_delivery_outbox.status = 'sent' THEN crm_delivery_outbox.last_error
+               ELSE NULL
+             END,
+             updated_at = now()`,
+          [args.leadId, scout.operatorId],
+        );
       }
       await client.query("COMMIT");
       return { status: nextStatus, email: finalEmail };
@@ -881,6 +1002,14 @@ export const updateLeadStatus = action({
             SET status = $3,
                 updated_at = now(),
                 engaged_at = CASE WHEN $3 = 'engaged' THEN coalesce(engaged_at, now()) ELSE engaged_at END,
+                recent_post_checked_at = CASE
+                  WHEN $3 = 'skipped' AND $5 THEN coalesce(recent_post_checked_at, now())
+                  ELSE recent_post_checked_at
+                END,
+                has_recent_post = CASE
+                  WHEN $3 = 'skipped' AND $5 THEN false
+                  ELSE has_recent_post
+                END,
                 last_error = CASE WHEN $3 = 'failed' THEN $4 ELSE last_error END,
                 last_error_at = CASE WHEN $3 = 'failed' THEN now() ELSE last_error_at END
           WHERE lead_id = $1::UUID AND operator_id = $2`,
@@ -889,6 +1018,7 @@ export const updateLeadStatus = action({
           scout.operatorId,
           args.status,
           args.error?.slice(0, 1000) ?? null,
+          args.status === "skipped" && /no recent posts/i.test(args.error ?? ""),
         ],
       );
       await insertEvent(client, args.leadId, scout.operatorId, args.status, {
@@ -902,6 +1032,363 @@ export const updateLeadStatus = action({
     } finally {
       client.release();
     }
+  },
+});
+
+export const getScoutOperations = action({
+  args: {},
+  returns: scoutOperationsValidator,
+  handler: async (ctx): Promise<ScoutOperations> => {
+    const scout: ScoutIdentity = await ctx.runQuery(
+      internal.scoutIdentity.requireScout,
+      {},
+    );
+    const database = getPool();
+    await ensureDailyTasks(scout.operatorId);
+    const [oldResult, followupResult, taskResult, leadResult, escalationResult] =
+      await Promise.all([
+        database.query(
+          `SELECT
+             l.id::STRING AS lead_id,
+             l.full_name,
+             coalesce(a.resolved_linkedin_url, l.linkedin_url) AS profile_url,
+             a.connection_requested_at::STRING AS requested_at,
+             (current_date - a.connection_requested_at::DATE)::FLOAT8 AS age_days
+           FROM lead_assignments AS a
+           INNER JOIN leads AS l ON l.id = a.lead_id
+           WHERE a.operator_id = $1
+             AND a.status = 'connection_requested'
+             AND a.connection_requested_at <= now() - INTERVAL '30 days'
+           ORDER BY a.connection_requested_at, a.lead_id
+           LIMIT 100`,
+          [scout.operatorId],
+        ),
+        database.query(
+          `SELECT
+             t.id::STRING AS id,
+             t.lead_id::STRING AS lead_id,
+             l.full_name,
+             coalesce(a.resolved_linkedin_url, l.linkedin_url) AS profile_url,
+             t.step::FLOAT8 AS step,
+             t.due_at::STRING AS due_at,
+             t.status,
+             t.message_text,
+             t.due_at <= now() AS is_due
+           FROM lead_followup_tasks AS t
+           INNER JOIN leads AS l ON l.id = t.lead_id
+           INNER JOIN lead_assignments AS a
+             ON a.lead_id = t.lead_id AND a.operator_id = t.operator_id
+           WHERE t.operator_id = $1 AND t.status = 'pending'
+           ORDER BY t.due_at, t.step, t.id
+           LIMIT 50`,
+          [scout.operatorId],
+        ),
+        database.query(
+          `SELECT task_key, label, help_text, completed
+             FROM operator_daily_tasks
+            WHERE operator_id = $1 AND task_date = current_date
+            ORDER BY task_key`,
+          [scout.operatorId],
+        ),
+        database.query(
+          `SELECT
+             l.id::STRING AS lead_id,
+             l.full_name,
+             l.current_title,
+             l.company_name,
+             l.company_size,
+             coalesce(a.resolved_linkedin_url, l.linkedin_url) AS profile_url,
+             a.qualification_status,
+             a.has_recent_post,
+             a.icp_score,
+             a.qualification_note
+           FROM lead_assignments AS a
+           INNER JOIN leads AS l ON l.id = a.lead_id
+           WHERE a.operator_id = $1
+             AND a.status = 'assigned'
+             AND a.qualification_status = 'pending'
+           ORDER BY a.assigned_at, a.lead_id
+           LIMIT 12`,
+          [scout.operatorId],
+        ),
+        database.query(
+          `SELECT count(*)::FLOAT8 AS count
+             FROM scout_escalations
+            WHERE operator_id = $1 AND status = 'open'`,
+          [scout.operatorId],
+        ),
+      ]);
+
+    return {
+      generatedAt: new Date().toISOString(),
+      oldRequests: oldResult.rows.map((row) => ({
+        leadId: String(row.lead_id),
+        fullName: nullableString(row.full_name),
+        profileUrl: normalizeLinkedInProfileUrl(row.profile_url),
+        requestedAt: String(row.requested_at),
+        ageDays: Number(row.age_days ?? 30),
+      })),
+      followups: followupResult.rows.map((row) => ({
+        id: String(row.id),
+        leadId: String(row.lead_id),
+        fullName: nullableString(row.full_name),
+        profileUrl: normalizeLinkedInProfileUrl(row.profile_url),
+        step: Number(row.step),
+        dueAt: String(row.due_at),
+        status: String(row.status),
+        messageText: String(row.message_text),
+        isDue: Boolean(row.is_due),
+      })),
+      dailyTasks: taskResult.rows.map((row) => ({
+        taskKey: String(row.task_key),
+        label: String(row.label),
+        helpText: String(row.help_text),
+        completed: Boolean(row.completed),
+      })),
+      leadsToCheck: leadResult.rows.map((row) => {
+        const score = scoreIcp(row.current_title, row.company_size);
+        return {
+          leadId: String(row.lead_id),
+          fullName: nullableString(row.full_name),
+          currentTitle: nullableString(row.current_title),
+          companyName: nullableString(row.company_name),
+          profileUrl: normalizeLinkedInProfileUrl(row.profile_url),
+          qualificationStatus: String(row.qualification_status),
+          hasRecentPost:
+            typeof row.has_recent_post === "boolean" ? row.has_recent_post : null,
+          icpScore: Number(row.icp_score ?? score.value),
+          icpReason: score.reason,
+          note: nullableString(row.qualification_note),
+        };
+      }),
+      openEscalations: Number(escalationResult.rows[0]?.count ?? 0),
+    };
+  },
+});
+
+export const setDailyTask = action({
+  args: { taskKey: v.string(), completed: v.boolean() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
+    if (!DAILY_TASKS.some((task) => task.key === args.taskKey)) {
+      throw new Error("This checklist item does not exist.");
+    }
+    await ensureDailyTasks(scout.operatorId);
+    await getPool().query(
+      `UPDATE operator_daily_tasks
+          SET completed = $3,
+              completed_at = CASE WHEN $3 THEN now() ELSE NULL END,
+              updated_at = now()
+        WHERE operator_id = $1 AND task_date = current_date AND task_key = $2`,
+      [scout.operatorId, args.taskKey, args.completed],
+    );
+    return null;
+  },
+});
+
+export const markOldRequestWithdrawn = action({
+  args: { leadId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
+    const database = getPool();
+    const client = await database.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query(
+        `UPDATE lead_assignments
+            SET status = 'withdrawn',
+                withdrawn_at = now(),
+                connection_request_reserved_on = NULL,
+                updated_at = now()
+          WHERE lead_id = $1::UUID
+            AND operator_id = $2
+            AND status = 'connection_requested'
+            AND connection_requested_at <= now() - INTERVAL '30 days'
+        RETURNING lead_id`,
+        [args.leadId, scout.operatorId],
+      );
+      if (!result.rows[0]) {
+        throw new Error("This request is not ready for the 30-day review.");
+      }
+      await insertEvent(client, args.leadId, scout.operatorId, "request_withdrawn", {
+        source: "manual_30_day_review",
+      });
+      await client.query("COMMIT");
+      return null;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+});
+
+export const completeFollowupTask = action({
+  args: {
+    taskId: v.string(),
+    outcome: v.union(
+      v.literal("sent"),
+      v.literal("skipped"),
+      v.literal("replied"),
+    ),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
+    const database = getPool();
+    const client = await database.connect();
+    try {
+      await client.query("BEGIN");
+      const taskResult = await client.query(
+        `SELECT lead_id::STRING AS lead_id, step
+           FROM lead_followup_tasks
+          WHERE id = $1::UUID AND operator_id = $2 AND status = 'pending'
+          FOR UPDATE`,
+        [args.taskId, scout.operatorId],
+      );
+      const task = taskResult.rows[0];
+      if (!task) throw new Error("This follow-up is no longer open.");
+      if (args.outcome === "replied") {
+        await client.query(
+          `UPDATE lead_followup_tasks
+              SET status = 'cancelled', completed_at = now(), updated_at = now()
+            WHERE lead_id = $1::UUID AND operator_id = $2 AND status = 'pending'`,
+          [task.lead_id, scout.operatorId],
+        );
+        await client.query(
+          `UPDATE lead_assignments
+              SET replied_at = coalesce(replied_at, now()), updated_at = now()
+            WHERE lead_id = $1::UUID AND operator_id = $2`,
+          [task.lead_id, scout.operatorId],
+        );
+        await insertEvent(client, task.lead_id, scout.operatorId, "lead_replied", {
+          followupStep: Number(task.step),
+        });
+      } else {
+        await client.query(
+          `UPDATE lead_followup_tasks
+              SET status = $3, completed_at = now(), updated_at = now()
+            WHERE id = $1::UUID AND operator_id = $2`,
+          [args.taskId, scout.operatorId, args.outcome],
+        );
+        await insertEvent(
+          client,
+          task.lead_id,
+          scout.operatorId,
+          args.outcome === "sent" ? "followup_sent" : "followup_skipped",
+          { followupStep: Number(task.step) },
+        );
+      }
+      await client.query("COMMIT");
+      return null;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+});
+
+export const setLeadQualification = action({
+  args: {
+    leadId: v.string(),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("qualified"),
+      v.literal("not_qualified"),
+    ),
+    hasRecentPost: v.union(v.boolean(), v.null()),
+    note: optionalText,
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
+    const note = args.note?.trim().slice(0, 500) || null;
+    const database = getPool();
+    const current = await database.query(
+      `SELECT l.current_title, l.company_size
+         FROM lead_assignments AS a
+         INNER JOIN leads AS l ON l.id = a.lead_id
+        WHERE a.lead_id = $1::UUID AND a.operator_id = $2 AND a.status = 'assigned'`,
+      [args.leadId, scout.operatorId],
+    );
+    if (!current.rows[0]) throw new Error("This lead is no longer waiting for review.");
+    const score = scoreIcp(
+      current.rows[0].current_title,
+      current.rows[0].company_size,
+    );
+    await database.query(
+      `UPDATE lead_assignments
+          SET qualification_status = $3,
+              qualification_note = $4,
+              has_recent_post = $5,
+              recent_post_checked_at = CASE
+                WHEN $5::BOOL IS NULL THEN recent_post_checked_at
+                ELSE now()
+              END,
+              icp_score = $6,
+              updated_at = now()
+        WHERE lead_id = $1::UUID AND operator_id = $2 AND status = 'assigned'`,
+      [
+        args.leadId,
+        scout.operatorId,
+        args.status,
+        note,
+        args.hasRecentPost,
+        score.value,
+      ],
+    );
+    await database.query(
+      `INSERT INTO lead_assignment_events (lead_id, operator_id, event_type, details)
+       VALUES ($1::UUID, $2, 'lead_checked', $3::JSONB)`,
+      [
+        args.leadId,
+        scout.operatorId,
+        JSON.stringify({
+          status: args.status,
+          hasRecentPost: args.hasRecentPost,
+          icpScore: score.value,
+          note,
+        }),
+      ],
+    );
+    return null;
+  },
+});
+
+export const createEscalation = action({
+  args: {
+    leadId: v.union(v.string(), v.null()),
+    subject: v.string(),
+    message: v.string(),
+  },
+  returns: v.object({ id: v.string() }),
+  handler: async (ctx, args): Promise<{ id: string }> => {
+    const scout: ScoutIdentity = await ctx.runQuery(
+      internal.scoutIdentity.requireScout,
+      {},
+    );
+    const subject = args.subject.trim().slice(0, 120);
+    const message = args.message.trim().slice(0, 2_000);
+    if (!subject || !message) throw new Error("Add a short subject and message.");
+    if (args.leadId) {
+      const assigned = await getPool().query(
+        `SELECT 1 FROM lead_assignments WHERE lead_id = $1::UUID AND operator_id = $2`,
+        [args.leadId, scout.operatorId],
+      );
+      if (!assigned.rows[0]) throw new Error("This lead is not assigned to you.");
+    }
+    const result = await getPool().query(
+      `INSERT INTO scout_escalations (operator_id, lead_id, subject, message)
+       VALUES ($1, $2::UUID, $3, $4)
+       RETURNING id::STRING AS id`,
+      [scout.operatorId, args.leadId, subject, message],
+    );
+    return { id: String(result.rows[0].id) };
   },
 });
 
@@ -1064,6 +1551,107 @@ export const draftComment = action({
     });
   },
 });
+
+const DAILY_TASKS = [
+  {
+    key: "01_leads",
+    label: "Finish today’s lead list",
+    help: "Work through the leads and limits shown above.",
+  },
+  {
+    key: "02_veblen_post",
+    label: "Support Veblen’s latest post",
+    help: "Follow the page, then like and repost the latest company post.",
+  },
+  {
+    key: "03_event",
+    label: "Work on the next Veblen event",
+    help: "Register for the event and send today’s planned invites.",
+  },
+  {
+    key: "04_callum_post",
+    label: "Support Callum’s latest post",
+    help: "Like it and leave a useful comment.",
+  },
+  {
+    key: "05_report",
+    label: "Send today’s numbers",
+    help: "Report new connections, saved emails, and anything blocking you.",
+  },
+] as const;
+
+async function ensureDailyTasks(operatorId: string) {
+  const database = getPool();
+  await Promise.all(
+    DAILY_TASKS.map((task) =>
+      database.query(
+        `INSERT INTO operator_daily_tasks (
+           operator_id, task_date, task_key, label, help_text
+         ) VALUES ($1, current_date, $2, $3, $4)
+         ON CONFLICT (operator_id, task_date, task_key) DO NOTHING`,
+        [operatorId, task.key, task.label, task.help],
+      ),
+    ),
+  );
+}
+
+async function createFollowupTasks(
+  client: PoolClient,
+  leadId: string,
+  operatorId: string,
+  firstName: string | null,
+) {
+  const name = firstName?.trim() || "there";
+  const messages = [
+    `Hi ${name}, thanks for connecting. I help Callum with research at Veblen Director Programme. It’s great to connect.`,
+    `Hi ${name}, I wanted to follow up. We speak with leaders who want to grow their board-level skills and network. Is that something you are working on this year?`,
+    `Hi ${name}, Callum would be happy to share more about the Veblen Director Programme. Would you like me to introduce you?`,
+  ];
+  await client.query(
+    `INSERT INTO lead_followup_tasks (
+       lead_id, operator_id, step, due_at, message_text
+     ) VALUES
+       ($1::UUID, $2, 1, now(), $3),
+       ($1::UUID, $2, 2, now() + INTERVAL '2 days', $4),
+       ($1::UUID, $2, 3, now() + INTERVAL '3 days', $5)
+     ON CONFLICT (lead_id, operator_id, step) DO NOTHING`,
+    [leadId, operatorId, ...messages],
+  );
+}
+
+function firstNameFrom(value: unknown) {
+  const name = nullableString(value)?.trim();
+  return name ? name.split(/\s+/)[0] : null;
+}
+
+function scoreIcp(titleValue: unknown, companySizeValue: unknown) {
+  const title = String(titleValue ?? "").toLowerCase();
+  const companySize = String(companySizeValue ?? "").toLowerCase();
+  let value = 45;
+  let reason = "Check the role before using this lead.";
+  if (!title.trim()) {
+    value = 30;
+    reason = "The job title is missing.";
+  } else if (
+    /\b(founder|owner|chief|ceo|cfo|coo|cto|president|chair|managing director)\b/.test(
+      title,
+    )
+  ) {
+    value = 92;
+    reason = "This looks like a senior decision-maker.";
+  } else if (/\b(vice president|vp|director|head|partner)\b/.test(title)) {
+    value = 84;
+    reason = "This looks like a senior leader.";
+  } else if (/\b(senior manager|general manager|manager|lead)\b/.test(title)) {
+    value = 68;
+    reason = "This may be a good mid-level leader.";
+  }
+  if (/\b(1|2)-10\b|self-employed/.test(companySize)) {
+    value = Math.max(0, value - 6);
+    reason += " The company may be very small.";
+  }
+  return { value: Math.min(100, value), reason };
+}
 
 async function getOrCreateSettings(operatorId: string): Promise<ScoutSettings> {
   const database = getPool();

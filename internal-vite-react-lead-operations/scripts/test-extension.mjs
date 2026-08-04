@@ -12,7 +12,7 @@ const extensionRoot = path.join(projectRoot, "chrome-extension");
 const readExtensionFile = (name) =>
   readFile(path.join(extensionRoot, name), "utf8");
 
-const [manifestSource, popupSource, popupScript, backgroundSource, contentSource, clientSource] =
+const [manifestSource, popupSource, popupScript, backgroundSource, contentSource, clientSource, scoutSource, adminSource, schemaSource] =
   await Promise.all([
     readExtensionFile("manifest.json"),
     readExtensionFile("popup.html"),
@@ -20,6 +20,9 @@ const [manifestSource, popupSource, popupScript, backgroundSource, contentSource
     readExtensionFile("background.js"),
     readExtensionFile("content.js"),
     readExtensionFile("convex-client.js"),
+    readFile(path.join(projectRoot, "convex", "scouts.ts"), "utf8"),
+    readFile(path.join(projectRoot, "convex", "adminAnalytics.ts"), "utf8"),
+    readFile(path.join(projectRoot, "database", "schema.sql"), "utf8"),
   ]);
 const manifest = JSON.parse(manifestSource);
 
@@ -62,7 +65,7 @@ assert.doesNotMatch(popupSource, /id="validate-comment"[^>]*checked/);
 assert.match(popupScript, /Math\.floor\(limits\.likes \/ requests\)/);
 assert.doesNotMatch(
   popupSource,
-  /Review sent invitations|Review interval|Wait before connecting|id="open-sent"/i,
+  /Review interval|Wait before connecting/i,
 );
 assert.match(popupSource, /id="invitation-note"[\s\S]*maxlength="300"/);
 assert.doesNotMatch(popupSource, /id="include-note"|Include a note when you send a request/);
@@ -78,6 +81,18 @@ assert.match(popupScript, /premiumVerified/);
 assert.match(popupScript, /onboardingValidateComment\.checked/);
 assert.match(popupScript, /stored\.validateBeforeCommenting \?\? false/);
 assert.match(popupScript, /scouts:resetOnboarding/);
+assert.match(popupSource, /id="daily-checklist"/);
+assert.match(popupSource, /id="followup-list"/);
+assert.match(popupSource, /id="lead-check-list"/);
+assert.match(popupSource, /id="old-request-list"/);
+assert.match(popupSource, /id="question-form"/);
+assert.match(popupScript, /scouts:getScoutOperations/);
+assert.match(popupScript, /scouts:setDailyTask/);
+assert.match(popupScript, /scouts:completeFollowupTask/);
+assert.match(popupScript, /scouts:setLeadQualification/);
+assert.match(popupScript, /scouts:markOldRequestWithdrawn/);
+assert.match(popupScript, /scouts:createEscalation/);
+assert.doesNotMatch(backgroundSource, /markOldRequestWithdrawn|invitation-manager\/sent/);
 assert.match(popupScript, /It will not remove your leads or past work/);
 assert.doesNotMatch(
   popupSource,
@@ -127,6 +142,16 @@ assert.match(backgroundSource, /dashboard\.usage\.requestRemaining/);
 assert.match(clientSource, /error\?\.status === 401/);
 assert.match(clientSource, /refreshOnce/);
 assert.match(clientSource, /clearAuthIfUnchanged/);
+assert.match(scoutSource, /export const getScoutOperations/);
+assert.match(scoutSource, /export const markOldRequestWithdrawn/);
+assert.match(scoutSource, /export const completeFollowupTask/);
+assert.match(scoutSource, /createFollowupTasks/);
+assert.match(adminSource, /export const exportCleanCsv/);
+assert.match(adminSource, /export const retryCrmDelivery/);
+assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS lead_followup_tasks/);
+assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS operator_daily_tasks/);
+assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS scout_escalations/);
+assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS crm_delivery_outbox/);
 
 const storedAuth = {
   callumScoutAuth: {

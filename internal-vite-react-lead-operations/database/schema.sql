@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS lead_assignments (
       'connection_requested',
       'accepted',
       'email_collected',
+      'withdrawn',
       'skipped',
       'failed'
     )),
@@ -139,7 +140,28 @@ ALTER TABLE lead_assignments
   ADD COLUMN IF NOT EXISTS resolved_linkedin_url STRING NULL,
   ADD COLUMN IF NOT EXISTS connection_request_reserved_on DATE NULL,
   ADD COLUMN IF NOT EXISTS email STRING NULL,
-  ADD COLUMN IF NOT EXISTS last_error_at TIMESTAMPTZ NULL;
+  ADD COLUMN IF NOT EXISTS last_error_at TIMESTAMPTZ NULL,
+  ADD COLUMN IF NOT EXISTS withdrawn_at TIMESTAMPTZ NULL,
+  ADD COLUMN IF NOT EXISTS replied_at TIMESTAMPTZ NULL,
+  ADD COLUMN IF NOT EXISTS qualification_status STRING NOT NULL DEFAULT 'pending',
+  ADD COLUMN IF NOT EXISTS qualification_note STRING NULL,
+  ADD COLUMN IF NOT EXISTS recent_post_checked_at TIMESTAMPTZ NULL,
+  ADD COLUMN IF NOT EXISTS has_recent_post BOOL NULL,
+  ADD COLUMN IF NOT EXISTS icp_score INT4 NULL;
+
+ALTER TABLE lead_assignments
+  DROP CONSTRAINT IF EXISTS lead_assignments_qualification_status_check;
+
+ALTER TABLE lead_assignments
+  ADD CONSTRAINT lead_assignments_qualification_status_check
+  CHECK (qualification_status IN ('pending', 'qualified', 'not_qualified'));
+
+ALTER TABLE lead_assignments
+  DROP CONSTRAINT IF EXISTS lead_assignments_icp_score_check;
+
+ALTER TABLE lead_assignments
+  ADD CONSTRAINT lead_assignments_icp_score_check
+  CHECK (icp_score IS NULL OR icp_score BETWEEN 0 AND 100);
 
 ALTER TABLE lead_assignments
   DROP CONSTRAINT IF EXISTS lead_assignments_status_check;
@@ -154,12 +176,19 @@ ALTER TABLE lead_assignments
     'connection_requested',
     'accepted',
     'email_collected',
+    'withdrawn',
     'skipped',
     'failed'
   ));
 
 CREATE INDEX IF NOT EXISTS lead_assignments_by_operator_id_and_status
   ON lead_assignments (operator_id, status, lead_id);
+
+CREATE INDEX IF NOT EXISTS lead_assignments_by_operator_id_and_qualification
+  ON lead_assignments (operator_id, qualification_status, assigned_at, lead_id);
+
+CREATE INDEX IF NOT EXISTS lead_assignments_by_status_and_request_time
+  ON lead_assignments (status, connection_requested_at, lead_id);
 
 CREATE TABLE IF NOT EXISTS operator_settings (
   operator_id STRING PRIMARY KEY,
@@ -313,6 +342,91 @@ CREATE INDEX IF NOT EXISTS lead_assignment_events_by_operator_id_and_created_at
 
 CREATE INDEX IF NOT EXISTS lead_assignment_events_by_lead_id_and_created_at
   ON lead_assignment_events (lead_id, created_at DESC);
+
+-- Each accepted lead gets three small, manual follow-up tasks. The extension
+-- only helps the scout copy the message and record the outcome; it does not
+-- send LinkedIn messages for them.
+CREATE TABLE IF NOT EXISTS lead_followup_tasks (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  lead_id UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  operator_id STRING NOT NULL,
+  step INT4 NOT NULL CHECK (step BETWEEN 1 AND 3),
+  due_at TIMESTAMPTZ NOT NULL,
+  status STRING NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'sent', 'skipped', 'cancelled')),
+  message_text STRING NOT NULL,
+  completed_at TIMESTAMPTZ NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (lead_id, operator_id, step)
+);
+
+CREATE INDEX IF NOT EXISTS lead_followup_tasks_by_operator_and_due_at
+  ON lead_followup_tasks (operator_id, status, due_at, id);
+
+-- Daily tasks are created lazily when a scout opens the extension. The keys
+-- keep the checklist idempotent if the extension is refreshed many times.
+CREATE TABLE IF NOT EXISTS operator_daily_tasks (
+  operator_id STRING NOT NULL,
+  task_date DATE NOT NULL,
+  task_key STRING NOT NULL,
+  label STRING NOT NULL,
+  help_text STRING NOT NULL,
+  completed BOOL NOT NULL DEFAULT false,
+  completed_at TIMESTAMPTZ NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (operator_id, task_date, task_key)
+);
+
+CREATE TABLE IF NOT EXISTS scout_escalations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  operator_id STRING NOT NULL,
+  lead_id UUID NULL REFERENCES leads(id) ON DELETE SET NULL,
+  subject STRING NOT NULL,
+  message STRING NOT NULL,
+  status STRING NOT NULL DEFAULT 'open'
+    CHECK (status IN ('open', 'resolved')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  resolved_at TIMESTAMPTZ NULL,
+  resolved_by STRING NULL
+);
+
+CREATE INDEX IF NOT EXISTS scout_escalations_by_status_and_created_at
+  ON scout_escalations (status, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS scout_escalations_by_operator_and_created_at
+  ON scout_escalations (operator_id, created_at DESC);
+
+-- Valid email records are queued for an optional CRM webhook. If no webhook
+-- is configured, admins can still download the same clean rows as CSV.
+CREATE TABLE IF NOT EXISTS crm_delivery_outbox (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  lead_id UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  operator_id STRING NOT NULL,
+  status STRING NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'sent', 'failed')),
+  attempt_count INT4 NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  last_attempt_at TIMESTAMPTZ NULL,
+  sent_at TIMESTAMPTZ NULL,
+  last_error STRING NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (lead_id, operator_id)
+);
+
+CREATE INDEX IF NOT EXISTS crm_delivery_outbox_by_status_and_created_at
+  ON crm_delivery_outbox (status, created_at, id);
+
+-- Pick up valid emails collected before this outbox was introduced. Values
+-- such as "No Email" do not match and are never queued.
+INSERT INTO crm_delivery_outbox (lead_id, operator_id, status)
+SELECT lead_id, operator_id, 'pending'
+  FROM lead_assignments
+ WHERE email IS NOT NULL
+   AND email LIKE '%_@_%._%'
+   AND email NOT LIKE '% %'
+ON CONFLICT (lead_id, operator_id) DO NOTHING;
 
 -- Simulation runs are deliberately isolated from lead_assignments. The local
 -- mock LinkedIn workflow may use an assigned lead as a fixture seed, but none

@@ -68,6 +68,19 @@ const elements = {
   verifyPremium: document.querySelector("#verify-premium"),
   invitationNoteField: document.querySelector("#invitation-note-field"),
   invitationNote: document.querySelector("#invitation-note"),
+  checklistCount: document.querySelector("#checklist-count"),
+  dailyChecklist: document.querySelector("#daily-checklist"),
+  followupCount: document.querySelector("#followup-count"),
+  followupList: document.querySelector("#followup-list"),
+  leadCheckCount: document.querySelector("#lead-check-count"),
+  leadCheckList: document.querySelector("#lead-check-list"),
+  oldRequestCount: document.querySelector("#old-request-count"),
+  oldRequestList: document.querySelector("#old-request-list"),
+  openSentRequests: document.querySelector("#open-sent-requests"),
+  openQuestionCount: document.querySelector("#open-question-count"),
+  questionForm: document.querySelector("#question-form"),
+  questionSubject: document.querySelector("#question-subject"),
+  questionMessage: document.querySelector("#question-message"),
   error: document.querySelector("#error"),
   success: document.querySelector("#success"),
   updated: document.querySelector("#updated"),
@@ -83,6 +96,7 @@ const PLAN_LIMITS = {
 };
 
 let dashboard = null;
+let scoutOperations = null;
 let premiumVerified = false;
 let onboardingSelectedPlan = null;
 let savedPlanIsPremium = false;
@@ -97,6 +111,17 @@ elements.toggleSettings.addEventListener("click", () => {
   elements.settingsForm.hidden = !elements.settingsForm.hidden;
 });
 elements.settingsForm.addEventListener("submit", saveSettings);
+elements.dailyChecklist.addEventListener("change", updateDailyTask);
+elements.followupList.addEventListener("click", handleFollowupClick);
+elements.leadCheckList.addEventListener("click", handleLeadCheckClick);
+elements.oldRequestList.addEventListener("click", handleOldRequestClick);
+elements.openSentRequests.addEventListener("click", () =>
+  chrome.tabs.create({
+    url: "https://www.linkedin.com/mynetwork/invitation-manager/sent/",
+    active: true,
+  }),
+);
+elements.questionForm.addEventListener("submit", sendQuestion);
 elements.verifyPremium.addEventListener("click", verifyPremiumAndUnlockNote);
 elements.onboardingFreePlan.addEventListener("click", () =>
   selectOnboardingPlan("free"),
@@ -185,6 +210,7 @@ async function handleSignOut() {
     showError(error);
   } finally {
     dashboard = null;
+    scoutOperations = null;
     await chrome.storage.local.remove([
       "scoutDashboard",
       "scoutDashboardUpdatedAt",
@@ -205,11 +231,152 @@ async function refreshDashboard() {
       throw new Error(response?.error || "We couldn’t update your leads. Try again.");
     }
     renderDashboard(response.dashboard, Date.now());
+    if (response.dashboard.settings?.onboardingCompleted) {
+      await refreshScoutOperations();
+    }
   } catch (error) {
     if (/sign in|required|expired|session/i.test(String(error))) showLogin();
     showError(error);
   } finally {
     setBusy(elements.refresh, false);
+  }
+}
+
+async function refreshScoutOperations() {
+  scoutOperations = await ScoutApi.authenticatedAction(
+    "scouts:getScoutOperations",
+    {},
+  );
+  renderScoutOperations(scoutOperations);
+}
+
+async function updateDailyTask(event) {
+  const checkbox = event.target.closest("input[data-task-key]");
+  if (!checkbox) return;
+  checkbox.disabled = true;
+  clearMessages();
+  try {
+    await ScoutApi.authenticatedAction("scouts:setDailyTask", {
+      taskKey: checkbox.dataset.taskKey,
+      completed: checkbox.checked,
+    });
+    await refreshScoutOperations();
+  } catch (error) {
+    showError(error);
+  } finally {
+    checkbox.disabled = false;
+  }
+}
+
+async function handleFollowupClick(event) {
+  const button = event.target.closest("button[data-followup-action]");
+  if (!button) return;
+  clearMessages();
+  setBusy(button, true);
+  try {
+    const actionName = button.dataset.followupAction;
+    if (actionName === "open") {
+      await chrome.tabs.create({ url: button.dataset.profileUrl, active: true });
+      return;
+    }
+    if (actionName === "copy") {
+      await navigator.clipboard.writeText(button.dataset.message || "");
+      showSuccess("Message copied. Send it on LinkedIn, then mark it sent.");
+      return;
+    }
+    await ScoutApi.authenticatedAction("scouts:completeFollowupTask", {
+      taskId: button.dataset.taskId,
+      outcome: actionName,
+    });
+    showSuccess(
+      actionName === "replied"
+        ? "Reply saved. The later follow-ups were closed."
+        : actionName === "sent"
+          ? "Follow-up marked as sent."
+          : "Follow-up skipped.",
+    );
+    await refreshScoutOperations();
+  } catch (error) {
+    showError(error);
+  } finally {
+    setBusy(button, false);
+  }
+}
+
+async function handleLeadCheckClick(event) {
+  const button = event.target.closest("button[data-lead-action]");
+  if (!button) return;
+  clearMessages();
+  setBusy(button, true);
+  try {
+    if (button.dataset.leadAction === "open") {
+      await chrome.tabs.create({ url: button.dataset.profileUrl, active: true });
+      return;
+    }
+    const recentValue = button.dataset.recentPost;
+    await ScoutApi.authenticatedAction("scouts:setLeadQualification", {
+      leadId: button.dataset.leadId,
+      status: button.dataset.status,
+      hasRecentPost:
+        recentValue === "true" ? true : recentValue === "false" ? false : null,
+      note: null,
+    });
+    await refreshDashboard();
+    showSuccess(
+      button.dataset.status === "qualified"
+        ? "Lead checked and ready."
+        : "Lead marked as not a good fit.",
+    );
+  } catch (error) {
+    showError(error);
+  } finally {
+    setBusy(button, false);
+  }
+}
+
+async function handleOldRequestClick(event) {
+  const button = event.target.closest("button[data-old-request-action]");
+  if (!button) return;
+  clearMessages();
+  if (button.dataset.oldRequestAction === "open") {
+    await chrome.tabs.create({ url: button.dataset.profileUrl, active: true });
+    return;
+  }
+  const confirmed = window.confirm(
+    "Did you withdraw this request on LinkedIn? Only mark it after LinkedIn confirms it.",
+  );
+  if (!confirmed) return;
+  setBusy(button, true);
+  try {
+    await ScoutApi.authenticatedAction("scouts:markOldRequestWithdrawn", {
+      leadId: button.dataset.leadId,
+    });
+    await refreshDashboard();
+    showSuccess("Old request marked as withdrawn.");
+  } catch (error) {
+    showError(error);
+  } finally {
+    setBusy(button, false);
+  }
+}
+
+async function sendQuestion(event) {
+  event.preventDefault();
+  clearMessages();
+  setBusy(elements.questionForm, true);
+  try {
+    await ScoutApi.authenticatedAction("scouts:createEscalation", {
+      leadId: null,
+      subject: elements.questionSubject.value,
+      message: elements.questionMessage.value,
+    });
+    elements.questionForm.reset();
+    showSuccess("Question sent to the team.");
+    await refreshScoutOperations();
+  } catch (error) {
+    showError(error);
+  } finally {
+    setBusy(elements.questionForm, false);
   }
 }
 
@@ -377,6 +544,183 @@ function renderDashboard(value, updatedAt) {
   elements.connection.classList.remove("error");
   elements.connection.lastChild.textContent = " Ready";
   renderSettings(value.settings);
+}
+
+function renderScoutOperations(value) {
+  const dailyDone = value.dailyTasks.filter((task) => task.completed).length;
+  const followupsDue = value.followups.filter((task) => task.isDue).length;
+  elements.checklistCount.textContent = `${dailyDone} / ${value.dailyTasks.length}`;
+  elements.followupCount.textContent = `${followupsDue} due`;
+  elements.leadCheckCount.textContent = `${value.leadsToCheck.length} waiting`;
+  elements.oldRequestCount.textContent = `${value.oldRequests.length} waiting`;
+  elements.openQuestionCount.textContent = `${value.openEscalations} ${value.openEscalations === 1 ? "question" : "questions"} open`;
+  renderDailyChecklist(value.dailyTasks);
+  renderFollowups(value.followups);
+  renderLeadChecks(value.leadsToCheck);
+  renderOldRequests(value.oldRequests);
+}
+
+function renderDailyChecklist(tasks) {
+  elements.dailyChecklist.replaceChildren();
+  if (tasks.length === 0) {
+    elements.dailyChecklist.append(emptyToolMessage("No checklist items today."));
+    return;
+  }
+  for (const task of tasks) {
+    const label = document.createElement("label");
+    label.className = "task-row";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = task.completed;
+    checkbox.dataset.taskKey = task.taskKey;
+    const text = document.createElement("span");
+    const title = document.createElement("strong");
+    title.textContent = task.label;
+    const help = document.createElement("small");
+    help.textContent = task.helpText;
+    text.append(title, help);
+    label.append(checkbox, text);
+    elements.dailyChecklist.append(label);
+  }
+}
+
+function renderFollowups(tasks) {
+  elements.followupList.replaceChildren();
+  if (tasks.length === 0) {
+    elements.followupList.append(emptyToolMessage("No follow-ups are waiting."));
+    return;
+  }
+  for (const task of tasks) {
+    const item = toolItem(
+      task.fullName || "Unnamed lead",
+      task.isDue ? `Step ${task.step} · due now` : `Step ${task.step} · ${timeUntil(task.dueAt)}`,
+      task.messageText,
+    );
+    const actions = item.querySelector(".tool-actions");
+    actions.append(
+      toolButton("Open profile", { followupAction: "open", profileUrl: task.profileUrl }),
+      toolButton("Copy message", { followupAction: "copy", message: task.messageText }),
+      toolButton("Mark sent", { followupAction: "sent", taskId: task.id }, "good"),
+      toolButton("They replied", { followupAction: "replied", taskId: task.id }),
+      toolButton("Skip", { followupAction: "skipped", taskId: task.id }, "warn"),
+    );
+    elements.followupList.append(item);
+  }
+}
+
+function renderLeadChecks(leads) {
+  elements.leadCheckList.replaceChildren();
+  if (leads.length === 0) {
+    elements.leadCheckList.append(emptyToolMessage("No new leads need checking."));
+    return;
+  }
+  for (const lead of leads) {
+    const detail = [lead.currentTitle, lead.companyName].filter(Boolean).join(" · ");
+    const item = toolItem(
+      lead.fullName || "Unnamed lead",
+      `Fit score ${lead.icpScore} / 100`,
+      detail || lead.icpReason,
+    );
+    if (detail) {
+      const reason = document.createElement("small");
+      reason.textContent = lead.icpReason;
+      item.insertBefore(reason, item.querySelector(".tool-actions"));
+    }
+    const actions = item.querySelector(".tool-actions");
+    actions.append(
+      toolButton("Open profile", { leadAction: "open", profileUrl: lead.profileUrl }),
+      toolButton("Good fit + recent post", {
+        leadAction: "save",
+        leadId: lead.leadId,
+        status: "qualified",
+        recentPost: "true",
+      }, "good"),
+      toolButton("Good fit, no recent post", {
+        leadAction: "save",
+        leadId: lead.leadId,
+        status: "qualified",
+        recentPost: "false",
+      }),
+      toolButton("Not a good fit", {
+        leadAction: "save",
+        leadId: lead.leadId,
+        status: "not_qualified",
+        recentPost: "null",
+      }, "warn"),
+    );
+    elements.leadCheckList.append(item);
+  }
+}
+
+function renderOldRequests(requests) {
+  elements.oldRequestList.replaceChildren();
+  if (requests.length === 0) {
+    elements.oldRequestList.append(emptyToolMessage("No old requests need checking."));
+    return;
+  }
+  for (const request of requests) {
+    const item = toolItem(
+      request.fullName || "Unnamed lead",
+      `${request.ageDays} days old`,
+      "Withdraw this request on LinkedIn first.",
+    );
+    item.querySelector(".tool-actions").append(
+      toolButton("Open profile", {
+        oldRequestAction: "open",
+        profileUrl: request.profileUrl,
+      }),
+      toolButton("Mark withdrawn", {
+        oldRequestAction: "mark",
+        leadId: request.leadId,
+      }, "warn"),
+    );
+    elements.oldRequestList.append(item);
+  }
+}
+
+function toolItem(titleText, metaText, bodyText) {
+  const item = document.createElement("article");
+  item.className = "tool-item";
+  const head = document.createElement("div");
+  head.className = "tool-item-head";
+  const title = document.createElement("strong");
+  title.textContent = titleText;
+  const meta = document.createElement("small");
+  meta.textContent = metaText;
+  head.append(title, meta);
+  const body = document.createElement("p");
+  body.textContent = bodyText;
+  const actions = document.createElement("div");
+  actions.className = "tool-actions";
+  item.append(head, body, actions);
+  return item;
+}
+
+function toolButton(label, data, className = "") {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = label;
+  button.className = className;
+  for (const [key, value] of Object.entries(data)) {
+    button.dataset[key] = String(value);
+  }
+  return button;
+}
+
+function emptyToolMessage(message) {
+  const paragraph = document.createElement("p");
+  paragraph.className = "tool-empty";
+  paragraph.textContent = message;
+  return paragraph;
+}
+
+function timeUntil(timestamp) {
+  const milliseconds = new Date(timestamp).getTime() - Date.now();
+  if (milliseconds <= 0) return "due now";
+  const hours = Math.ceil(milliseconds / 3_600_000);
+  if (hours < 24) return `due in ${hours} hour${hours === 1 ? "" : "s"}`;
+  const days = Math.ceil(hours / 24);
+  return `due in ${days} day${days === 1 ? "" : "s"}`;
 }
 
 function showOnboarding(settings) {
