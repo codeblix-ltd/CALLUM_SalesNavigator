@@ -76,6 +76,7 @@ const elements = {
   leadCheckList: document.querySelector("#lead-check-list"),
   oldRequestCount: document.querySelector("#old-request-count"),
   oldRequestList: document.querySelector("#old-request-list"),
+  autoWithdrawOldRequests: document.querySelector("#auto-withdraw-old-requests"),
   openSentRequests: document.querySelector("#open-sent-requests"),
   openQuestionCount: document.querySelector("#open-question-count"),
   questionForm: document.querySelector("#question-form"),
@@ -115,6 +116,7 @@ elements.dailyChecklist.addEventListener("change", updateDailyTask);
 elements.followupList.addEventListener("click", handleFollowupClick);
 elements.leadCheckList.addEventListener("click", handleLeadCheckClick);
 elements.oldRequestList.addEventListener("click", handleOldRequestClick);
+elements.autoWithdrawOldRequests?.addEventListener("click", handleAutoWithdrawOldRequests);
 elements.openSentRequests.addEventListener("click", () =>
   chrome.tabs.create({
     url: "https://www.linkedin.com/mynetwork/invitation-manager/sent/",
@@ -342,6 +344,10 @@ async function handleOldRequestClick(event) {
     await chrome.tabs.create({ url: button.dataset.profileUrl, active: true });
     return;
   }
+  if (button.dataset.oldRequestAction === "auto") {
+    await handleAutoWithdrawOldRequests();
+    return;
+  }
   const confirmed = window.confirm(
     "Did you withdraw this request on LinkedIn? Only mark it after LinkedIn confirms it.",
   );
@@ -357,6 +363,43 @@ async function handleOldRequestClick(event) {
     showError(error);
   } finally {
     setBusy(button, false);
+  }
+}
+
+async function handleAutoWithdrawOldRequests() {
+  clearMessages();
+  if (elements.autoWithdrawOldRequests) {
+    setBusy(elements.autoWithdrawOldRequests, true);
+  }
+  try {
+    showSuccess(
+      "Checking sent invitations on LinkedIn and withdrawing 30+ day old requests matching DB leads...",
+    );
+    const response = await chrome.runtime.sendMessage({
+      type: "AUTO_WITHDRAW_OLD_REQUESTS",
+    });
+    if (!response?.ok) {
+      throw new Error(
+        response?.error || "Failed to auto-withdraw old requests.",
+      );
+    }
+    const count = response.result?.withdrawnCount || 0;
+    if (count > 0) {
+      showSuccess(
+        `Successfully auto-withdrew ${count} connection request${count === 1 ? "" : "s"} (>30 days old). DB updated.`,
+      );
+    } else {
+      showSuccess(
+        "No matching connection requests >30 days old found on LinkedIn to withdraw.",
+      );
+    }
+    await refreshDashboard();
+  } catch (error) {
+    showError(error);
+  } finally {
+    if (elements.autoWithdrawOldRequests) {
+      setBusy(elements.autoWithdrawOldRequests, false);
+    }
   }
 }
 
@@ -662,12 +705,16 @@ function renderOldRequests(requests) {
     const item = toolItem(
       request.fullName || "Unnamed lead",
       `${request.ageDays} days old`,
-      "Withdraw this request on LinkedIn first.",
+      "Connection request sent >30 days ago.",
     );
     item.querySelector(".tool-actions").append(
       toolButton("Open profile", {
         oldRequestAction: "open",
         profileUrl: request.profileUrl,
+      }),
+      toolButton("Auto-withdraw", {
+        oldRequestAction: "auto",
+        leadId: request.leadId,
       }),
       toolButton("Mark withdrawn", {
         oldRequestAction: "mark",

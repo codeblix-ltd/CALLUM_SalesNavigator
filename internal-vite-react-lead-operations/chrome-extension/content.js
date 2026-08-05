@@ -36,6 +36,13 @@
       );
     }
 
+    if (message?.type === "WITHDRAW_OLD_SENT_INVITATIONS") {
+      return runVisibleWorkflow(
+        () => runWithdrawOldInvitations(message.options || {}),
+        sendResponse,
+      );
+    }
+
     if (message?.type === "GET_PAGE_INFO") {
       sendResponse({
         url: window.location.href,
@@ -669,6 +676,258 @@
     addLog("Email", email ? "Email address saved" : "No email address found");
     updateStatus("Contact info checked.");
     return { profileUrl: currentProfileUrl, email };
+  }
+
+  async function runWithdrawOldInvitations(options = {}) {
+    initOverlay();
+    if (overlayContainer) overlayContainer.style.display = "block";
+
+    if (!window.location.pathname.includes("/mynetwork/invitation-manager/sent")) {
+      throw new Error("LinkedIn’s Sent Invitations page did not open. Try again.");
+    }
+
+    updateStatus("Checking sent invitations (30+ days old)...");
+
+    const dbLeads = options.dbLeads || [];
+    if (!Array.from(dbLeads).length) {
+      addLog("Info", "No DB leads provided to check against.");
+      updateStatus("No matching DB leads to withdraw.");
+      return { withdrawn: [], withdrawnCount: 0 };
+    }
+
+    addLog("DB Leads", `${dbLeads.length} pending lead(s) >=30 days in DB`);
+
+    // Wait for list items to render
+    const loaded = await waitForMatch(
+      () => (querySentInvitationCards().length > 0 ? true : null),
+      20_000,
+    );
+
+    if (!loaded) {
+      addLog("Info", "No sent invitations found on page.");
+      updateStatus("Finished checking sent invitations.");
+      return { withdrawn: [], withdrawnCount: 0 };
+    }
+
+    const withdrawn = [];
+    const processedUrls = new Set();
+    let scanPasses = 0;
+    let unchangedPasses = 0;
+
+    while (scanPasses < 10) {
+      scanPasses++;
+      const cards = querySentInvitationCards();
+      let foundMatchesInPass = 0;
+
+      for (const card of cards) {
+        if (processedUrls.has(card.profileUrl)) continue;
+
+        // Check if card matches any DB lead
+        const matchingDbLead = dbLeads.find((lead) => {
+          const leadSlug = getLinkedInProfileSlug(lead.profileUrl);
+          if (
+            leadSlug &&
+            card.slug &&
+            normalizeProfileSlug(leadSlug) === normalizeProfileSlug(card.slug)
+          ) {
+            return true;
+          }
+          if (personNamesMatch(card.name, lead.fullName)) {
+            return true;
+          }
+          return false;
+        });
+
+        if (!matchingDbLead) {
+          // SAFETY GUARANTEE: Card does NOT match any DB lead! Do not touch personal invitations.
+          processedUrls.add(card.profileUrl);
+          continue;
+        }
+
+        // Check age constraint: must be 30+ days old
+        const isOldEnough =
+          card.ageDays >= 30 ||
+          (matchingDbLead.ageDays && matchingDbLead.ageDays >= 30) ||
+          /month|year|5 weeks|6 weeks|7 weeks|8 weeks/i.test(card.sentText);
+
+        if (!isOldEnough) {
+          addLog(
+            "Skipped",
+            `${card.name || matchingDbLead.fullName} sent recently (${card.sentText || "under 30 days"})`,
+          );
+          processedUrls.add(card.profileUrl);
+          continue;
+        }
+
+        foundMatchesInPass++;
+        processedUrls.add(card.profileUrl);
+
+        updateStatus(`Withdrawing request for ${matchingDbLead.fullName}...`);
+        addLog("Matching lead", `${matchingDbLead.fullName} (${card.sentText || ">=30 days"})`);
+
+        // Click card's Withdraw button
+        clickElement(card.withdrawBtn);
+        await sleep(1000);
+
+        // Wait for confirmation dialog
+        const modal = await waitForMatch(findWithdrawConfirmationDialog, 10_000);
+        if (!modal) {
+          addLog("Problem", `Confirmation modal did not open for ${matchingDbLead.fullName}`);
+          continue;
+        }
+
+        const confirmBtn = findConfirmWithdrawButton(modal);
+        if (!confirmBtn) {
+          addLog("Problem", `Confirm Withdraw button not found in modal for ${matchingDbLead.fullName}`);
+          dismissInvitationDialog(modal);
+          continue;
+        }
+
+        clickElement(confirmBtn);
+        await sleep(1500);
+
+        // Verify modal closed
+        await waitForMatch(
+          () => (!findWithdrawConfirmationDialog() ? true : null),
+          5_000,
+        );
+
+        addLog("Withdrawn", `Withdrew invitation sent to ${matchingDbLead.fullName}`);
+        withdrawn.push({
+          leadId: matchingDbLead.leadId || matchingDbLead.id,
+          name: matchingDbLead.fullName,
+          profileUrl: card.profileUrl,
+        });
+
+        await sleep(1500);
+      }
+
+      if (foundMatchesInPass === 0) {
+        unchangedPasses++;
+        if (unchangedPasses >= 2) break;
+      } else {
+        unchangedPasses = 0;
+      }
+
+      // Scroll down to load more cards
+      window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+      await sleep(1500);
+    }
+
+    updateStatus(`Finished auto-withdraw: ${withdrawn.length} request(s) cleared.`);
+    return { withdrawn, withdrawnCount: withdrawn.length };
+  }
+
+  function parseSentAgeDays(text) {
+    const str = String(text || "").trim();
+    const match = str.match(/Sent\s+(\d+)\s+(day|week|month|year)s?\s+ago/i);
+    if (!match) {
+      if (/Sent\s+a\s+month\s+ago/i.test(str)) return 30;
+      if (/Sent\s+a\s+year\s+ago/i.test(str)) return 365;
+      return 0;
+    }
+    const num = parseInt(match[1], 10);
+    const unit = match[2].toLowerCase();
+    if (unit === "day") return num;
+    if (unit === "week") return num * 7;
+    if (unit === "month") return num * 30;
+    if (unit === "year") return num * 365;
+    return 0;
+  }
+
+  function querySentInvitationCards() {
+    const root = document.querySelector("main") || document.body;
+    const cards = [];
+    const seenUrls = new Set();
+
+    // Query card item candidates
+    const itemCandidates = Array.from(
+      root.querySelectorAll("[role='listitem'], div[componentkey], div._009c20ef"),
+    );
+
+    for (const item of itemCandidates) {
+      const profileAnchor = item.querySelector("a[href*='/in/']");
+      if (!profileAnchor) continue;
+
+      const profileUrl = normalizeLinkedInProfileHref(profileAnchor.href);
+      if (!profileUrl || seenUrls.has(profileUrl)) continue;
+
+      const slug = getLinkedInProfileSlug(profileUrl);
+
+      // Find time sent string e.g. "Sent 4 days ago", "Sent 2 months ago"
+      const sentElement = Array.from(item.querySelectorAll("p, span")).find(
+        (el) => /^Sent\s+/i.test(el.textContent?.trim() || ""),
+      );
+      const sentText = sentElement?.textContent?.trim() || "";
+      const ageDays = parseSentAgeDays(sentText);
+
+      // Find Withdraw button or link
+      const withdrawBtn =
+        item.querySelector("a[aria-label*='Withdraw']") ||
+        item.querySelector("button[aria-label*='Withdraw']") ||
+        Array.from(item.querySelectorAll("a, button")).find((el) => {
+          const text = el.textContent?.trim();
+          const label = el.getAttribute("aria-label") || "";
+          return text === "Withdraw" || /Withdraw invitation sent to/i.test(label);
+        });
+
+      if (!withdrawBtn) continue;
+
+      // Extract name
+      const name =
+        item.querySelector("p.a79e215d")?.textContent?.trim() ||
+        item.querySelector("p")?.textContent?.trim() ||
+        profileAnchor.textContent?.replace(/\s+/g, " ").trim() ||
+        "";
+
+      seenUrls.add(profileUrl);
+      cards.push({
+        element: item,
+        profileUrl,
+        slug,
+        name,
+        sentText,
+        ageDays,
+        withdrawBtn,
+      });
+    }
+
+    return cards;
+  }
+
+  function findWithdrawConfirmationDialog() {
+    for (const root of getLinkedInModalRoots()) {
+      const dialogs = root.querySelectorAll(
+        "dialog[open], [role='dialog'], div[data-testid='dialog']",
+      );
+      for (const dialog of dialogs) {
+        if (!isElementActive(dialog)) continue;
+        const text = dialog.textContent || "";
+        if (
+          /Withdraw invitation/i.test(text) ||
+          /won't be able to resend/i.test(text) ||
+          dialog.getAttribute("aria-labelledby") === "dialog-header"
+        ) {
+          return dialog;
+        }
+      }
+    }
+    return null;
+  }
+
+  function findConfirmWithdrawButton(dialog) {
+    if (!dialog) return null;
+    const buttons = Array.from(dialog.querySelectorAll("button"));
+    return (
+      buttons.find((btn) => {
+        const text = btn.textContent?.trim();
+        const label = btn.getAttribute("aria-label") || "";
+        return (
+          (text === "Withdraw" || /Withdraw invitation sent to/i.test(label)) &&
+          isElementActive(btn)
+        );
+      }) || null
+    );
   }
 
   // --- Element Finder & Action Helpers ---

@@ -5,6 +5,8 @@ const REFRESH_ALARM = "refresh-lead-total";
 const PREMIUM_URL = "https://www.linkedin.com/premium/my-premium/";
 const CONNECTIONS_URL =
   "https://www.linkedin.com/mynetwork/invite-connect/connections/";
+const SENT_INVITATIONS_URL =
+  "https://www.linkedin.com/mynetwork/invitation-manager/sent/";
 const DEFAULT_INVITATION_NOTE =
   "Hi, I saw your profile and would like to connect.";
 
@@ -48,6 +50,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "AUTO_WITHDRAW_OLD_REQUESTS") {
+    autoWithdrawOldRequests()
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((error) => sendResponse({ ok: false, error: cleanError(error) }));
+    return true;
+  }
+
   return false;
 });
 
@@ -81,6 +90,11 @@ async function runDailyWorkflow(specificLeadId) {
   }
 
   const review = await reviewAcceptedConnections(dashboard);
+  const autoWithdraw = await autoWithdrawOldRequests().catch((error) => {
+    console.warn("Auto withdraw old requests failed:", cleanError(error));
+    return { withdrawnCount: 0 };
+  });
+
   dashboard = await ScoutApi.authenticatedAction("scouts:getDashboard");
   const availableRequestSlots = specificLeadId
     ? Math.min(1, dashboard.usage.requestRemaining)
@@ -205,6 +219,62 @@ async function reviewAcceptedConnections(dashboard) {
     contactsChecked,
     emailsCollected,
   };
+}
+
+async function autoWithdrawOldRequests() {
+  const scoutOps = await ScoutApi.authenticatedAction(
+    "scouts:getScoutOperations",
+    {},
+  ).catch(() => null);
+  const oldRequests = scoutOps?.oldRequests || [];
+
+  if (!oldRequests || oldRequests.length === 0) {
+    return {
+      withdrawnCount: 0,
+      withdrawnLeads: [],
+      message: "No requests >=30 days old found in DB.",
+    };
+  }
+
+  const tab = await chrome.tabs.create({ url: SENT_INVITATIONS_URL, active: true });
+  if (!tab?.id) {
+    throw new Error("We couldn’t open your LinkedIn sent invitations.");
+  }
+
+  try {
+    await waitForTabComplete(tab.id);
+    await waitForContentScript(tab.id);
+
+    const withdrawResponse = await sendMessageToTab(tab.id, {
+      type: "WITHDRAW_OLD_SENT_INVITATIONS",
+      options: { dbLeads: oldRequests },
+    });
+
+    if (!withdrawResponse?.ok) {
+      throw new Error(
+        withdrawResponse?.error || "Failed to withdraw old invitations.",
+      );
+    }
+
+    const withdrawnList = withdrawResponse.result?.withdrawn || [];
+    for (const item of withdrawnList) {
+      if (item.leadId) {
+        await ScoutApi.authenticatedAction("scouts:markOldRequestWithdrawn", {
+          leadId: item.leadId,
+        }).catch((err) => {
+          console.warn("Failed to mark lead withdrawn in DB:", item.leadId, err);
+        });
+      }
+    }
+
+    await updateBadge();
+    return {
+      withdrawnCount: withdrawnList.length,
+      withdrawnLeads: withdrawnList,
+    };
+  } finally {
+    await chrome.tabs.remove(tab.id).catch(() => {});
+  }
 }
 
 async function collectAcceptedContact(lead) {
