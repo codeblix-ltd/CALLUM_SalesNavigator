@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mailmeteor LinkedIn Queue</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Mailmeteor LinkedIn Queue</h1>
+        <p>Resolves LinkedIn redirects, then runs the public tool and captures its JSON response.</p>
+      </div>
+      <span id="runBadge" class="badge idle">Idle</span>
+    </header>
+
+    <section class="panel input-panel">
+      <label for="urls">LinkedIn profile URLs — one per line</label>
+      <textarea id="urls" spellcheck="false" placeholder="https://www.linkedin.com/in/callumlaing/&#10;https://linkedin.com/in/ACwAAD3Xy04BHTT4FFZf2Ez5eHiMedMDtec5wYo"></textarea>
+
+      <div class="settings-grid">
+        <label>
+          <span>Concurrent tabs</span>
+          <input id="concurrency" type="number" min="1" max="5" step="1" value="5">
+        </label>
+        <label>
+          <span>Open every</span>
+          <select id="staggerMs">
+            <option value="1500">1.5 seconds</option>
+            <option value="1800" selected>1.8 seconds</option>
+            <option value="2000">2 seconds</option>
+            <option value="3000">3 seconds</option>
+            <option value="5000">5 seconds</option>
+          </select>
+        </label>
+        <label>
+          <span>Timeout per URL</span>
+          <select id="timeoutMs">
+            <option value="30000">30 seconds</option>
+            <option value="60000" selected>60 seconds</option>
+            <option value="90000">90 seconds</option>
+            <option value="120000">2 minutes</option>
+          </select>
+        </label>
+        <label class="checkbox-label">
+          <input id="keepFailedTabs" type="checkbox" checked>
+          <span>Keep failed tabs open</span>
+        </label>
+      </div>
+
+      <div class="actions">
+        <button id="start" class="primary">Start queue</button>
+        <button id="stop" class="danger" disabled>Stop</button>
+        <button id="retry" disabled>Retry unfinished</button>
+        <button id="clear">Clear</button>
+      </div>
+      <p id="message" class="message" aria-live="polite"></p>
+      <p class="note">Chrome will show a debugging notice while jobs run. The extension does not call the API directly, reuse Turnstile tokens, or solve CAPTCHA challenges.</p>
+    </section>
+
+    <section class="stats" aria-label="Queue statistics">
+      <div><strong id="totalCount">0</strong><span>Total</span></div>
+      <div><strong id="doneCount">0</strong><span>Done</span></div>
+      <div><strong id="foundCount">0</strong><span>Found</span></div>
+      <div><strong id="notFoundCount">0</strong><span>Not found</span></div>
+      <div><strong id="errorCount">0</strong><span>Errors</span></div>
+    </section>
+
+    <section class="panel results-panel">
+      <div class="results-toolbar">
+        <h2>Results</h2>
+        <div>
+          <button id="copyJson" disabled>Copy JSON</button>
+          <button id="exportCsv" disabled>Export CSV</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Status</th>
+              <th>Name</th>
+              <th>Email</th>
+              <th>Validation</th>
+              <th>Title</th>
+              <th>Company</th>
+              <th>Resolved LinkedIn URL</th>
+              <th>Error</th>
+            </tr>
+          </thead>
+          <tbody id="resultsBody">
+            <tr><td colspan="9" class="empty">No jobs yet.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

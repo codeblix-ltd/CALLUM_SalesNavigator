@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Mailmeteor LinkedIn Queue",
+  "version": "1.1.0",
+  "description": "Resolve LinkedIn profile redirects, run Mailmeteor in your Chrome profile, and capture the email-finder JSON response.",
+  "minimum_chrome_version": "118",
+  "permissions": [
+    "debugger",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://*.linkedin.com/*",
+    "https://mailmeteor.com/*",
+    "https://tools.mailmeteor.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Mailmeteor LinkedIn Queue",
+    "default_popup": "popup.html"
+  }
+}
