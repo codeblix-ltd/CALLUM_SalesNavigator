@@ -17,6 +17,7 @@ const elements = {
   failedCount: document.querySelector("#failed-count"),
   requestUsage: document.querySelector("#request-usage"),
   engagementUsage: document.querySelector("#engagement-usage"),
+  openDashboard: document.querySelector("#open-dashboard"),
   startAutoLead: document.querySelector("#start-auto-lead"),
   resetOnboarding: document.querySelector("#reset-onboarding"),
   toggleSettings: document.querySelector("#toggle-settings"),
@@ -106,6 +107,9 @@ elements.loginForm.addEventListener("submit", handleLogin);
 elements.onboardingForm.addEventListener("submit", saveOnboarding);
 elements.signOut.addEventListener("click", handleSignOut);
 elements.refresh.addEventListener("click", refreshDashboard);
+elements.openDashboard.addEventListener("click", () =>
+  chrome.tabs.create({ url: chrome.runtime.getURL("dashboard.html"), active: true }),
+);
 elements.startAutoLead.addEventListener("click", startAutoLead);
 elements.resetOnboarding.addEventListener("click", restartOnboarding);
 elements.toggleSettings.addEventListener("click", () => {

@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lead progress · Callum Scout</title>
+    <link rel="stylesheet" href="dashboard.css" />
+  </head>
+  <body>
+    <section id="login-screen" class="login-screen" hidden>
+      <div class="login-panel">
+        <div class="login-brand"><span>C</span> Callum Scout</div>
+        <p class="eyebrow">Lead dashboard</p>
+        <h1>Sign in to see your progress</h1>
+        <p>Use the same account you use in the extension.</p>
+        <form id="login-form">
+          <label>Username<input id="username" autocomplete="username" required /></label>
+          <label>Password<input id="password" type="password" autocomplete="current-password" required /></label>
+          <button class="primary-button" type="submit">Sign in</button>
+        </form>
+        <p id="login-error" class="form-error" hidden></p>
+      </div>
+    </section>
+
+    <div id="app" class="app" hidden>
+      <aside class="sidebar">
+        <div class="brand"><span>C</span><div><strong>Callum Scout</strong><small>Lead progress</small></div></div>
+        <nav aria-label="Dashboard">
+          <a class="nav-link is-active" href="#overview">Overview</a>
+          <a class="nav-link" href="#leads">All leads</a>
+          <a class="nav-link" href="#workflow">How it works</a>
+        </nav>
+        <div class="sidebar-account">
+          <small>Signed in as</small>
+          <strong id="sidebar-username">—</strong>
+          <button id="sign-out" type="button">Sign out</button>
+        </div>
+      </aside>
+
+      <main class="main-content">
+        <header class="page-header">
+          <div>
+            <p class="eyebrow">Your workspace</p>
+            <h1>Lead progress</h1>
+            <p id="last-updated" class="header-copy">Loading your latest activity…</p>
+          </div>
+          <div class="header-actions">
+            <button id="open-linkedin" class="quiet-button" type="button">Open LinkedIn</button>
+            <button id="refresh" class="primary-button compact" type="button">Refresh</button>
+          </div>
+        </header>
+
+        <p id="page-error" class="page-error" hidden></p>
+
+        <section id="overview" class="dashboard-section" aria-labelledby="overview-title">
+          <div class="section-heading">
+            <div><p class="eyebrow">Overview</p><h2 id="overview-title">Where your leads are now</h2></div>
+            <p>Counts are cumulative, so a connected lead is also included in reached out.</p>
+          </div>
+
+          <div class="metric-grid">
+            <article class="metric-card primary-metric"><span>Total leads</span><strong id="total-count">—</strong><small>Assigned to you</small></article>
+            <article class="metric-card"><span>Ready to check</span><strong id="fresh-count">—</strong><small>Not started</small></article>
+            <article class="metric-card"><span>Engaged</span><strong id="engaged-count">—</strong><small>Posts liked or commented</small></article>
+            <article class="metric-card"><span>Reached out</span><strong id="reached-count">—</strong><small>Connection request sent</small></article>
+            <article class="metric-card"><span>Connected</span><strong id="accepted-count">—</strong><small>Request accepted</small></article>
+            <article class="metric-card"><span>Email saved</span><strong id="email-count">—</strong><small>Contact details captured</small></article>
+          </div>
+
+          <div class="overview-grid">
+            <article id="workflow" class="panel workflow-panel">
+              <div class="panel-heading"><div><p class="eyebrow">Workflow</p><h3>The steps for every lead</h3></div><span id="completion-rate" class="rate-badge">— complete</span></div>
+              <div id="pipeline" class="pipeline" aria-label="Lead workflow progress"></div>
+              <p class="panel-note">A lead moves from left to right. Open any row below to see the exact dates and details.</p>
+            </article>
+
+            <article class="panel today-panel">
+              <p class="eyebrow">Today</p>
+              <h3>Daily activity</h3>
+              <div class="usage-block">
+                <div><span>Connection requests</span><strong id="request-usage">—</strong></div>
+                <div class="usage-track"><i id="request-bar"></i></div>
+              </div>
+              <div class="usage-block">
+                <div><span>Post likes</span><strong id="like-usage">—</strong></div>
+                <div class="usage-track"><i id="like-bar"></i></div>
+              </div>
+              <div class="attention-row"><span>Needs attention</span><strong id="attention-count">—</strong></div>
+            </article>
+          </div>
+        </section>
+
+        <section id="leads" class="dashboard-section leads-section" aria-labelledby="leads-title">
+          <div class="section-heading leads-heading">
+            <div><p class="eyebrow">Lead directory</p><h2 id="leads-title">All leads and steps</h2></div>
+            <p id="result-summary">Loading leads…</p>
+          </div>
+
+          <div class="filters">
+            <label class="search-field">
+              <span>Search</span>
+              <input id="search" type="search" placeholder="Name, company, title or email" />
+            </label>
+            <label>
+              <span>Current stage</span>
+              <select id="stage-filter">
+                <option value="all">All stages</option>
+                <option value="assigned">1 · Ready to check</option>
+                <option value="viewed">2 · Profile opened</option>
+                <option value="engaged">3 · Posts engaged</option>
+                <option value="connection_requested">4 · Request sent</option>
+                <option value="accepted">5 · Connected</option>
+                <option value="email_collected">6 · Email saved</option>
+                <option value="reached_out">Reached out</option>
+                <option value="needs_attention">Needs attention</option>
+              </select>
+            </label>
+            <label>
+              <span>Order</span>
+              <select id="sort-filter">
+                <option value="activity">Latest activity</option>
+                <option value="assigned">Workflow order</option>
+                <option value="name">Name A–Z</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="table-shell">
+            <div id="table-loading" class="table-state">Loading your leads…</div>
+            <div id="table-empty" class="table-state" hidden><strong>No leads found</strong><span>Try a broader search or another stage.</span></div>
+            <table id="lead-table" hidden>
+              <thead>
+                <tr>
+                  <th class="lead-column">Lead</th>
+                  <th><span class="step-number">1</span>Fit check</th>
+                  <th><span class="step-number">2</span>Profile</th>
+                  <th><span class="step-number">3</span>Posts</th>
+                  <th><span class="step-number">4</span>Outreach</th>
+                  <th><span class="step-number">5</span>Connection</th>
+                  <th><span class="step-number">6</span>Email</th>
+                  <th>Current step</th>
+                  <th>Updated</th>
+                </tr>
+              </thead>
+              <tbody id="lead-rows"></tbody>
+            </table>
+          </div>
+
+          <div class="pagination">
+            <p id="page-label">Page 1</p>
+            <div><button id="previous-page" type="button">Previous</button><button id="next-page" type="button">Next</button></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
+    <aside id="lead-drawer" class="lead-drawer" aria-labelledby="drawer-name" hidden>
+      <button id="close-drawer" class="drawer-close" type="button" aria-label="Close lead details">Close</button>
+      <div id="drawer-content"></div>
+    </aside>
+
+    <script src="config.js"></script>
+    <script src="convex-client.js"></script>
+    <script src="dashboard.js"></script>
+  </body>
+</html>

@@ -48,6 +48,15 @@
 
       <div class="settings-grid">
         <label>
+          <span>Parallel lookups</span>
+          <select id="concurrency">
+            <option value="1">1 at a time</option>
+            <option value="2">2 at a time</option>
+            <option value="3">3 at a time</option>
+            <option value="4" selected>4 at a time</option>
+          </select>
+        </label>
+        <label>
           <span>Wait between leads</span>
           <select id="staggerMs">
             <option value="1500">1.5 seconds</option>
@@ -61,9 +70,9 @@
           <span>Timeout per URL</span>
           <select id="timeoutMs">
             <option value="30000">30 seconds</option>
-            <option value="60000" selected>60 seconds</option>
+            <option value="60000">60 seconds</option>
             <option value="90000">90 seconds</option>
-            <option value="120000">2 minutes</option>
+            <option value="120000" selected>2 minutes</option>
           </select>
         </label>
         <label class="checkbox-label">
@@ -79,7 +88,7 @@
         <button id="clear">Clear</button>
       </div>
       <p id="message" class="message" aria-live="polite"></p>
-      <p class="note">Leads run one at a time. Any error, timeout, rate limit, or database-save failure pauses the queue before the next lead starts.</p>
+      <p class="note">Up to four leads run together. Rate limits, timeouts, and temporary network/server failures retry after 15, 30, and 60 seconds. The queue pauses on the same lead if retries are exhausted or another error occurs.</p>
     </section>
 
     <section class="stats" aria-label="Queue statistics">

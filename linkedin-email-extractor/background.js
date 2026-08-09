@@ -1,5 +1,10 @@
 import { WorkEmailApi } from "./api.js";
-import { describeHttpFailure, isRateLimitMessage } from "./queue-policy.js";
+import {
+  describeHttpFailure,
+  isRateLimitMessage,
+  isTransientFailure,
+  retryDelayMs,
+} from "./queue-policy.js";
 
 const STORAGE_KEY = "queueState";
 const TOOL_PAGE = "https://mailmeteor.com/tools/linkedin-email-finder";
@@ -8,11 +13,10 @@ const API_PATH = "/api/email-finder/linkedin";
 const RESOLVE_SETTLE_MS = 2200;
 
 const DEFAULT_SETTINGS = Object.freeze({
-  // Strictly sequential processing guarantees that no later lead starts after
-  // an error or rate limit is detected.
-  concurrency: 1,
+  concurrency: 4,
   staggerMs: 1800,
-  timeoutMs: 60000,
+  timeoutMs: 120000,
+  maxRetries: 3,
   keepFailedTabs: true
 });
 
@@ -27,7 +31,7 @@ let stateLock = Promise.resolve();
 
 function emptyState() {
   return {
-    version: 3,
+    version: 4,
     runId: null,
     running: false,
     paused: false,
@@ -43,7 +47,34 @@ function emptyState() {
 
 async function readState() {
   const stored = await chrome.storage.local.get(STORAGE_KEY);
-  return stored[STORAGE_KEY] || emptyState();
+  return normalizeStoredState(stored[STORAGE_KEY]);
+}
+
+function normalizeStoredState(stored) {
+  if (!stored) return emptyState();
+  const legacy = Number(stored.version || 0) < 4;
+  const legacySettings = stored.settings || {};
+  const settings = validateSettings({
+    ...legacySettings,
+    concurrency: legacy && Number(legacySettings.concurrency) === 1
+      ? DEFAULT_SETTINGS.concurrency
+      : legacySettings.concurrency,
+    timeoutMs: legacy && Number(legacySettings.timeoutMs) === 60000
+      ? DEFAULT_SETTINGS.timeoutMs
+      : legacySettings.timeoutMs,
+  });
+  return {
+    ...emptyState(),
+    ...stored,
+    version: 4,
+    settings,
+    jobs: (stored.jobs || []).map((job) => ({
+      retryCount: 0,
+      nextRetryAt: null,
+      lastRetryError: null,
+      ...job,
+    })),
+  };
 }
 
 async function writeState(state) {
@@ -101,12 +132,19 @@ function requiresRedirectChange(value) {
 }
 
 function validateSettings(input = {}) {
+  const concurrency = Math.min(4, Math.max(1, Math.trunc(Number(input.concurrency) || DEFAULT_SETTINGS.concurrency)));
   const staggerMs = Math.min(10000, Math.max(500, Number(input.staggerMs) || DEFAULT_SETTINGS.staggerMs));
   const timeoutMs = Math.min(180000, Math.max(20000, Number(input.timeoutMs) || DEFAULT_SETTINGS.timeoutMs));
+  const requestedRetries = Number(input.maxRetries);
+  const maxRetries = Math.min(5, Math.max(
+    0,
+    Math.trunc(Number.isFinite(requestedRetries) ? requestedRetries : DEFAULT_SETTINGS.maxRetries),
+  ));
   return {
-    concurrency: 1,
+    concurrency,
     staggerMs,
     timeoutMs,
+    maxRetries,
     keepFailedTabs: input.keepFailedTabs !== false
   };
 }
@@ -133,6 +171,9 @@ function makeJob(input, index) {
     result: null,
     rawResponse: null,
     error: null,
+    retryCount: 0,
+    nextRetryAt: null,
+    lastRetryError: null,
     dbSaveStatus: null
   };
 }
@@ -172,7 +213,7 @@ async function startRun(rawItems, rawSettings) {
 
   const settings = validateSettings(rawSettings);
   const state = {
-    version: 3,
+    version: 4,
     runId: crypto.randomUUID(),
     running: true,
     paused: false,
@@ -252,7 +293,8 @@ async function pumpQueue() {
 
   if (active >= state.settings.concurrency) return;
 
-  const waitMs = Math.max(0, (state.nextLaunchAllowedAt || 0) - Date.now());
+  const waitUntil = Math.max(state.nextLaunchAllowedAt || 0, next.nextRetryAt || 0);
+  const waitMs = Math.max(0, waitUntil - Date.now());
   if (waitMs > 0) {
     schedulePump(waitMs);
     return;
@@ -263,9 +305,14 @@ async function pumpQueue() {
     if (activeJobCount(draft) >= draft.settings.concurrency) return null;
     const job = queuedJob(draft);
     if (!job) return null;
+    const eligibleAt = Math.max(draft.nextLaunchAllowedAt || 0, job.nextRetryAt || 0);
+    if (eligibleAt > Date.now()) return null;
 
     job.status = "starting";
     job.startedAt = Date.now();
+    job.nextRetryAt = null;
+    job.error = null;
+    job.rawResponse = null;
     draft.nextLaunchAllowedAt = Date.now() + draft.settings.staggerMs;
     return { job: structuredClone(job), settings: structuredClone(draft.settings) };
   });
@@ -594,6 +641,11 @@ async function finalizeJob(jobId, status, result = null, error = null, rawRespon
     ? Number(existingJob.httpStatus)
     : null;
 
+  if (["error", "timeout"].includes(status) && isTransientFailure(httpStatus, error, status)) {
+    const retry = await scheduleAutomaticRetry(existingJob, status, error, rawResponse);
+    if (retry) return;
+  }
+
   if (["found", "not_found"].includes(status)) {
     try {
       databaseResult = await WorkEmailApi.authenticatedAction("workEmails:saveResult", {
@@ -687,6 +739,57 @@ async function finalizeJob(jobId, status, result = null, error = null, rawRespon
   }
 }
 
+async function scheduleAutomaticRetry(existingJob, status, error, rawResponse) {
+  const update = await updateState((state) => {
+    const job = state.jobs.find((item) => item.id === existingJob.id);
+    if (!job || !state.running || state.paused || state.stopRequested) return null;
+    if (!["starting", "resolving", "running", "capturing"].includes(job.status)) return null;
+
+    const retryNumber = Number(job.retryCount || 0) + 1;
+    if (retryNumber > state.settings.maxRetries) return null;
+    const delayMs = retryDelayMs(retryNumber);
+    const retryAt = Date.now() + delayMs;
+    const detail = error || (status === "timeout" ? "The lookup timed out." : "The lookup failed temporarily.");
+    const tabId = job.tabId;
+
+    job.status = "queued";
+    job.tabId = null;
+    job.startedAt = null;
+    job.finishedAt = null;
+    job.responseUrl = null;
+    job.httpStatus = null;
+    job.result = null;
+    job.rawResponse = rawResponse;
+    job.retryCount = retryNumber;
+    job.nextRetryAt = retryAt;
+    job.lastRetryError = detail;
+    job.error = `${detail} Automatic retry ${retryNumber}/${state.settings.maxRetries} starts in ${Math.round(delayMs / 1000)} seconds.`;
+    job.dbSaveStatus = null;
+    state.nextLaunchAllowedAt = Math.max(state.nextLaunchAllowedAt || 0, retryAt);
+    return { tabId, delayMs };
+  });
+
+  if (!update.result) return false;
+  if (schedulerTimer) {
+    clearTimeout(schedulerTimer);
+    schedulerTimer = null;
+  }
+  const { tabId, delayMs } = update.result;
+  if (tabId != null) {
+    clearResolution(tabId);
+    const timeoutId = timeoutByTab.get(tabId);
+    if (timeoutId) clearTimeout(timeoutId);
+    timeoutByTab.delete(tabId);
+    captureByTab.delete(tabId);
+    requestsByTab.delete(tabId);
+    tabToJob.delete(tabId);
+    await safeDetach(tabId);
+    await safeCloseTab(tabId);
+  }
+  schedulePump(delayMs);
+  return true;
+}
+
 async function stopRun() {
   if (schedulerTimer) {
     clearTimeout(schedulerTimer);
@@ -749,6 +852,9 @@ async function retryFailed() {
       job.result = null;
       job.rawResponse = null;
       job.error = null;
+      job.retryCount = 0;
+      job.nextRetryAt = null;
+      job.lastRetryError = null;
       job.dbSaveStatus = null;
       accepted += 1;
     }
@@ -845,8 +951,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 chrome.runtime.onInstalled.addListener(async () => {
-  const stored = await chrome.storage.local.get(STORAGE_KEY);
-  if (!stored[STORAGE_KEY]) await writeState(emptyState());
+  const state = await readState();
+  await writeState(state);
 });
 
 async function recoverInterruptedRun() {

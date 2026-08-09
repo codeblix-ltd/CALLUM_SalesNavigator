@@ -1,15 +1,25 @@
 import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
 import test from "node:test";
-import { describeHttpFailure, isRateLimitMessage } from "../queue-policy.js";
+import {
+  describeHttpFailure,
+  isRateLimitMessage,
+  isTransientFailure,
+  retryDelayMs,
+} from "../queue-policy.js";
 
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 
-test("rate limits are classified as fatal queue errors", () => {
+test("temporary failures are classified for bounded retries", () => {
   assert.match(describeHttpFailure(429), /rate limit/i);
   assert.match(describeHttpFailure(503), /HTTP 503/);
   assert.equal(describeHttpFailure(200), null);
   assert.equal(isRateLimitMessage("Too many requests; try again later"), true);
+  assert.equal(isTransientFailure(429, "", "error"), true);
+  assert.equal(isTransientFailure(503, "", "error"), true);
+  assert.equal(isTransientFailure(null, "Timed out waiting for Mailmeteor", "timeout"), true);
+  assert.equal(isTransientFailure(400, "Bad request", "error"), false);
+  assert.deepEqual([1, 2, 3].map(retryDelayMs), [15_000, 30_000, 60_000]);
 });
 
 test("a job error pauses before the next lead is launched", async () => {
@@ -85,7 +95,7 @@ test("a job error pauses before the next lead is launched", async () => {
       "https://www.linkedin.com/in/first-lead/",
       "https://www.linkedin.com/in/second-lead/",
     ],
-    settings: { staggerMs: 500, timeoutMs: 20_000, keepFailedTabs: false },
+    settings: { concurrency: 4, staggerMs: 500, timeoutMs: 20_000, keepFailedTabs: false },
   });
   assert.equal(response.ok, true);
   assert.equal(response.accepted, 2);

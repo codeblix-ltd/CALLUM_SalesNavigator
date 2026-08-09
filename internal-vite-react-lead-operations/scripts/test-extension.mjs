@@ -12,11 +12,13 @@ const extensionRoot = path.join(projectRoot, "chrome-extension");
 const readExtensionFile = (name) =>
   readFile(path.join(extensionRoot, name), "utf8");
 
-const [manifestSource, popupSource, popupScript, backgroundSource, contentSource, clientSource, scoutSource, adminSource, schemaSource] =
+const [manifestSource, popupSource, popupScript, dashboardSource, dashboardScript, backgroundSource, contentSource, clientSource, scoutSource, adminSource, schemaSource] =
   await Promise.all([
     readExtensionFile("manifest.json"),
     readExtensionFile("popup.html"),
     readExtensionFile("popup.js"),
+    readExtensionFile("dashboard.html"),
+    readExtensionFile("dashboard.js"),
     readExtensionFile("background.js"),
     readExtensionFile("content.js"),
     readExtensionFile("convex-client.js"),
@@ -26,7 +28,7 @@ const [manifestSource, popupSource, popupScript, backgroundSource, contentSource
   ]);
 const manifest = JSON.parse(manifestSource);
 
-assert.equal(manifest.version, "0.7.3");
+assert.equal(manifest.version, "0.8.0");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -47,6 +49,11 @@ assert.doesNotMatch(
   /claimNextLead|updateLeadStatus|generateDraft|copyDraft|contactInfoUrl/,
 );
 assert.match(popupSource, /id="start-auto-lead"/);
+assert.match(popupSource, /id="open-dashboard"/);
+assert.match(popupScript, /dashboard\.html/);
+assert.match(dashboardSource, /All leads and steps/);
+assert.match(dashboardSource, /id="lead-drawer"/);
+assert.match(dashboardScript, /scouts:getLeadProgress/);
 assert.match(popupSource, /id="reset-onboarding"/);
 assert.match(popupSource, /id="onboarding-form"/);
 assert.match(popupSource, /Do you have LinkedIn Premium\?/);
@@ -92,7 +99,8 @@ assert.match(popupScript, /scouts:completeFollowupTask/);
 assert.match(popupScript, /scouts:setLeadQualification/);
 assert.match(popupScript, /scouts:markOldRequestWithdrawn/);
 assert.match(popupScript, /scouts:createEscalation/);
-assert.doesNotMatch(backgroundSource, /markOldRequestWithdrawn|invitation-manager\/sent/);
+assert.match(backgroundSource, /markOldRequestWithdrawn/);
+assert.match(backgroundSource, /invitation-manager\/sent/);
 assert.match(popupScript, /It will not remove your leads or past work/);
 assert.doesNotMatch(
   popupSource,
@@ -143,6 +151,7 @@ assert.match(clientSource, /error\?\.status === 401/);
 assert.match(clientSource, /refreshOnce/);
 assert.match(clientSource, /clearAuthIfUnchanged/);
 assert.match(scoutSource, /export const getScoutOperations/);
+assert.match(scoutSource, /export const getLeadProgress/);
 assert.match(scoutSource, /export const markOldRequestWithdrawn/);
 assert.match(scoutSource, /export const completeFollowupTask/);
 assert.match(scoutSource, /createFollowupTasks/);

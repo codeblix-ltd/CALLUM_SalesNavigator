@@ -11,6 +11,7 @@ const els = {
   databaseSource: document.querySelector("#databaseSource"),
   dbLimit: document.querySelector("#dbLimit"),
   urls: document.querySelector("#urls"),
+  concurrency: document.querySelector("#concurrency"),
   staggerMs: document.querySelector("#staggerMs"),
   timeoutMs: document.querySelector("#timeoutMs"),
   keepFailedTabs: document.querySelector("#keepFailedTabs"),
@@ -53,15 +54,18 @@ function parseUrls() {
 
 function settingsFromForm() {
   return {
+    concurrency: Number(els.concurrency.value),
     staggerMs: Number(els.staggerMs.value),
     timeoutMs: Number(els.timeoutMs.value),
+    maxRetries: 3,
     keepFailedTabs: els.keepFailedTabs.checked
   };
 }
 
 function applySettings(settings = {}) {
+  els.concurrency.value = String(settings.concurrency || 4);
   els.staggerMs.value = String(settings.staggerMs || 1800);
-  els.timeoutMs.value = String(settings.timeoutMs || 60000);
+  els.timeoutMs.value = String(settings.timeoutMs || 120000);
   els.keepFailedTabs.checked = settings.keepFailedTabs !== false;
 }
 
@@ -69,7 +73,10 @@ function isDone(status) {
   return ["found", "not_found", "error", "timeout", "stopped"].includes(status);
 }
 
-function displayStatus(status) {
+function displayStatus(job) {
+  if (job.status === "queued" && job.retryCount) {
+    return `Retry ${job.retryCount}/${currentState?.settings?.maxRetries || 3} waiting`;
+  }
   const labels = {
     queued: "Queued",
     starting: "Starting",
@@ -82,7 +89,7 @@ function displayStatus(status) {
     timeout: "Timeout",
     stopped: "Stopped"
   };
-  return labels[status] || status;
+  return labels[job.status] || job.status;
 }
 
 function resultValue(job, key) {
@@ -108,6 +115,7 @@ function render(state) {
   els.retry.disabled = running || !signedIn || !retryable;
   els.copyJson.disabled = jobs.length === 0;
   els.exportCsv.disabled = jobs.length === 0;
+  els.concurrency.disabled = running;
   els.staggerMs.disabled = running;
   els.timeoutMs.disabled = running;
   els.keepFailedTabs.disabled = running;
@@ -131,7 +139,7 @@ function render(state) {
     const row = document.createElement("tr");
     const values = [
       String(job.index + 1),
-      displayStatus(job.status),
+      displayStatus(job),
       resultValue(job, "full_name") || job.leadName || "",
       resultValue(job, "email"),
       resultValue(job, "validation"),
@@ -190,6 +198,8 @@ function exportRows() {
     job_title: job.result?.job_title ?? "",
     company: job.result?.company ?? "",
     http_status: job.httpStatus ?? "",
+    retry_count: job.retryCount ?? 0,
+    next_retry_at: job.nextRetryAt ? new Date(job.nextRetryAt).toISOString() : "",
     database_status: databaseStatus(job),
     error: job.error ?? "",
     started_at: job.startedAt ? new Date(job.startedAt).toISOString() : "",

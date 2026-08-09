@@ -71,6 +71,40 @@ type ScoutDashboard = {
   activeLead: ScoutLead | null;
 };
 
+type ScoutProgressLead = {
+  id: string;
+  fullName: string | null;
+  currentTitle: string | null;
+  companyName: string | null;
+  geographicRegion: string | null;
+  companyIndustry: string | null;
+  companySize: string | null;
+  employeeCount: number | null;
+  profileUrl: string;
+  status: string;
+  qualificationStatus: string;
+  qualificationNote: string | null;
+  hasRecentPost: boolean | null;
+  icpScore: number | null;
+  recentPostCheckedAt: string | null;
+  postCount: number;
+  originalEmail: string | null;
+  workEmail: string | null;
+  workEmailStatus: string;
+  assignedAt: string;
+  viewedAt: string | null;
+  engagedAt: string | null;
+  connectionRequestedAt: string | null;
+  acceptedAt: string | null;
+  emailCollectedAt: string | null;
+  workEmailCollectedAt: string | null;
+  withdrawnAt: string | null;
+  repliedAt: string | null;
+  lastError: string | null;
+  lastErrorAt: string | null;
+  updatedAt: string;
+};
+
 type ScoutOperations = {
   generatedAt: string;
   oldRequests: Array<{
@@ -169,6 +203,49 @@ const dashboardValidator = v.object({
   activeLead: v.union(leadValidator, v.null()),
 });
 
+const scoutProgressLeadValidator = v.object({
+  id: v.string(),
+  fullName: optionalText,
+  currentTitle: optionalText,
+  companyName: optionalText,
+  geographicRegion: optionalText,
+  companyIndustry: optionalText,
+  companySize: optionalText,
+  employeeCount: v.union(v.number(), v.null()),
+  profileUrl: v.string(),
+  status: v.string(),
+  qualificationStatus: v.string(),
+  qualificationNote: optionalText,
+  hasRecentPost: v.union(v.boolean(), v.null()),
+  icpScore: v.union(v.number(), v.null()),
+  recentPostCheckedAt: optionalText,
+  postCount: v.number(),
+  originalEmail: optionalText,
+  workEmail: optionalText,
+  workEmailStatus: v.string(),
+  assignedAt: v.string(),
+  viewedAt: optionalText,
+  engagedAt: optionalText,
+  connectionRequestedAt: optionalText,
+  acceptedAt: optionalText,
+  emailCollectedAt: optionalText,
+  workEmailCollectedAt: optionalText,
+  withdrawnAt: optionalText,
+  repliedAt: optionalText,
+  lastError: optionalText,
+  lastErrorAt: optionalText,
+  updatedAt: v.string(),
+});
+
+const scoutLeadProgressValidator = v.object({
+  generatedAt: v.string(),
+  total: v.number(),
+  page: v.number(),
+  pageSize: v.number(),
+  pageCount: v.number(),
+  leads: v.array(scoutProgressLeadValidator),
+});
+
 const oldRequestValidator = v.object({
   leadId: v.string(),
   fullName: optionalText,
@@ -235,7 +312,10 @@ export const getDashboard = action({
            count(*) FILTER (
              WHERE status = 'assigned' AND qualification_status <> 'not_qualified'
            )::FLOAT8 AS fresh,
-           count(*) FILTER (WHERE status = 'viewed')::FLOAT8 AS viewed,
+           count(*) FILTER (
+             WHERE viewed_at IS NOT NULL
+                OR status IN ('viewed', 'engaged', 'connected', 'connection_requested', 'accepted', 'email_collected')
+           )::FLOAT8 AS viewed,
            count(*) FILTER (
              WHERE engaged_at IS NOT NULL
                 OR status IN ('engaged', 'connection_requested', 'accepted', 'email_collected')
@@ -295,6 +375,148 @@ export const getDashboard = action({
       usage,
       hasSentConnectionRequest: counts.connectionRequested > 0,
       activeLead: activeResult.rows[0] ? mapLead(activeResult.rows[0]) : null,
+    };
+  },
+});
+
+export const getLeadProgress = action({
+  args: {
+    page: v.optional(v.number()),
+    pageSize: v.optional(v.number()),
+    search: v.optional(v.string()),
+    stage: v.optional(v.string()),
+    sort: v.optional(v.string()),
+  },
+  returns: scoutLeadProgressValidator,
+  handler: async (ctx, args) => {
+    const scout: ScoutIdentity = await ctx.runQuery(
+      internal.scoutIdentity.requireScout,
+      {},
+    );
+    const page = clampInteger(args.page ?? 1, 1, 100_000);
+    const pageSize = clampInteger(args.pageSize ?? 50, 10, 100);
+    const search = String(args.search ?? "").trim().slice(0, 120);
+    const allowedStages = new Set([
+      "all",
+      "assigned",
+      "viewed",
+      "engaged",
+      "connection_requested",
+      "accepted",
+      "email_collected",
+      "reached_out",
+      "needs_attention",
+    ]);
+    const stage = allowedStages.has(String(args.stage))
+      ? String(args.stage)
+      : "all";
+    const parameters: unknown[] = [scout.operatorId];
+    const filters = ["a.operator_id = $1"];
+
+    if (search) {
+      parameters.push(`%${search}%`);
+      const token = `$${parameters.length}`;
+      filters.push(
+        `(l.search_text ILIKE ${token}
+          OR l.full_name ILIKE ${token}
+          OR l.company_name ILIKE ${token}
+          OR l.current_title ILIKE ${token}
+          OR coalesce(l.original_email, a.email, '') ILIKE ${token}
+          OR coalesce(l.work_email, '') ILIKE ${token})`,
+      );
+    }
+
+    if (stage === "reached_out") {
+      filters.push(
+        `(a.connection_requested_at IS NOT NULL
+          OR a.status IN ('connected', 'connection_requested', 'accepted', 'email_collected', 'withdrawn'))`,
+      );
+    } else if (stage === "needs_attention") {
+      filters.push(
+        `(a.status IN ('failed', 'skipped', 'withdrawn')
+          OR a.qualification_status = 'not_qualified')`,
+      );
+    } else if (stage === "assigned") {
+      filters.push(
+        "a.status = 'assigned' AND a.qualification_status <> 'not_qualified'",
+      );
+    } else if (stage !== "all") {
+      parameters.push(stage);
+      filters.push(`a.status = $${parameters.length}`);
+    }
+
+    const whereSql = `WHERE ${filters.join(" AND ")}`;
+    const sortSql =
+      args.sort === "assigned"
+        ? "a.assigned_at ASC, a.lead_id"
+        : args.sort === "name"
+          ? "l.full_name ASC NULLS LAST, a.lead_id"
+          : "a.updated_at DESC, a.lead_id";
+    const database = getPool();
+    const countResult = await database.query(
+      `SELECT count(*)::FLOAT8 AS total
+         FROM lead_assignments AS a
+         INNER JOIN leads AS l ON l.id = a.lead_id
+         ${whereSql}`,
+      parameters,
+    );
+    const total = Number(countResult.rows[0]?.total ?? 0);
+    const pageCount = Math.max(1, Math.ceil(total / pageSize));
+    const safePage = Math.min(page, pageCount);
+    const rowParameters = [...parameters, pageSize, (safePage - 1) * pageSize];
+    const limitToken = `$${rowParameters.length - 1}`;
+    const offsetToken = `$${rowParameters.length}`;
+    const result = await database.query(
+      `SELECT
+         l.id::STRING AS id,
+         l.full_name,
+         l.current_title,
+         l.company_name,
+         l.geographic_region,
+         l.company_industry,
+         l.company_size,
+         l.employee_count::FLOAT8 AS employee_count,
+         coalesce(a.resolved_linkedin_url, l.linkedin_url) AS profile_url,
+         a.status,
+         a.qualification_status,
+         a.qualification_note,
+         a.has_recent_post,
+         a.icp_score::FLOAT8 AS icp_score,
+         a.recent_post_checked_at::STRING AS recent_post_checked_at,
+         (SELECT count(*)::FLOAT8
+            FROM lead_post_activities AS p
+           WHERE p.operator_id = a.operator_id AND p.lead_id = a.lead_id) AS post_count,
+         coalesce(l.original_email, a.email) AS original_email,
+         l.work_email,
+         l.work_email_status,
+         a.assigned_at::STRING AS assigned_at,
+         a.viewed_at::STRING AS viewed_at,
+         a.engaged_at::STRING AS engaged_at,
+         a.connection_requested_at::STRING AS connection_requested_at,
+         a.accepted_at::STRING AS accepted_at,
+         a.email_collected_at::STRING AS email_collected_at,
+         l.work_email_collected_at::STRING AS work_email_collected_at,
+         a.withdrawn_at::STRING AS withdrawn_at,
+         a.replied_at::STRING AS replied_at,
+         a.last_error,
+         a.last_error_at::STRING AS last_error_at,
+         a.updated_at::STRING AS updated_at
+       FROM lead_assignments AS a
+       INNER JOIN leads AS l ON l.id = a.lead_id
+       ${whereSql}
+       ORDER BY ${sortSql}
+       LIMIT ${limitToken}
+       OFFSET ${offsetToken}`,
+      rowParameters,
+    );
+
+    return {
+      generatedAt: new Date().toISOString(),
+      total,
+      page: safePage,
+      pageSize,
+      pageCount,
+      leads: result.rows.map(mapProgressLead),
     };
   },
 });
@@ -1774,6 +1996,49 @@ function mapLead(row: Record<string, unknown>): ScoutLead {
     companyName: nullableString(row.company_name),
     linkedinUrl: String(row.linkedin_url ?? ""),
     status: String(row.status ?? "assigned"),
+  };
+}
+
+function mapProgressLead(row: Record<string, unknown>): ScoutProgressLead {
+  return {
+    id: String(row.id),
+    fullName: nullableString(row.full_name),
+    currentTitle: nullableString(row.current_title),
+    companyName: nullableString(row.company_name),
+    geographicRegion: nullableString(row.geographic_region),
+    companyIndustry: nullableString(row.company_industry),
+    companySize: nullableString(row.company_size),
+    employeeCount:
+      row.employee_count === null || row.employee_count === undefined
+        ? null
+        : Number(row.employee_count),
+    profileUrl: normalizeLinkedInProfileUrl(row.profile_url),
+    status: String(row.status ?? "assigned"),
+    qualificationStatus: String(row.qualification_status ?? "pending"),
+    qualificationNote: nullableString(row.qualification_note),
+    hasRecentPost:
+      typeof row.has_recent_post === "boolean" ? row.has_recent_post : null,
+    icpScore:
+      row.icp_score === null || row.icp_score === undefined
+        ? null
+        : Number(row.icp_score),
+    recentPostCheckedAt: nullableString(row.recent_post_checked_at),
+    postCount: Number(row.post_count ?? 0),
+    originalEmail: nullableString(row.original_email),
+    workEmail: nullableString(row.work_email),
+    workEmailStatus: String(row.work_email_status ?? "pending"),
+    assignedAt: String(row.assigned_at),
+    viewedAt: nullableString(row.viewed_at),
+    engagedAt: nullableString(row.engaged_at),
+    connectionRequestedAt: nullableString(row.connection_requested_at),
+    acceptedAt: nullableString(row.accepted_at),
+    emailCollectedAt: nullableString(row.email_collected_at),
+    workEmailCollectedAt: nullableString(row.work_email_collected_at),
+    withdrawnAt: nullableString(row.withdrawn_at),
+    repliedAt: nullableString(row.replied_at),
+    lastError: nullableString(row.last_error),
+    lastErrorAt: nullableString(row.last_error_at),
+    updatedAt: String(row.updated_at),
   };
 }
 

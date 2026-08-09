@@ -59,11 +59,18 @@ process.once("SIGTERM", () => void shutdown(0));
 
 async function route(request, response) {
   const url = new URL(request.url, `http://${request.headers.host ?? "localhost"}`);
+  const corsAllowed = applyCors(request, response);
+  if (request.method === "OPTIONS") {
+    if (!corsAllowed) throw new GatewayError(403, "Origin is not allowed.");
+    response.writeHead(204, { "cache-control": "no-store" });
+    response.end();
+    return;
+  }
   if (request.method === "GET" && url.pathname === "/healthz") {
     sendJson(response, 200, { ok: true });
     return;
   }
-  assertAuthorized(request);
+  const accessScope = authorize(request);
 
   if (request.method === "GET" && url.pathname === "/v1/status") {
     const result = await codex.readAccount();
@@ -96,6 +103,7 @@ async function route(request, response) {
   }
 
   if (request.method === "POST" && url.pathname === "/v1/auth/logout") {
+    requireScope(accessScope, "admin");
     await codex.logout();
     await authStore.clear();
     sendJson(response, 200, { ok: true });
@@ -103,6 +111,7 @@ async function route(request, response) {
   }
 
   if (request.method === "POST" && url.pathname === "/v1/drafts") {
+    requireScope(accessScope, "admin");
     const body = await readJson(request);
     const requestId = requiredString(body.requestId, "requestId", 200);
     const scoutId = requiredString(body.scoutId, "scoutId", 200);
@@ -121,12 +130,45 @@ async function route(request, response) {
     return;
   }
 
+  if (
+    request.method === "POST" &&
+    url.pathname === "/v1/flippa/comments/draft"
+  ) {
+    const body = await readJson(request);
+    const requestId = requiredString(body.requestId, "requestId", 200);
+    const listingId = requiredString(body.listingId, "listingId", 100);
+    const title = requiredString(body.title, "title", 500);
+    const tagline = optionalString(body.tagline, "tagline", 1_500);
+    const description = requiredString(body.description, "description", 24_000);
+    if (description.length < 40) {
+      throw new GatewayError(
+        400,
+        "description must be between 40 and 24,000 characters.",
+      );
+    }
+    const previousComments = readPreviousComments(body.previousComments);
+    sendJson(
+      response,
+      200,
+      await codex.enqueueFlippaDraft({
+        requestId,
+        listingId,
+        title,
+        tagline,
+        description,
+        previousComments,
+      }),
+    );
+    return;
+  }
+
   throw new GatewayError(404, "Route not found.");
 }
 
 function readConfig() {
   const databaseUrl = requiredEnvironment("COCKROACH_DATABASE_URL");
   const sharedSecret = requiredEnvironment("CODEX_GATEWAY_SHARED_SECRET");
+  const extensionToken = process.env.CODEX_GATEWAY_EXTENSION_TOKEN?.trim() || null;
   const encryptionKey = requiredEnvironment("CODEX_AUTH_ENCRYPTION_KEY");
   const model = process.env.CODEX_MODEL?.trim() || "gpt-5.6-luna";
   if (model !== "gpt-5.6-luna") {
@@ -139,6 +181,13 @@ function readConfig() {
   return {
     databaseUrl,
     sharedSecret,
+    extensionToken,
+    allowedOrigins: new Set(
+      (process.env.CODEX_GATEWAY_ALLOWED_ORIGINS ?? "")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ),
     encryptionKey,
     codexHome:
       process.env.CODEX_HOME?.trim() || path.join(projectRoot, ".codex-gateway"),
@@ -149,17 +198,46 @@ function readConfig() {
   };
 }
 
-function assertAuthorized(request) {
+function authorize(request) {
   const header = request.headers.authorization ?? "";
   const received = header.startsWith("Bearer ") ? header.slice(7) : "";
-  const receivedBytes = Buffer.from(received);
-  const expectedBytes = Buffer.from(config.sharedSecret);
+  if (safeTokenEqual(received, config.sharedSecret)) return "admin";
   if (
-    receivedBytes.length !== expectedBytes.length ||
-    !timingSafeEqual(receivedBytes, expectedBytes)
-  ) {
-    throw new GatewayError(401, "Unauthorized.");
-  }
+    config.extensionToken &&
+    safeTokenEqual(received, config.extensionToken)
+  ) return "extension";
+  throw new GatewayError(401, "Unauthorized.");
+}
+
+function requireScope(actual, expected) {
+  if (actual !== expected) throw new GatewayError(403, "Forbidden.");
+}
+
+function safeTokenEqual(received, expected) {
+  const receivedBytes = Buffer.from(received);
+  const expectedBytes = Buffer.from(expected);
+  return (
+    receivedBytes.length === expectedBytes.length &&
+    timingSafeEqual(receivedBytes, expectedBytes)
+  );
+}
+
+function applyCors(request, response) {
+  const origin = request.headers.origin;
+  if (!origin) return true;
+  const allowed =
+    /^chrome-extension:\/\/[a-p]{32}$/.test(origin) ||
+    config.allowedOrigins.has(origin);
+  if (!allowed) return false;
+  response.setHeader("access-control-allow-origin", origin);
+  response.setHeader("vary", "Origin");
+  response.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
+  response.setHeader(
+    "access-control-allow-headers",
+    "Authorization, Content-Type",
+  );
+  response.setHeader("access-control-max-age", "600");
+  return true;
 }
 
 async function readJson(request) {
@@ -167,7 +245,7 @@ async function readJson(request) {
   let size = 0;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > 16_384) {
+    if (size > 65_536) {
       throw new GatewayError(413, "Request body is too large.");
     }
     chunks.push(chunk);
@@ -191,6 +269,56 @@ function requiredString(value, name, maximumLength) {
     );
   }
   return normalized;
+}
+
+function optionalString(value, name, maximumLength) {
+  if (value === undefined || value === null || value === "") return "";
+  if (typeof value !== "string") {
+    throw new GatewayError(400, `${name} must be a string.`);
+  }
+  const normalized = value.trim();
+  if (normalized.length > maximumLength) {
+    throw new GatewayError(
+      400,
+      `${name} must contain at most ${maximumLength} characters.`,
+    );
+  }
+  return normalized;
+}
+
+function readPreviousComments(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > 20) {
+    throw new GatewayError(
+      400,
+      "previousComments must be an array containing at most 20 comments.",
+    );
+  }
+  return value.map((comment, index) => {
+    if (!comment || typeof comment !== "object" || Array.isArray(comment)) {
+      throw new GatewayError(
+        400,
+        `previousComments[${index}] must be an object.`,
+      );
+    }
+    return {
+      author: optionalString(
+        comment.author,
+        `previousComments[${index}].author`,
+        120,
+      ) || "Unknown",
+      postedAt: optionalString(
+        comment.postedAt,
+        `previousComments[${index}].postedAt`,
+        120,
+      ) || "Unknown date",
+      content: requiredString(
+        comment.content,
+        `previousComments[${index}].content`,
+        1_500,
+      ),
+    };
+  });
 }
 
 function sendJson(response, statusCode, value) {

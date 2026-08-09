@@ -29,15 +29,25 @@ export const listQueue = action({
     const database = getPool();
     const [rows, count] = await Promise.all([
       database.query(
-        `SELECT
-           id::STRING AS lead_id,
-           linkedin_url,
-           full_name,
-           company_name,
-           work_email_status,
-           work_email_last_error
-         FROM leads
-         WHERE linkedin_url LIKE 'https://linkedin.com/in/%'
+         `WITH queueable AS (
+           SELECT
+             l.id::STRING AS lead_id,
+             ${preferredLinkedInUrlSql} AS linkedin_url,
+             l.full_name,
+             l.company_name,
+             l.work_email,
+             l.work_email_status,
+             l.work_email_last_error,
+             l.work_email_checked_at,
+             l.source_file,
+             l.source_row,
+             l.id AS sort_id
+           FROM leads AS l
+           LEFT JOIN lead_assignments AS a ON a.lead_id = l.id
+         )
+         SELECT lead_id, linkedin_url, full_name, company_name, work_email_status, work_email_last_error
+         FROM queueable
+         WHERE (linkedin_url LIKE 'https://linkedin.com/in/%' OR linkedin_url LIKE 'https://www.linkedin.com/in/%')
            AND work_email IS NULL
            AND (
              work_email_status IN ('pending', 'error')
@@ -51,20 +61,21 @@ export const listQueue = action({
            work_email_checked_at NULLS FIRST,
            source_file,
            source_row,
-           id
+            sort_id
          LIMIT $1`,
         [limit],
       ),
       database.query(
         `SELECT count(*)::FLOAT8 AS count
-         FROM leads
-         WHERE linkedin_url LIKE 'https://linkedin.com/in/%'
-           AND work_email IS NULL
+         FROM leads AS l
+         LEFT JOIN lead_assignments AS a ON a.lead_id = l.id
+         WHERE (${preferredLinkedInUrlSql} LIKE 'https://linkedin.com/in/%' OR ${preferredLinkedInUrlSql} LIKE 'https://www.linkedin.com/in/%')
+           AND l.work_email IS NULL
            AND (
-             work_email_status IN ('pending', 'error')
+             l.work_email_status IN ('pending', 'error')
              OR (
-               work_email_status = 'processing'
-               AND work_email_checked_at < now() - INTERVAL '30 minutes'
+               l.work_email_status = 'processing'
+               AND l.work_email_checked_at < now() - INTERVAL '30 minutes'
              )
            )`,
       ),
@@ -248,17 +259,38 @@ async function findLeadForUpdate(
   const inputUrl = normalizeLinkedInUrl(args.inputLinkedinUrl);
   const resolvedUrl = normalizeLinkedInUrl(args.resolvedLinkedinUrl);
   if (!inputUrl && !resolvedUrl) return null;
-  const result = await client.query(
-    `SELECT id, work_email
-       FROM leads
-      WHERE linkedin_url = $1 OR linkedin_url = $2
-      ORDER BY CASE WHEN linkedin_url = $1 THEN 0 ELSE 1 END
-      LIMIT 1
-      FOR UPDATE`,
+  const match = await client.query(
+    `SELECT l.id
+       FROM leads AS l
+       LEFT JOIN lead_assignments AS a ON a.lead_id = l.id
+      WHERE l.linkedin_url IN ($1, $2)
+         OR l.work_email_resolved_linkedin_url IN ($1, $2)
+         OR a.resolved_linkedin_url IN ($1, $2)
+      ORDER BY CASE
+        WHEN l.linkedin_url = $1 THEN 0
+        WHEN l.work_email_resolved_linkedin_url = $1 OR a.resolved_linkedin_url = $1 THEN 1
+        ELSE 2
+      END
+      LIMIT 1`,
     [inputUrl, resolvedUrl],
+  );
+  if (!match.rows[0]) return null;
+  const result = await client.query(
+    "SELECT id, work_email FROM leads WHERE id = $1::UUID FOR UPDATE",
+    [match.rows[0].id],
   );
   return result.rows[0] ?? null;
 }
+
+const preferredLinkedInUrlSql = `CASE
+  WHEN l.work_email_resolved_linkedin_url LIKE 'https://linkedin.com/in/%'
+    OR l.work_email_resolved_linkedin_url LIKE 'https://www.linkedin.com/in/%'
+    THEN l.work_email_resolved_linkedin_url
+  WHEN a.resolved_linkedin_url LIKE 'https://linkedin.com/in/%'
+    OR a.resolved_linkedin_url LIKE 'https://www.linkedin.com/in/%'
+    THEN a.resolved_linkedin_url
+  ELSE l.linkedin_url
+END`;
 
 function normalizeLinkedInUrl(value: unknown) {
   const cleaned = String(value ?? "").trim();

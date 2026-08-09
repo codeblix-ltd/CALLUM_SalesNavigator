@@ -255,6 +255,26 @@ input:focus, select:focus, textarea:focus {
 }
 .daily-usage span { display: block; color: #746995; font-size: 9px; font-weight: 750; }
 .daily-usage strong { display: block; margin-top: 3px; color: #4f37b2; font-size: 15px; }
+.dashboard-link {
+  width: 100%;
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 9px;
+  padding: 9px 11px;
+  color: #303a54;
+  text-align: left;
+  background: #fff;
+  border: 1px solid #d7ddea;
+  border-radius: 11px;
+}
+.dashboard-link:hover { border-color: #b9ade6; background: #faf9ff; }
+.dashboard-link span, .dashboard-link strong, .dashboard-link small { display: block; }
+.dashboard-link strong { font-size: 10px; }
+.dashboard-link small { margin-top: 3px; color: #818b9e; font-size: 8px; font-weight: 600; }
+.dashboard-link b { color: #654bc6; font-size: 9px; white-space: nowrap; }
 .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .metric {
   min-height: 77px;

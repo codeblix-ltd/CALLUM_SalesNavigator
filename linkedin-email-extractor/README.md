@@ -31,12 +31,17 @@ The lead record now has two explicit email fields:
    is marked complete. A pasted URL that is not present in the database remains
    visible as **Not in database**.
 
-## Stop and error guarantees
+## Parallel runs, retries, and stop guarantees
 
-- Processing is intentionally sequential: only one lead can be active.
-- Any extraction error, network failure, timeout, HTTP error, rate limit, or
-  database-save failure pauses the queue immediately.
-- No later lead starts after a failure is detected.
+- Up to four leads can be active, with four selected by default.
+- Each LinkedIn resolution and Mailmeteor request has a two-minute default
+  timeout.
+- Rate limits, timeouts, temporary network failures, and HTTP 5xx responses
+  retry the same lead after 15, 30, and 60 seconds. No new lead starts during
+  that queue-wide backoff.
+- When all three automatic retries are exhausted, or a non-temporary error or
+  database-save failure occurs, the queue pauses at that lead. Already active
+  tabs may finish, but no additional lead is launched.
 - **Resume from error** retries the failed row first, then continues with rows
   that were never started.
 - Queue state is kept in Chrome local storage. If the extension service worker
@@ -64,10 +69,11 @@ The lead record now has two explicit email fields:
 - Host access is limited to LinkedIn, Mailmeteor, the Mailmeteor tools host, and
   the configured Convex deployment.
 
-## Version 2.0.0
+## Version 2.1.0
 
 - Adds authenticated CockroachDB persistence through Convex.
 - Adds pasted-link and database-queue sources.
 - Stores company addresses as `work_email` without overwriting
   `original_email`.
-- Adds strict stop-on-error/rate-limit behavior and same-row resume.
+- Adds bounded rate-limit retries, four-way parallel processing, strict
+  stop-on-error behavior, and same-row resume.
