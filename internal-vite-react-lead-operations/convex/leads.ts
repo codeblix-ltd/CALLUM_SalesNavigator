@@ -6,6 +6,11 @@ import { internal } from "./_generated/api";
 import { action } from "./_generated/server";
 
 const optionalText = v.union(v.string(), v.null());
+const emailAvailabilityValidator = v.union(
+  v.literal("all"),
+  v.literal("present"),
+  v.literal("missing"),
+);
 
 const leadValidator = v.object({
   id: v.string(),
@@ -25,6 +30,9 @@ const leadValidator = v.object({
   foundedYear: v.union(v.number(), v.null()),
   connectionDegree: optionalText,
   premium: v.union(v.boolean(), v.null()),
+  originalEmail: optionalText,
+  workEmail: optionalText,
+  workEmailStatus: v.string(),
 });
 
 const nicheValidator = v.object({
@@ -94,6 +102,8 @@ export const list = action({
   args: {
     niche: v.union(v.string(), v.null()),
     search: v.union(v.string(), v.null()),
+    originalEmailFilter: emailAvailabilityValidator,
+    workEmailFilter: emailAvailabilityValidator,
     cursor: v.union(v.string(), v.null()),
     limit: v.number(),
   },
@@ -101,6 +111,7 @@ export const list = action({
     leads: v.array(leadValidator),
     nextCursor: v.union(v.string(), v.null()),
     hasMore: v.boolean(),
+    filteredCount: v.number(),
   }),
   handler: async (ctx, args) => {
     await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
@@ -121,8 +132,17 @@ export const list = action({
     }
     if (search) {
       parameters.push(`%${search}%`);
-      conditions.push(`l.search_text ILIKE $${parameters.length}`);
+      conditions.push(`(
+        l.search_text ILIKE $${parameters.length}
+        OR coalesce(l.original_email, '') ILIKE $${parameters.length}
+        OR coalesce(l.work_email, '') ILIKE $${parameters.length}
+      )`);
     }
+    addEmailAvailabilityCondition(conditions, "l.original_email", args.originalEmailFilter);
+    addEmailAvailabilityCondition(conditions, "l.work_email", args.workEmailFilter);
+
+    const countParameters = [...parameters];
+    const countConditions = [...conditions];
     if (cursor) {
       parameters.push(cursor);
       conditions.push(`l.id > $${parameters.length}::UUID`);
@@ -150,12 +170,24 @@ export const list = action({
         l.company_location,
         l.founded_year::FLOAT8 AS founded_year,
         l.connection_degree,
-        l.premium
+        l.premium,
+        l.original_email,
+        l.work_email,
+        l.work_email_status
       ${fromSql}
       ${whereSql}
       ORDER BY l.id
       LIMIT $${parameters.length}`;
-    const result = await database.query(query, parameters);
+    const countWhereSql = countConditions.length > 0
+      ? `WHERE ${countConditions.join(" AND ")}`
+      : "";
+    const [result, countResult] = await Promise.all([
+      database.query(query, parameters),
+      database.query(
+        `SELECT count(*)::FLOAT8 AS count ${fromSql} ${countWhereSql}`,
+        countParameters,
+      ),
+    ]);
     const hasMore = result.rows.length > limit;
     const pageRows = result.rows.slice(0, limit);
     const leads = pageRows.map(mapLead);
@@ -164,6 +196,7 @@ export const list = action({
       leads,
       nextCursor: hasMore ? leads.at(-1)?.id ?? null : null,
       hasMore,
+      filteredCount: Number(countResult.rows[0]?.count ?? 0),
     };
   },
 });
@@ -187,7 +220,19 @@ function mapLead(row: Record<string, unknown>) {
     foundedYear: nullableNumber(row.founded_year),
     connectionDegree: nullableString(row.connection_degree),
     premium: typeof row.premium === "boolean" ? row.premium : null,
+    originalEmail: nullableString(row.original_email),
+    workEmail: nullableString(row.work_email),
+    workEmailStatus: String(row.work_email_status ?? "pending"),
   };
+}
+
+function addEmailAvailabilityCondition(
+  conditions: string[],
+  column: string,
+  filter: "all" | "present" | "missing",
+) {
+  if (filter === "present") conditions.push(`${column} IS NOT NULL AND ${column} <> ''`);
+  if (filter === "missing") conditions.push(`(${column} IS NULL OR ${column} = '')`);
 }
 
 function nullableString(value: unknown) {

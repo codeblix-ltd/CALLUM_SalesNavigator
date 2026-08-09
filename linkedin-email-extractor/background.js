@@ -1,3 +1,6 @@
+import { WorkEmailApi } from "./api.js";
+import { describeHttpFailure, isRateLimitMessage } from "./queue-policy.js";
+
 const STORAGE_KEY = "queueState";
 const TOOL_PAGE = "https://mailmeteor.com/tools/linkedin-email-finder";
 const API_HOST = "tools.mailmeteor.com";
@@ -5,7 +8,9 @@ const API_PATH = "/api/email-finder/linkedin";
 const RESOLVE_SETTLE_MS = 2200;
 
 const DEFAULT_SETTINGS = Object.freeze({
-  concurrency: 5,
+  // Strictly sequential processing guarantees that no later lead starts after
+  // an error or rate limit is detected.
+  concurrency: 1,
   staggerMs: 1800,
   timeoutMs: 60000,
   keepFailedTabs: true
@@ -16,14 +21,17 @@ const captureByTab = new Map();
 const requestsByTab = new Map();
 const timeoutByTab = new Map();
 const resolutionByTab = new Map();
+const finishingJobs = new Set();
 let schedulerTimer = null;
 let stateLock = Promise.resolve();
 
 function emptyState() {
   return {
-    version: 2,
+    version: 3,
     runId: null,
     running: false,
+    paused: false,
+    pauseReason: null,
     stopRequested: false,
     createdAt: null,
     updatedAt: Date.now(),
@@ -93,21 +101,25 @@ function requiresRedirectChange(value) {
 }
 
 function validateSettings(input = {}) {
-  const concurrency = Math.min(5, Math.max(1, Number(input.concurrency) || DEFAULT_SETTINGS.concurrency));
   const staggerMs = Math.min(10000, Math.max(500, Number(input.staggerMs) || DEFAULT_SETTINGS.staggerMs));
   const timeoutMs = Math.min(180000, Math.max(20000, Number(input.timeoutMs) || DEFAULT_SETTINGS.timeoutMs));
   return {
-    concurrency,
+    concurrency: 1,
     staggerMs,
     timeoutMs,
     keepFailedTabs: input.keepFailedTabs !== false
   };
 }
 
-function makeJob(linkedinUrl, index) {
+function makeJob(input, index) {
+  const linkedinUrl = typeof input === "string" ? input : input.linkedinUrl;
   return {
     id: `${Date.now()}-${index}-${crypto.randomUUID()}`,
     index,
+    source: typeof input === "string" ? "pasted" : input.source || "database",
+    leadId: typeof input === "string" ? null : input.leadId || null,
+    leadName: typeof input === "string" ? null : input.fullName || null,
+    companyName: typeof input === "string" ? null : input.companyName || null,
     inputLinkedinUrl: linkedinUrl,
     linkedinUrl,
     resolvedLinkedinUrl: null,
@@ -120,30 +132,33 @@ function makeJob(linkedinUrl, index) {
     httpStatus: null,
     result: null,
     rawResponse: null,
-    error: null
+    error: null,
+    dbSaveStatus: null
   };
 }
 
-async function startRun(rawUrls, rawSettings) {
+async function startRun(rawItems, rawSettings) {
+  await requireDatabaseAuth();
   const seen = new Set();
   const invalid = [];
-  const urls = [];
+  const items = [];
 
-  for (const raw of rawUrls || []) {
-    const value = String(raw || "").trim();
+  for (const raw of rawItems || []) {
+    const value = String(typeof raw === "string" ? raw : raw?.linkedinUrl || "").trim();
     if (!value) continue;
     if (!isLinkedInProfileUrl(value)) {
       invalid.push(value);
       continue;
     }
     const normalized = normalizeLinkedInUrl(value);
-    if (!seen.has(normalized)) {
-      seen.add(normalized);
-      urls.push(normalized);
+    const key = typeof raw === "object" && raw?.leadId ? `lead:${raw.leadId}` : normalized;
+    if (!seen.has(key)) {
+      seen.add(key);
+      items.push(typeof raw === "string" ? normalized : { ...raw, linkedinUrl: normalized });
     }
   }
 
-  if (!urls.length) {
+  if (!items.length) {
     throw new Error("Add at least one valid LinkedIn profile URL (linkedin.com/in/...).");
   }
 
@@ -151,22 +166,42 @@ async function startRun(rawUrls, rawSettings) {
   if (current.running) {
     throw new Error("A queue is already running. Stop it before starting another.");
   }
+  if (current.paused && current.jobs?.length) {
+    throw new Error("This queue is paused. Resume it from the failed lead or clear it before starting a new queue.");
+  }
 
   const settings = validateSettings(rawSettings);
   const state = {
-    version: 2,
+    version: 3,
     runId: crypto.randomUUID(),
     running: true,
+    paused: false,
+    pauseReason: null,
     stopRequested: false,
     createdAt: Date.now(),
     updatedAt: Date.now(),
     nextLaunchAllowedAt: 0,
     settings,
-    jobs: urls.map(makeJob)
+    jobs: items.map(makeJob)
   };
   await writeState(state);
   schedulePump(0);
-  return { accepted: urls.length, invalid };
+  return { accepted: items.length, invalid };
+}
+
+async function startDatabaseRun(limit, rawSettings) {
+  const requested = Math.max(1, Math.min(500, Math.trunc(Number(limit) || 25)));
+  const queue = await WorkEmailApi.authenticatedAction("workEmails:listQueue", {
+    limit: requested,
+  });
+  if (!queue?.leads?.length) {
+    throw new Error("There are no pending or retryable work-email leads in the database.");
+  }
+  const result = await startRun(
+    queue.leads.map((lead) => ({ ...lead, source: "database" })),
+    rawSettings,
+  );
+  return { ...result, remaining: Number(queue.remaining || queue.leads.length) };
 }
 
 function activeJobCount(state) {
@@ -181,8 +216,22 @@ function schedulePump(delayMs) {
   if (schedulerTimer) clearTimeout(schedulerTimer);
   schedulerTimer = setTimeout(() => {
     schedulerTimer = null;
-    pumpQueue().catch((error) => console.error("Queue scheduler failed", error));
+    pumpQueue().catch((error) => {
+      pauseQueueAfterInternalError(error).catch((pauseError) => {
+        console.error("Queue scheduler and pause handling failed", error, pauseError);
+      });
+    });
   }, Math.max(0, delayMs));
+}
+
+async function pauseQueueAfterInternalError(error) {
+  const message = `Internal queue error: ${error?.message || String(error)}`;
+  await updateState((state) => {
+    state.running = false;
+    state.paused = true;
+    state.stopRequested = false;
+    state.pauseReason = message;
+  });
 }
 
 async function pumpQueue() {
@@ -230,6 +279,11 @@ async function pumpQueue() {
 }
 
 async function launchJob(job, settings) {
+  if (job.leadId) {
+    await WorkEmailApi.authenticatedAction("workEmails:beginJob", {
+      leadId: job.leadId,
+    });
+  }
   const tab = await chrome.tabs.create({ url: "about:blank", active: false });
   if (!tab.id) throw new Error("Chrome did not return a tab ID.");
 
@@ -471,6 +525,21 @@ async function captureResponse(tabId, capture) {
   const response = await getResponseBodyWithRetry(capture.source, capture.requestId);
   const text = decodeResponseBody(response?.body || "", Boolean(response?.base64Encoded));
 
+  const httpFailure = describeHttpFailure(capture.httpStatus);
+  if (httpFailure) {
+    const jobId = tabToJob.get(tabId);
+    if (jobId) {
+      await finishJob(
+        jobId,
+        "error",
+        null,
+        httpFailure,
+        text,
+      );
+    }
+    return;
+  }
+
   let data;
   try {
     data = JSON.parse(text);
@@ -487,7 +556,10 @@ async function captureResponse(tabId, capture) {
     await finishJob(jobId, "not_found", data, null, text);
   } else {
     const message = data?.error?.message || data?.message || data?.error || "The API returned an unsuccessful response.";
-    await finishJob(jobId, "error", data, String(message), text);
+    const detail = isRateLimitMessage(message)
+      ? `Mailmeteor rate limit detected: ${String(message)}`
+      : String(message);
+    await finishJob(jobId, "error", data, detail, text);
   }
 }
 
@@ -499,24 +571,98 @@ function decodeResponseBody(body, base64Encoded) {
 }
 
 async function finishJob(jobId, status, result = null, error = null, rawResponse = null) {
+  if (finishingJobs.has(jobId)) return;
+  finishingJobs.add(jobId);
+  try {
+    await finalizeJob(jobId, status, result, error, rawResponse);
+  } finally {
+    finishingJobs.delete(jobId);
+  }
+}
+
+async function finalizeJob(jobId, status, result = null, error = null, rawResponse = null) {
+  const before = await readState();
+  const existingJob = before.jobs.find((item) => item.id === jobId);
+  if (!existingJob || ["found", "not_found", "error", "timeout", "stopped"].includes(existingJob.status)) {
+    return;
+  }
+
+  let finalStatus = status;
+  let finalError = error;
+  let databaseResult = null;
+  const httpStatus = Number.isFinite(Number(existingJob.httpStatus))
+    ? Number(existingJob.httpStatus)
+    : null;
+
+  if (["found", "not_found"].includes(status)) {
+    try {
+      databaseResult = await WorkEmailApi.authenticatedAction("workEmails:saveResult", {
+        leadId: existingJob.leadId || null,
+        inputLinkedinUrl: existingJob.inputLinkedinUrl || existingJob.linkedinUrl,
+        resolvedLinkedinUrl: existingJob.resolvedLinkedinUrl || existingJob.linkedinUrl,
+        status,
+        email: result?.email || null,
+        validation: result?.validation || null,
+        httpStatus,
+      });
+    } catch (databaseError) {
+      finalStatus = "error";
+      finalError = `Database save failed: ${databaseError.message || String(databaseError)}`;
+    }
+  }
+
+  if (["error", "timeout"].includes(finalStatus)) {
+    try {
+      databaseResult = await WorkEmailApi.authenticatedAction("workEmails:recordFailure", {
+        leadId: existingJob.leadId || null,
+        inputLinkedinUrl: existingJob.inputLinkedinUrl || existingJob.linkedinUrl,
+        resolvedLinkedinUrl: existingJob.resolvedLinkedinUrl || null,
+        error: finalError || "Work-email extraction failed.",
+        httpStatus,
+      });
+    } catch (databaseError) {
+      const detail = databaseError.message || String(databaseError);
+      finalError = `${finalError || "Work-email extraction failed."} Database failure recording also failed: ${detail}`;
+    }
+  }
+
   const update = await updateState((state) => {
     const job = state.jobs.find((item) => item.id === jobId);
     if (!job || ["found", "not_found", "error", "timeout", "stopped"].includes(job.status)) {
       return null;
     }
 
-    job.status = status;
+    job.status = finalStatus;
     job.result = result;
     job.rawResponse = rawResponse;
-    job.error = error;
+    job.error = finalError;
+    if (databaseResult?.leadId && !job.leadId) job.leadId = databaseResult.leadId;
+    job.dbSaveStatus = databaseResult?.saved === true
+      ? "saved"
+      : databaseResult?.saved === false
+        ? "not_matched"
+        : finalStatus === "error" || finalStatus === "timeout"
+          ? "failed"
+          : null;
     job.finishedAt = Date.now();
 
+    if (["error", "timeout"].includes(finalStatus)) {
+      state.running = false;
+      state.paused = true;
+      state.stopRequested = false;
+      state.pauseReason = finalError || "The queue paused because this lead failed.";
+    }
+
     const tabId = job.tabId;
-    const closeTab = status === "found" || status === "not_found" || !state.settings.keepFailedTabs;
+    const closeTab = finalStatus === "found" || finalStatus === "not_found" || !state.settings.keepFailedTabs;
     return { tabId, closeTab };
   });
 
   if (!update.result) return;
+  if (["error", "timeout"].includes(finalStatus) && schedulerTimer) {
+    clearTimeout(schedulerTimer);
+    schedulerTimer = null;
+  }
   const { tabId, closeTab } = update.result;
 
   if (tabId != null) {
@@ -532,9 +678,9 @@ async function finishJob(jobId, status, result = null, error = null, rawResponse
   }
 
   const latest = await readState();
-  if (latest.running && !latest.stopRequested) {
+  if (latest.running && !latest.stopRequested && !latest.paused) {
     schedulePump(0);
-  } else if (activeJobCount(latest) === 0) {
+  } else if (!latest.paused && activeJobCount(latest) === 0) {
     await updateState((state) => {
       state.running = false;
     });
@@ -550,6 +696,8 @@ async function stopRun() {
   const update = await updateState((state) => {
     state.stopRequested = true;
     state.running = false;
+    state.paused = true;
+    state.pauseReason = "Stopped by user. Resume starts again at the first unfinished lead.";
     const active = [];
     for (const job of state.jobs) {
       if (job.status === "queued") {
@@ -586,15 +734,41 @@ async function clearRun() {
 }
 
 async function retryFailed() {
-  const current = await readState();
-  if (current.running) throw new Error("Stop the current queue before retrying.");
+  await requireDatabaseAuth();
+  const update = await updateState((state) => {
+    if (state.running) throw new Error("The queue is already running.");
+    let accepted = 0;
+    for (const job of state.jobs) {
+      if (!["queued", "error", "timeout", "stopped"].includes(job.status)) continue;
+      job.status = "queued";
+      job.tabId = null;
+      job.startedAt = null;
+      job.finishedAt = null;
+      job.responseUrl = null;
+      job.httpStatus = null;
+      job.result = null;
+      job.rawResponse = null;
+      job.error = null;
+      job.dbSaveStatus = null;
+      accepted += 1;
+    }
+    if (!accepted) throw new Error("There are no unfinished rows to resume.");
+    state.running = true;
+    state.paused = false;
+    state.pauseReason = null;
+    state.stopRequested = false;
+    state.nextLaunchAllowedAt = 0;
+    return accepted;
+  });
+  schedulePump(0);
+  return { accepted: update.result };
+}
 
-  const urls = current.jobs
-    .filter((job) => ["not_found", "error", "timeout", "stopped"].includes(job.status))
-    .map((job) => job.inputLinkedinUrl || job.linkedinUrl);
-
-  if (!urls.length) throw new Error("There are no failed or unfinished rows to retry.");
-  return startRun(urls, current.settings);
+async function requireDatabaseAuth() {
+  const auth = await WorkEmailApi.getAuth();
+  if (!auth?.token || !auth.refreshToken) {
+    throw new Error("Sign in as the administrator before starting or resuming a queue.");
+  }
 }
 
 async function safeDetach(tabId) {
@@ -648,6 +822,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return { ok: true, state: await readState() };
       case "start":
         return { ok: true, ...(await startRun(message.urls, message.settings)) };
+      case "startDatabase":
+        return {
+          ok: true,
+          ...(await startDatabaseRun(message.limit, message.settings)),
+        };
       case "stop":
         await stopRun();
         return { ok: true };
@@ -668,4 +847,35 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 chrome.runtime.onInstalled.addListener(async () => {
   const stored = await chrome.storage.local.get(STORAGE_KEY);
   if (!stored[STORAGE_KEY]) await writeState(emptyState());
+});
+
+async function recoverInterruptedRun() {
+  const update = await updateState((state) => {
+    if (!state.running) return { shouldPump: false };
+    const active = state.jobs.filter((job) =>
+      ["starting", "resolving", "running", "capturing"].includes(job.status),
+    );
+    if (!active.length) return { shouldPump: state.jobs.some((job) => job.status === "queued") };
+
+    const interrupted = active[0];
+    interrupted.status = "error";
+    interrupted.error = "The extension restarted while this lead was running. Resume to retry this same lead.";
+    interrupted.finishedAt = Date.now();
+    interrupted.tabId = null;
+    for (const job of active.slice(1)) {
+      job.status = "queued";
+      job.tabId = null;
+      job.startedAt = null;
+    }
+    state.running = false;
+    state.paused = true;
+    state.pauseReason = interrupted.error;
+    state.stopRequested = false;
+    return { shouldPump: false };
+  });
+  if (update.result?.shouldPump) schedulePump(0);
+}
+
+recoverInterruptedRun().catch((error) => {
+  console.error("Could not recover the saved queue safely", error);
 });

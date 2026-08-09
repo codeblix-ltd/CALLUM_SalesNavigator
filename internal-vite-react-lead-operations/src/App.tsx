@@ -36,6 +36,7 @@ import "./App.css";
 type Range = "7d" | "30d" | "90d" | "all";
 type View = "overview" | "operations" | "leads";
 type ScoutSort = "activity" | "emails" | "accepted" | "assigned" | "name";
+type EmailAvailability = "all" | "present" | "missing";
 
 type Stats = {
   total: number;
@@ -144,6 +145,9 @@ type Lead = {
   foundedYear: number | null;
   connectionDegree: string | null;
   premium: boolean | null;
+  originalEmail: string | null;
+  workEmail: string | null;
+  workEmailStatus: string;
 };
 
 type CodexStatus = {
@@ -339,7 +343,10 @@ function Dashboard({ adminName }: { adminName: string }) {
   const [niche, setNiche] = useState("");
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [originalEmailFilter, setOriginalEmailFilter] = useState<EmailAvailability>("all");
+  const [workEmailFilter, setWorkEmailFilter] = useState<EmailAvailability>("all");
   const [leads, setLeads] = useState<Lead[]>([]);
+  const [filteredLeadCount, setFilteredLeadCount] = useState<number | null>(null);
   const [leadsLoading, setLeadsLoading] = useState(false);
   const [leadError, setLeadError] = useState("");
   const [cursor, setCursor] = useState<string | null>(null);
@@ -394,19 +401,23 @@ function Dashboard({ adminName }: { adminName: string }) {
       const page = await listLeads({
         niche: niche || null,
         search: debouncedSearch || null,
+        originalEmailFilter,
+        workEmailFilter,
         cursor,
         limit: 50,
       });
       setLeads(page.leads);
       setNextCursor(page.nextCursor);
       setHasMore(page.hasMore);
+      setFilteredLeadCount(page.filteredCount);
     } catch (error) {
       setLeadError(readError(error));
       setLeads([]);
+      setFilteredLeadCount(null);
     } finally {
       setLeadsLoading(false);
     }
-  }, [cursor, debouncedSearch, listLeads, niche]);
+  }, [cursor, debouncedSearch, listLeads, niche, originalEmailFilter, workEmailFilter]);
 
   const refreshCodexStatus = useCallback(async () => {
     try {
@@ -431,6 +442,7 @@ function Dashboard({ adminName }: { adminName: string }) {
       setDebouncedSearch(search.trim().length >= 3 ? search.trim() : "");
       setCursor(null);
       setCursorHistory([]);
+      setFilteredLeadCount(null);
     }, 350);
     return () => window.clearTimeout(handle);
   }, [search]);
@@ -438,7 +450,8 @@ function Dashboard({ adminName }: { adminName: string }) {
   useEffect(() => {
     setCursor(null);
     setCursorHistory([]);
-  }, [niche]);
+    setFilteredLeadCount(null);
+  }, [niche, originalEmailFilter, workEmailFilter]);
 
   useEffect(() => {
     if (view === "leads") void loadLeads();
@@ -697,7 +710,11 @@ function Dashboard({ adminName }: { adminName: string }) {
             setNiche={setNiche}
             search={search}
             setSearch={setSearch}
-            activeNicheCount={activeNicheCount}
+            originalEmailFilter={originalEmailFilter}
+            setOriginalEmailFilter={setOriginalEmailFilter}
+            workEmailFilter={workEmailFilter}
+            setWorkEmailFilter={setWorkEmailFilter}
+            viewCount={filteredLeadCount ?? activeNicheCount}
             leads={leads}
             loading={leadsLoading}
             error={leadError}
@@ -802,7 +819,7 @@ function Overview({
           tone="amber"
         />
         <MetricCard
-          label="Emails extracted"
+          label="Original emails"
           value={summary.emailsExtracted}
           detail={`${formatPercent(summary.emailYield)} yield from accepted leads`}
           icon={<Mail size={20} />}
@@ -831,7 +848,7 @@ function Overview({
           <PanelHeading
             eyebrow="Conversion"
             title="Lead journey"
-            description="From engaged profile to captured email"
+            description="From engaged profile to captured LinkedIn account email"
             icon={<BarChart3 size={18} />}
           />
           <Funnel summary={summary} />
@@ -1056,7 +1073,7 @@ function ActivityChart({ points }: { points: TrendPoint[] }) {
   return (
     <div className="activity-chart">
       <div className="chart-legend">
-        <span className="engaged">Engaged</span><span className="requests">Requests</span><span className="accepted">Accepted</span><span className="emails">Emails</span>
+        <span className="engaged">Engaged</span><span className="requests">Requests</span><span className="accepted">Accepted</span><span className="emails">Original emails</span>
       </div>
       <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Lead activity trend">
         {[0.25, 0.5, 0.75, 1].map((step) => <line key={step} x1="12" x2={width - 12} y1={y(max * step)} y2={y(max * step)} className="chart-gridline" />)}
@@ -1076,7 +1093,7 @@ function Funnel({ summary }: { summary: Summary }) {
     { label: "Engaged", value: summary.engagedLeads, tone: "#7355dd" },
     { label: "Requests sent", value: summary.requestsSent, tone: "#3f79d8" },
     { label: "Accepted", value: summary.acceptedLeads, tone: "#e19a33" },
-    { label: "Emails found", value: summary.emailsExtracted, tone: "#279c73" },
+    { label: "Original emails", value: summary.emailsExtracted, tone: "#279c73" },
   ];
   const max = Math.max(1, ...rows.map((row) => row.value));
   return (
@@ -1089,7 +1106,7 @@ function Funnel({ summary }: { summary: Summary }) {
       ))}
       <div className="conversion-pair">
         <div><strong>{formatPercent(summary.acceptanceRate)}</strong><span>Request acceptance</span></div>
-        <div><strong>{formatPercent(summary.emailYield)}</strong><span>Email yield</span></div>
+        <div><strong>{formatPercent(summary.emailYield)}</strong><span>Original email yield</span></div>
       </div>
     </div>
   );
@@ -1100,7 +1117,7 @@ function ScoutTable({ scouts, selectedScout, setSelectedScout }: { scouts: Scout
   return (
     <div className="scout-table-scroll">
       <table className="scout-table">
-        <thead><tr><th>Scout</th><th>Assigned</th><th>Fresh</th><th>Engaged</th><th>Requests</th><th>Pending</th><th>Accepted</th><th>Emails</th><th>Failed</th><th>Last active</th></tr></thead>
+        <thead><tr><th>Scout</th><th>Assigned</th><th>Fresh</th><th>Engaged</th><th>Requests</th><th>Pending</th><th>Accepted</th><th>Original emails</th><th>Failed</th><th>Last active</th></tr></thead>
         <tbody>
           {scouts.map((scout) => (
             <tr key={scout.operatorId} className={selectedScout === scout.operatorId ? "selected" : ""} onClick={() => setSelectedScout(selectedScout === scout.operatorId ? null : scout.operatorId)}>
@@ -1121,7 +1138,7 @@ function ScoutDetail({ scout, activity, close }: { scout: ScoutMetrics; activity
       <div className="scout-detail-grid">
         <div><small>Recorded actions</small><strong>{formatNumber(scout.activityCount)}</strong></div>
         <div><small>Acceptance</small><strong>{formatPercent(scout.acceptanceRate)}</strong></div>
-        <div><small>Email yield</small><strong>{formatPercent(scout.emailYield)}</strong></div>
+        <div><small>Original email yield</small><strong>{formatPercent(scout.emailYield)}</strong></div>
         <div><small>Skipped</small><strong>{formatNumber(scout.skipped)}</strong></div>
       </div>
       <div className="scout-progress">
@@ -1194,13 +1211,17 @@ function Inventory({ summary }: { summary: Summary }) {
   );
 }
 
-function LeadDirectory({ stats, niche, setNiche, search, setSearch, activeNicheCount, leads, loading, error, onRefresh, currentPage, canGoPrevious, canGoNext, previousPage, nextPage }: {
+function LeadDirectory({ stats, niche, setNiche, search, setSearch, originalEmailFilter, setOriginalEmailFilter, workEmailFilter, setWorkEmailFilter, viewCount, leads, loading, error, onRefresh, currentPage, canGoPrevious, canGoNext, previousPage, nextPage }: {
   stats: Stats | null;
   niche: string;
   setNiche: (value: string) => void;
   search: string;
   setSearch: (value: string) => void;
-  activeNicheCount: number;
+  originalEmailFilter: EmailAvailability;
+  setOriginalEmailFilter: (value: EmailAvailability) => void;
+  workEmailFilter: EmailAvailability;
+  setWorkEmailFilter: (value: EmailAvailability) => void;
+  viewCount: number;
   leads: Lead[];
   loading: boolean;
   error: string;
@@ -1213,8 +1234,8 @@ function LeadDirectory({ stats, niche, setNiche, search, setSearch, activeNicheC
 }) {
   return (
     <section className="workspace">
-      <div className="workspace-heading"><div><p className="eyebrow">Lead directory</p><h2>{niche || "All leads"}</h2><p>{formatNumber(activeNicheCount)} profiles in this view</p></div><button className="secondary-button" onClick={() => void onRefresh()} disabled={loading}><RefreshCw size={16} className={loading ? "spin" : ""} />Refresh</button></div>
-      <div className="filters"><label className="search-field"><Search size={18} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search name, company, title, industry…" />{search && <button onClick={() => setSearch("")} aria-label="Clear search"><X size={16} /></button>}</label><select value={niche} onChange={(event) => setNiche(event.target.value)}><option value="">All niches</option>{stats?.niches.map((item) => <option key={item.name} value={item.name}>{item.name} ({formatNumber(item.count)})</option>)}</select></div>
+      <div className="workspace-heading"><div><p className="eyebrow">Lead directory</p><h2>{niche || "All leads"}</h2><p>{formatNumber(viewCount)} profiles in this view</p></div><button className="secondary-button" onClick={() => void onRefresh()} disabled={loading}><RefreshCw size={16} className={loading ? "spin" : ""} />Refresh</button></div>
+      <div className="filters"><label className="search-field"><Search size={18} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search name, company, title, industry, or email…" />{search && <button onClick={() => setSearch("")} aria-label="Clear search"><X size={16} /></button>}</label><select value={niche} onChange={(event) => setNiche(event.target.value)} aria-label="Niche"><option value="">All niches</option>{stats?.niches.map((item) => <option key={item.name} value={item.name}>{item.name} ({formatNumber(item.count)})</option>)}</select><select value={originalEmailFilter} onChange={(event) => setOriginalEmailFilter(event.target.value as EmailAvailability)} aria-label="Original email availability"><option value="all">All original emails</option><option value="present">Has original email</option><option value="missing">Missing original email</option></select><select value={workEmailFilter} onChange={(event) => setWorkEmailFilter(event.target.value as EmailAvailability)} aria-label="Work email availability"><option value="all">All work emails</option><option value="present">Has work email</option><option value="missing">Missing work email</option></select></div>
       {error ? <div className="directory-notice"><Notice message={error} onRetry={onRefresh} /></div> : <LeadTable leads={leads} loading={loading} />}
       {!error && <div className="pagination"><p>Page {currentPage} · Up to 50 leads per page</p><div><button onClick={previousPage} disabled={!canGoPrevious || loading}><ArrowLeft size={16} /> Previous</button><button onClick={nextPage} disabled={!canGoNext || loading}>Next <ArrowRight size={16} /></button></div></div>}
     </section>
@@ -1225,7 +1246,7 @@ function LeadTable({ leads, loading }: { leads: Lead[]; loading: boolean }) {
   if (loading) return <div className="table-loading"><RefreshCw className="spin" size={22} />Loading leads from CockroachDB…</div>;
   if (leads.length === 0) return <div className="empty-state"><Search size={24} /><h3>No leads found</h3><p>Try another niche or a broader search phrase.</p></div>;
   return (
-    <div className="table-scroll"><table><thead><tr><th>Lead</th><th>Company</th><th>Location</th><th>Industry</th><th>Size</th><th><span className="sr-only">Profile</span></th></tr></thead><tbody>{leads.map((lead) => <tr key={lead.id}><td><div className="lead-cell"><span className="avatar">{initials(lead.fullName)}</span><div><strong>{lead.fullName || "Unnamed lead"}</strong><span>{lead.currentTitle || "Title unavailable"}</span></div></div></td><td><strong className="company-name">{lead.companyName || "—"}</strong><span className="subtle">{lead.domain || lead.companySize || ""}</span></td><td><span className="location"><MapPin size={14} />{lead.geographicRegion || lead.companyLocation || "—"}</span></td><td><span className="industry-pill">{lead.companyIndustry || "Uncategorized"}</span></td><td>{lead.employeeCount ? formatNumber(lead.employeeCount) : lead.companySize || "—"}</td><td>{lead.linkedinUrl ? <a className="profile-link" href={lead.linkedinUrl} target="_blank" rel="noreferrer" title="Open LinkedIn profile"><ExternalLink size={16} /></a> : "—"}</td></tr>)}</tbody></table></div>
+    <div className="table-scroll"><table><thead><tr><th>Lead</th><th>Company</th><th>Original email</th><th>Work email</th><th>Location</th><th>Industry</th><th>Size</th><th><span className="sr-only">Profile</span></th></tr></thead><tbody>{leads.map((lead) => <tr key={lead.id}><td><div className="lead-cell"><span className="avatar">{initials(lead.fullName)}</span><div><strong>{lead.fullName || "Unnamed lead"}</strong><span>{lead.currentTitle || "Title unavailable"}</span></div></div></td><td><strong className="company-name">{lead.companyName || "—"}</strong><span className="subtle">{lead.domain || lead.companySize || ""}</span></td><td><span className="lead-email">{lead.originalEmail || "—"}</span><span className="subtle">LinkedIn account</span></td><td><span className="lead-email">{lead.workEmail || "—"}</span><span className="subtle">{lead.workEmail ? "Company address" : lead.workEmailStatus.replaceAll("_", " ")}</span></td><td><span className="location"><MapPin size={14} />{lead.geographicRegion || lead.companyLocation || "—"}</span></td><td><span className="industry-pill">{lead.companyIndustry || "Uncategorized"}</span></td><td>{lead.employeeCount ? formatNumber(lead.employeeCount) : lead.companySize || "—"}</td><td>{lead.linkedinUrl ? <a className="profile-link" href={lead.linkedinUrl} target="_blank" rel="noreferrer" title="Open LinkedIn profile"><ExternalLink size={16} /></a> : "—"}</td></tr>)}</tbody></table></div>
   );
 }
 

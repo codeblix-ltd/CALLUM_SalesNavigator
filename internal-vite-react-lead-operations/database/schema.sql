@@ -67,6 +67,19 @@ CREATE TABLE IF NOT EXISTS leads (
   premium BOOL NULL,
   company_description STRING NULL,
   summary STRING NULL,
+  -- The address exposed by LinkedIn contact info belongs to the member's
+  -- LinkedIn account. Mailmeteor's company-domain result is stored separately.
+  original_email STRING NULL,
+  original_email_collected_at TIMESTAMPTZ NULL,
+  work_email STRING NULL,
+  work_email_collected_at TIMESTAMPTZ NULL,
+  work_email_status STRING NOT NULL DEFAULT 'pending',
+  work_email_validation STRING NULL,
+  work_email_source STRING NULL,
+  work_email_checked_at TIMESTAMPTZ NULL,
+  work_email_resolved_linkedin_url STRING NULL,
+  work_email_last_error STRING NULL,
+  work_email_http_status INT4 NULL,
   search_text STRING NOT NULL DEFAULT '',
   source_file STRING NOT NULL,
   source_row INT8 NOT NULL,
@@ -74,8 +87,31 @@ CREATE TABLE IF NOT EXISTS leads (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+ALTER TABLE leads
+  ADD COLUMN IF NOT EXISTS original_email STRING NULL,
+  ADD COLUMN IF NOT EXISTS original_email_collected_at TIMESTAMPTZ NULL,
+  ADD COLUMN IF NOT EXISTS work_email STRING NULL,
+  ADD COLUMN IF NOT EXISTS work_email_collected_at TIMESTAMPTZ NULL,
+  ADD COLUMN IF NOT EXISTS work_email_status STRING NOT NULL DEFAULT 'pending',
+  ADD COLUMN IF NOT EXISTS work_email_validation STRING NULL,
+  ADD COLUMN IF NOT EXISTS work_email_source STRING NULL,
+  ADD COLUMN IF NOT EXISTS work_email_checked_at TIMESTAMPTZ NULL,
+  ADD COLUMN IF NOT EXISTS work_email_resolved_linkedin_url STRING NULL,
+  ADD COLUMN IF NOT EXISTS work_email_last_error STRING NULL,
+  ADD COLUMN IF NOT EXISTS work_email_http_status INT4 NULL;
+
+ALTER TABLE leads
+  DROP CONSTRAINT IF EXISTS leads_work_email_status_check;
+
+ALTER TABLE leads
+  ADD CONSTRAINT leads_work_email_status_check
+  CHECK (work_email_status IN ('pending', 'processing', 'found', 'not_found', 'error'));
+
 CREATE INDEX IF NOT EXISTS leads_search_text_trgm_idx
   ON leads USING GIN (search_text gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS leads_by_work_email_status
+  ON leads (work_email_status, work_email_checked_at, id);
 
 CREATE TABLE IF NOT EXISTS lead_niches (
   niche STRING NOT NULL,
@@ -148,6 +184,17 @@ ALTER TABLE lead_assignments
   ADD COLUMN IF NOT EXISTS recent_post_checked_at TIMESTAMPTZ NULL,
   ADD COLUMN IF NOT EXISTS has_recent_post BOOL NULL,
   ADD COLUMN IF NOT EXISTS icp_score INT4 NULL;
+
+-- Preserve every address collected before the two explicit lead email fields
+-- were introduced. The legacy assignment column remains as a compatibility
+-- bridge while all current reads and writes use leads.original_email.
+UPDATE leads AS l
+   SET original_email = a.email,
+       original_email_collected_at = a.email_collected_at
+  FROM lead_assignments AS a
+ WHERE a.lead_id = l.id
+   AND l.original_email IS NULL
+   AND a.email IS NOT NULL;
 
 ALTER TABLE lead_assignments
   DROP CONSTRAINT IF EXISTS lead_assignments_qualification_status_check;

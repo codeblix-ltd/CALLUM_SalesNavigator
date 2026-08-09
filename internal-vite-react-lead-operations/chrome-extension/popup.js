@@ -470,7 +470,7 @@ async function startAutoLead() {
     }
     const result = response.result;
     showSuccess(
-      `Done: ${formatCount(result.requestsSent, "connection request")} sent, ${formatCount(result.acceptedMatched, "new connection")}, and ${formatCount(result.emailsCollected, "email address")} saved.`,
+      `Done: ${formatCount(result.requestsSent, "connection request")} sent, ${formatCount(result.acceptedMatched, "new connection")}, and ${formatCount(result.emailsCollected, "original email address")} saved.`,
     );
     await refreshDashboard();
   } catch (error) {

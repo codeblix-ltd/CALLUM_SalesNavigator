@@ -552,7 +552,7 @@ export const getOperations = action({
            o.id::STRING AS id,
            o.operator_id,
            l.full_name,
-           a.email,
+           l.original_email AS email,
            o.status,
            o.attempt_count::FLOAT8 AS attempt_count,
            o.last_error,
@@ -561,7 +561,7 @@ export const getOperations = action({
          INNER JOIN leads AS l ON l.id = o.lead_id
          INNER JOIN lead_assignments AS a
            ON a.lead_id = o.lead_id AND a.operator_id = o.operator_id
-         WHERE o.status IN ('pending', 'failed') AND a.email IS NOT NULL
+         WHERE o.status IN ('pending', 'failed') AND l.original_email IS NOT NULL
          ORDER BY CASE WHEN o.status = 'failed' THEN 0 ELSE 1 END, o.created_at
          LIMIT 100`,
       ),
@@ -645,30 +645,39 @@ export const exportCleanCsv = action({
          l.full_name,
          l.current_title,
          l.company_name,
-         a.email,
-         a.email_collected_at::STRING AS email_collected_at,
+         l.original_email,
+         l.original_email_collected_at::STRING AS original_email_collected_at,
+         l.work_email,
+         l.work_email_collected_at::STRING AS work_email_collected_at,
          a.operator_id,
          a.status,
          a.accepted_at::STRING AS accepted_at
-       FROM lead_assignments AS a
-       INNER JOIN leads AS l ON l.id = a.lead_id
-       WHERE a.accepted_at IS NOT NULL OR a.status IN ('accepted', 'email_collected')
-       ORDER BY a.accepted_at DESC, a.lead_id
+       FROM leads AS l
+       LEFT JOIN lead_assignments AS a ON a.lead_id = l.id
+       WHERE l.work_email IS NOT NULL
+          OR a.accepted_at IS NOT NULL
+          OR a.status IN ('accepted', 'email_collected')
+       ORDER BY coalesce(l.work_email_collected_at, a.accepted_at) DESC, l.id
        LIMIT 10000`,
     );
     let invalidEmailsRemoved = 0;
     const rows = result.rows.map((row) => {
-      const emailValue = String(row.email ?? "").trim().toLowerCase();
-      const email = isCleanEmail(emailValue) ? emailValue : "";
-      if (emailValue && !email) invalidEmailsRemoved += 1;
+      const originalEmailValue = String(row.original_email ?? "").trim().toLowerCase();
+      const workEmailValue = String(row.work_email ?? "").trim().toLowerCase();
+      const originalEmail = isCleanEmail(originalEmailValue) ? originalEmailValue : "";
+      const workEmail = isCleanEmail(workEmailValue) ? workEmailValue : "";
+      if (originalEmailValue && !originalEmail) invalidEmailsRemoved += 1;
+      if (workEmailValue && !workEmail) invalidEmailsRemoved += 1;
       const names = cleanNames(row.first_name, row.last_name, row.full_name);
       return [
         String(row.linkedin_url ?? ""),
         names.firstName,
         names.lastName,
         String(row.current_title ?? ""),
-        email,
-        String(row.email_collected_at ?? "").slice(0, 10),
+        originalEmail,
+        String(row.original_email_collected_at ?? "").slice(0, 10),
+        workEmail,
+        String(row.work_email_collected_at ?? "").slice(0, 10),
         String(row.company_name ?? ""),
         String(row.operator_id ?? ""),
         String(row.status ?? ""),
@@ -680,8 +689,10 @@ export const exportCleanCsv = action({
       "First Name",
       "Last Name",
       "Headline",
-      "Email Address",
-      "DO NOT EDIT - Date Added (Emails)",
+      "Original Email",
+      "Original Email Collected Date",
+      "Work Email",
+      "Work Email Collected Date",
       "Company",
       "Scout",
       "Status",
@@ -734,7 +745,8 @@ export const retryCrmDelivery = action({
          l.current_title,
          l.company_name,
          coalesce(a.resolved_linkedin_url, l.linkedin_url) AS linkedin_url,
-         a.email,
+         l.original_email,
+         l.work_email,
          a.accepted_at::STRING AS accepted_at
        FROM crm_delivery_outbox AS o
        INNER JOIN leads AS l ON l.id = o.lead_id
@@ -758,8 +770,10 @@ export const retryCrmDelivery = action({
         [row.id],
       );
       try {
-        const email = String(row.email ?? "").trim().toLowerCase();
-        if (!isCleanEmail(email)) throw new Error("The saved email is not valid.");
+        const originalEmail = String(row.original_email ?? "").trim().toLowerCase();
+        const workEmailValue = String(row.work_email ?? "").trim().toLowerCase();
+        const workEmail = isCleanEmail(workEmailValue) ? workEmailValue : null;
+        if (!isCleanEmail(originalEmail)) throw new Error("The saved original email is not valid.");
         const response = await fetch(webhookUrl, {
           method: "POST",
           headers: crmWebhookHeaders(),
@@ -771,7 +785,9 @@ export const retryCrmDelivery = action({
             title: nullableString(row.current_title),
             company: nullableString(row.company_name),
             linkedinUrl: String(row.linkedin_url),
-            email,
+            email: originalEmail,
+            originalEmail,
+            workEmail,
             scout: String(row.operator_id),
             acceptedAt: nullableString(row.accepted_at),
           }),

@@ -892,9 +892,10 @@ export const recordContactInfo = action({
     try {
       await client.query("BEGIN");
       const current = await client.query(
-        `SELECT status, email
-           FROM lead_assignments
-          WHERE lead_id = $1::UUID AND operator_id = $2
+        `SELECT a.status, a.email AS legacy_email, l.original_email
+           FROM lead_assignments AS a
+           INNER JOIN leads AS l ON l.id = a.lead_id
+          WHERE a.lead_id = $1::UUID AND a.operator_id = $2
           FOR UPDATE`,
         [args.leadId, scout.operatorId],
       );
@@ -902,8 +903,19 @@ export const recordContactInfo = action({
       if (!row || !["accepted", "email_collected"].includes(String(row.status))) {
         throw new Error("Only an accepted assigned lead can expose contact info.");
       }
-      const finalEmail = email || nullableString(row.email);
+      const existingEmail = nullableString(row.original_email) || nullableString(row.legacy_email);
+      const finalEmail = email || existingEmail;
       const nextStatus = finalEmail ? "email_collected" : "accepted";
+      if (finalEmail) {
+        await client.query(
+          `UPDATE leads
+              SET original_email = coalesce(original_email, $2),
+                  original_email_collected_at = coalesce(original_email_collected_at, now()),
+                  updated_at = now()
+            WHERE id = $1::UUID`,
+          [args.leadId, finalEmail],
+        );
+      }
       await client.query(
         `UPDATE lead_assignments
             SET status = $3,
@@ -915,7 +927,7 @@ export const recordContactInfo = action({
                 END,
                 updated_at = now()
           WHERE lead_id = $1::UUID AND operator_id = $2`,
-        [args.leadId, scout.operatorId, nextStatus, profileUrl, email],
+        [args.leadId, scout.operatorId, nextStatus, profileUrl, finalEmail],
       );
       await insertEvent(
         client,
@@ -924,7 +936,7 @@ export const recordContactInfo = action({
         "contact_info_checked",
         { profileUrl, emailFound: Boolean(finalEmail) },
       );
-      if (email && !row.email) {
+      if (email && !existingEmail) {
         await insertEvent(
           client,
           args.leadId,

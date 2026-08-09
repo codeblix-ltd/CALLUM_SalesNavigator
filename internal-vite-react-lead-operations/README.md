@@ -13,6 +13,19 @@ Manifest V3 Chrome extension for scouts.
 The browser never receives the CockroachDB connection string, the scout
 provisioning key, the gateway secret, or the ChatGPT session tokens.
 
+## Lead email fields
+
+Each canonical `leads` row supports two separate addresses:
+
+- `original_email` is the LinkedIn account/contact-info email collected after
+  a connection is accepted.
+- `work_email` is the company-domain address found by the separate Callum Work
+  Email Finder extension through Mailmeteor.
+
+The schema migration backfills existing assignment emails into
+`original_email`. The legacy assignment `email` column remains only as a
+compatibility bridge; current lead views and exports use the explicit fields.
+
 ## One-time setup
 
 The repository is linked to its existing Convex development deployment.

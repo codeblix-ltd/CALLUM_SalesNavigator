@@ -673,7 +673,7 @@
     const email = mailto
       ? decodeURIComponent(mailto.replace(/^mailto:/i, "").split("?")[0]).trim()
       : null;
-    addLog("Email", email ? "Email address saved" : "No email address found");
+    addLog("Original email", email ? "LinkedIn account email saved" : "No LinkedIn account email found");
     updateStatus("Contact info checked.");
     return { profileUrl: currentProfileUrl, email };
   }

@@ -20,6 +20,7 @@ import type * as scoutAdmin from "../scoutAdmin.js";
 import type * as scoutIdentity from "../scoutIdentity.js";
 import type * as scouts from "../scouts.js";
 import type * as simulations from "../simulations.js";
+import type * as workEmails from "../workEmails.js";
 
 import type {
   ApiFromModules,
@@ -40,6 +41,7 @@ declare const fullApi: ApiFromModules<{
   scoutIdentity: typeof scoutIdentity;
   scouts: typeof scouts;
   simulations: typeof simulations;
+  workEmails: typeof workEmails;
 }>;
 
 /**

@@ -3,30 +3,52 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Mailmeteor LinkedIn Queue</title>
+  <title>Callum Work Email Finder</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
   <main>
     <header>
       <div>
-        <h1>Mailmeteor LinkedIn Queue</h1>
-        <p>Resolves LinkedIn redirects, then runs the public tool and captures its JSON response.</p>
+        <h1>Callum Work Email Finder</h1>
+        <p>Finds company work emails and saves them separately from LinkedIn account emails.</p>
       </div>
       <span id="runBadge" class="badge idle">Idle</span>
     </header>
 
+    <section id="authPanel" class="panel auth-panel">
+      <form id="loginForm">
+        <div><strong>Lead database</strong><span>Administrator sign-in is required so results can be saved.</span></div>
+        <input id="username" autocomplete="username" value="callum2024" aria-label="Administrator username">
+        <input id="password" type="password" autocomplete="current-password" placeholder="Password" aria-label="Administrator password">
+        <button class="primary" type="submit">Sign in</button>
+      </form>
+      <div id="signedInRow" class="signed-in-row" hidden>
+        <div><strong>Database connected</strong><span id="signedInName"></span></div>
+        <button id="signOut" type="button">Sign out</button>
+      </div>
+    </section>
+
     <section class="panel input-panel">
-      <label for="urls">LinkedIn profile URLs — one per line</label>
-      <textarea id="urls" spellcheck="false" placeholder="https://www.linkedin.com/in/callumlaing/&#10;https://linkedin.com/in/ACwAAD3Xy04BHTT4FFZf2Ez5eHiMedMDtec5wYo"></textarea>
+      <div class="source-switch" role="radiogroup" aria-label="Lead source">
+        <label><input type="radio" name="source" value="paste" checked><span>Paste LinkedIn links</span></label>
+        <label><input type="radio" name="source" value="database"><span>Use pending database leads</span></label>
+      </div>
+
+      <div id="pasteSource">
+        <label for="urls">LinkedIn profile URLs — one per line</label>
+        <textarea id="urls" spellcheck="false" placeholder="https://www.linkedin.com/in/callumlaing/&#10;https://linkedin.com/in/ACwAAD3Xy04BHTT4FFZf2Ez5eHiMedMDtec5wYo"></textarea>
+      </div>
+
+      <div id="databaseSource" class="database-source" hidden>
+        <label for="dbLimit">Number of pending leads to load</label>
+        <input id="dbLimit" type="number" min="1" max="500" step="1" value="25">
+        <p>Errors and stale interrupted rows are loaded first, followed by untouched leads.</p>
+      </div>
 
       <div class="settings-grid">
         <label>
-          <span>Concurrent tabs</span>
-          <input id="concurrency" type="number" min="1" max="5" step="1" value="5">
-        </label>
-        <label>
-          <span>Open every</span>
+          <span>Wait between leads</span>
           <select id="staggerMs">
             <option value="1500">1.5 seconds</option>
             <option value="1800" selected>1.8 seconds</option>
@@ -53,11 +75,11 @@
       <div class="actions">
         <button id="start" class="primary">Start queue</button>
         <button id="stop" class="danger" disabled>Stop</button>
-        <button id="retry" disabled>Retry unfinished</button>
+        <button id="retry" disabled>Resume from error</button>
         <button id="clear">Clear</button>
       </div>
       <p id="message" class="message" aria-live="polite"></p>
-      <p class="note">Chrome will show a debugging notice while jobs run. The extension does not call the API directly, reuse Turnstile tokens, or solve CAPTCHA challenges.</p>
+      <p class="note">Leads run one at a time. Any error, timeout, rate limit, or database-save failure pauses the queue before the next lead starts.</p>
     </section>
 
     <section class="stats" aria-label="Queue statistics">
@@ -83,21 +105,22 @@
               <th>#</th>
               <th>Status</th>
               <th>Name</th>
-              <th>Email</th>
+              <th>Work email</th>
               <th>Validation</th>
               <th>Title</th>
               <th>Company</th>
               <th>Resolved LinkedIn URL</th>
+              <th>Database</th>
               <th>Error</th>
             </tr>
           </thead>
           <tbody id="resultsBody">
-            <tr><td colspan="9" class="empty">No jobs yet.</td></tr>
+            <tr><td colspan="10" class="empty">No jobs yet.</td></tr>
           </tbody>
         </table>
       </div>
     </section>
   </main>
-  <script src="popup.js"></script>
+  <script type="module" src="popup.js"></script>
 </body>
 </html>

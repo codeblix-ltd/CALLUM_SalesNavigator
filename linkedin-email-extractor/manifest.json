@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Mailmeteor LinkedIn Queue",
-  "version": "1.1.0",
-  "description": "Resolve LinkedIn profile redirects, run Mailmeteor in your Chrome profile, and capture the email-finder JSON response.",
+  "name": "Callum Work Email Finder",
+  "version": "2.0.0",
+  "description": "Find company work emails from pasted LinkedIn links or the Callum lead database and save them safely.",
   "minimum_chrome_version": "118",
   "permissions": [
     "debugger",
@@ -12,14 +12,15 @@
   "host_permissions": [
     "https://*.linkedin.com/*",
     "https://mailmeteor.com/*",
-    "https://tools.mailmeteor.com/*"
+    "https://tools.mailmeteor.com/*",
+    "https://*.convex.cloud/*"
   ],
   "background": {
     "service_worker": "background.js",
     "type": "module"
   },
   "action": {
-    "default_title": "Mailmeteor LinkedIn Queue",
+    "default_title": "Callum Work Email Finder",
     "default_popup": "popup.html"
   }
 }

@@ -1,6 +1,16 @@
+import { WorkEmailApi } from "./api.js";
+
 const els = {
+  loginForm: document.querySelector("#loginForm"),
+  username: document.querySelector("#username"),
+  password: document.querySelector("#password"),
+  signedInRow: document.querySelector("#signedInRow"),
+  signedInName: document.querySelector("#signedInName"),
+  signOut: document.querySelector("#signOut"),
+  pasteSource: document.querySelector("#pasteSource"),
+  databaseSource: document.querySelector("#databaseSource"),
+  dbLimit: document.querySelector("#dbLimit"),
   urls: document.querySelector("#urls"),
-  concurrency: document.querySelector("#concurrency"),
   staggerMs: document.querySelector("#staggerMs"),
   timeoutMs: document.querySelector("#timeoutMs"),
   keepFailedTabs: document.querySelector("#keepFailedTabs"),
@@ -21,6 +31,7 @@ const els = {
 };
 
 let currentState = null;
+let signedIn = false;
 
 async function send(type, payload = {}) {
   const response = await chrome.runtime.sendMessage({ type, ...payload });
@@ -42,7 +53,6 @@ function parseUrls() {
 
 function settingsFromForm() {
   return {
-    concurrency: Number(els.concurrency.value),
     staggerMs: Number(els.staggerMs.value),
     timeoutMs: Number(els.timeoutMs.value),
     keepFailedTabs: els.keepFailedTabs.checked
@@ -50,7 +60,6 @@ function settingsFromForm() {
 }
 
 function applySettings(settings = {}) {
-  els.concurrency.value = settings.concurrency || 5;
   els.staggerMs.value = String(settings.staggerMs || 1800);
   els.timeoutMs.value = String(settings.timeoutMs || 60000);
   els.keepFailedTabs.checked = settings.keepFailedTabs !== false;
@@ -84,24 +93,28 @@ function render(state) {
   currentState = state;
   const jobs = state?.jobs || [];
   const running = Boolean(state?.running);
+  const paused = Boolean(state?.paused);
   const done = jobs.filter((job) => isDone(job.status)).length;
   const found = jobs.filter((job) => job.status === "found").length;
   const notFound = jobs.filter((job) => job.status === "not_found").length;
   const errors = jobs.filter((job) => ["error", "timeout"].includes(job.status)).length;
-  const retryable = jobs.some((job) => ["not_found", "error", "timeout", "stopped"].includes(job.status));
+  const retryable = jobs.some((job) => ["queued", "error", "timeout", "stopped"].includes(job.status));
 
-  els.runBadge.textContent = running ? "Running" : "Idle";
-  els.runBadge.className = `badge ${running ? "running" : "idle"}`;
-  els.start.disabled = running;
+  els.runBadge.textContent = running ? "Running" : paused ? "Paused" : "Idle";
+  els.runBadge.className = `badge ${running ? "running" : paused ? "paused" : "idle"}`;
+  els.start.disabled = running || paused || !signedIn;
   els.stop.disabled = !running;
   els.clear.disabled = running;
-  els.retry.disabled = running || !retryable;
+  els.retry.disabled = running || !signedIn || !retryable;
   els.copyJson.disabled = jobs.length === 0;
   els.exportCsv.disabled = jobs.length === 0;
-  els.concurrency.disabled = running;
   els.staggerMs.disabled = running;
   els.timeoutMs.disabled = running;
   els.keepFailedTabs.disabled = running;
+  els.dbLimit.disabled = running;
+  for (const input of document.querySelectorAll('input[name="source"]')) input.disabled = running;
+
+  if (paused && state.pauseReason) setMessage(state.pauseReason, "error");
 
   els.totalCount.textContent = jobs.length;
   els.doneCount.textContent = done;
@@ -110,7 +123,7 @@ function render(state) {
   els.errorCount.textContent = errors;
 
   if (!jobs.length) {
-    els.resultsBody.innerHTML = '<tr><td colspan="9" class="empty">No jobs yet.</td></tr>';
+    els.resultsBody.innerHTML = '<tr><td colspan="10" class="empty">No jobs yet.</td></tr>';
     return;
   }
 
@@ -119,12 +132,13 @@ function render(state) {
     const values = [
       String(job.index + 1),
       displayStatus(job.status),
-      resultValue(job, "full_name"),
+      resultValue(job, "full_name") || job.leadName || "",
       resultValue(job, "email"),
       resultValue(job, "validation"),
       resultValue(job, "job_title"),
-      resultValue(job, "company"),
+      resultValue(job, "company") || job.companyName || "",
       job.resolvedLinkedinUrl || job.linkedinUrl,
+      databaseStatus(job),
       job.error || ""
     ];
 
@@ -152,20 +166,31 @@ function render(state) {
   }));
 }
 
+function databaseStatus(job) {
+  if (job.dbSaveStatus === "saved") return "Saved";
+  if (job.dbSaveStatus === "not_matched") return "Not in database";
+  if (job.dbSaveStatus === "failed") return "Save failed";
+  if (job.leadId) return "Matched";
+  return "Match on result";
+}
+
 function exportRows() {
   return (currentState?.jobs || []).map((job) => ({
     index: job.index + 1,
     status: job.status,
+    source: job.source || "pasted",
+    lead_id: job.leadId || "",
     input_linkedin_url: job.inputLinkedinUrl || job.linkedinUrl,
     resolved_linkedin_url: job.resolvedLinkedinUrl || job.linkedinUrl,
     found: job.result?.found ?? "",
     success: job.result?.success ?? "",
-    email: job.result?.email ?? "",
+    work_email: job.result?.email ?? "",
     validation: job.result?.validation ?? "",
     full_name: job.result?.full_name ?? "",
     job_title: job.result?.job_title ?? "",
     company: job.result?.company ?? "",
     http_status: job.httpStatus ?? "",
+    database_status: databaseStatus(job),
     error: job.error ?? "",
     started_at: job.startedAt ? new Date(job.startedAt).toISOString() : "",
     finished_at: job.finishedAt ? new Date(job.finishedAt).toISOString() : ""
@@ -190,9 +215,16 @@ function downloadText(filename, text, mimeType) {
 els.start.addEventListener("click", async () => {
   try {
     setMessage("Starting queue…");
-    const response = await send("start", { urls: parseUrls(), settings: settingsFromForm() });
+    const source = selectedSource();
+    const response = source === "database"
+      ? await send("startDatabase", {
+          limit: Number(els.dbLimit.value),
+          settings: settingsFromForm(),
+        })
+      : await send("start", { urls: parseUrls(), settings: settingsFromForm() });
     const suffix = response.invalid?.length ? ` ${response.invalid.length} invalid URL(s) skipped.` : "";
-    setMessage(`${response.accepted} URL(s) queued.${suffix}`, "success");
+    const remaining = source === "database" ? ` ${response.remaining} database lead(s) were eligible when loaded.` : "";
+    setMessage(`${response.accepted} lead(s) queued.${suffix}${remaining}`, "success");
     const stateResponse = await send("getState");
     render(stateResponse.state);
   } catch (error) {
@@ -212,7 +244,7 @@ els.stop.addEventListener("click", async () => {
 els.retry.addEventListener("click", async () => {
   try {
     const response = await send("retryFailed");
-    setMessage(`${response.accepted} unfinished URL(s) queued again.`, "success");
+    setMessage(`Resumed at the first unfinished lead (${response.accepted} remaining).`, "success");
   } catch (error) {
     setMessage(error.message, "error");
   }
@@ -252,8 +284,60 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   }
 });
 
+for (const input of document.querySelectorAll('input[name="source"]')) {
+  input.addEventListener("change", renderSource);
+}
+
+els.loginForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = els.loginForm.querySelector("button");
+  button.disabled = true;
+  try {
+    setMessage("Connecting to the lead database…");
+    const auth = await WorkEmailApi.signIn(els.username.value, els.password.value);
+    els.password.value = "";
+    setSignedIn(auth);
+    setMessage("Database connected. Work-email results will be saved.", "success");
+  } catch (error) {
+    setMessage(error.message || String(error), "error");
+  } finally {
+    button.disabled = false;
+  }
+});
+
+els.signOut.addEventListener("click", async () => {
+  try {
+    await WorkEmailApi.signOut();
+  } catch (error) {
+    setMessage(error.message || String(error), "error");
+  } finally {
+    setSignedIn(null);
+  }
+});
+
+function selectedSource() {
+  return document.querySelector('input[name="source"]:checked')?.value || "paste";
+}
+
+function renderSource() {
+  const database = selectedSource() === "database";
+  els.pasteSource.hidden = database;
+  els.databaseSource.hidden = !database;
+  els.start.textContent = database ? "Start from database" : "Start queue";
+}
+
+function setSignedIn(auth) {
+  signedIn = Boolean(auth?.token);
+  els.loginForm.hidden = signedIn;
+  els.signedInRow.hidden = !signedIn;
+  els.signedInName.textContent = signedIn ? auth.username || "Administrator" : "";
+  if (currentState) render(currentState);
+}
+
 (async function init() {
   try {
+    setSignedIn(await WorkEmailApi.getAuth());
+    renderSource();
     const response = await send("getState");
     render(response.state);
     applySettings(response.state?.settings);

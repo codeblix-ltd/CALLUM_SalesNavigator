@@ -264,7 +264,7 @@ main { max-width: 1320px; margin: 0 auto; padding: 40px 24px 76px; }
 .secondary-button:disabled, .primary-button:disabled { opacity: .5; cursor: not-allowed; }
 .primary-button { min-height: 43px; padding: 0 18px; border: 0; color: white; background: #6245d8; box-shadow: 0 8px 18px rgba(98,69,216,.2); }
 .primary-button:hover { background: #5438cc; }
-.filters { padding: 0 28px 20px; display: grid; grid-template-columns: 1fr 240px; gap: 12px; border-bottom: 1px solid #e0e5ef; }
+.filters { padding: 0 28px 20px; display: grid; grid-template-columns: minmax(260px, 1fr) minmax(170px, 240px) 180px 180px; gap: 12px; border-bottom: 1px solid #e0e5ef; }
 .filters select { min-height: 43px; font-size: 11px; }
 .table-scroll { overflow-x: auto; }
 .table-scroll table { width: 100%; border-collapse: collapse; min-width: 980px; }
@@ -275,6 +275,7 @@ main { max-width: 1320px; margin: 0 auto; padding: 40px 24px 76px; }
 .avatar { width: 35px; height: 35px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 11px; color: #5f45cd; background: #eeeafe; font-size: 11px; font-weight: 800; }
 .lead-cell strong, .company-name { display: block; color: #28334d; font-size: 12px; }
 .lead-cell span:not(.avatar), .subtle { display: block; margin-top: 3px; color: #8791a6; font-size: 11px; }
+.lead-email { display: block; min-width: 145px; color: #28334d; font-size: 11px; }
 .location { max-width: 190px; display: flex; align-items: flex-start; gap: 5px; }
 .location svg { margin-top: 1px; flex: 0 0 auto; color: #917add; }
 .industry-pill { display: inline-flex; padding: 5px 8px; color: #5c4a9e; background: #f0edfb; border-radius: 7px; font-size: 10px; font-weight: 700; white-space: nowrap; }

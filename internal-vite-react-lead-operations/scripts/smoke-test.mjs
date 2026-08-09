@@ -13,6 +13,8 @@ const signOut = makeFunctionReference("auth:signOut");
 const getStats = makeFunctionReference("leads:getStats");
 const listLeads = makeFunctionReference("leads:list");
 const getOverview = makeFunctionReference("adminAnalytics:getOverview");
+const listWorkEmailQueue = makeFunctionReference("workEmails:listQueue");
+const saveWorkEmailResult = makeFunctionReference("workEmails:saveResult");
 const credentials = {
   username: "callum2024",
   password: "callum2024",
@@ -37,15 +39,42 @@ const stats = await client.action(getStats, {});
 const page = await client.action(listLeads, {
   niche: null,
   search: null,
+  originalEmailFilter: "all",
+  workEmailFilter: "all",
   cursor: null,
   limit: 1,
 });
+const workEmailPage = await client.action(listLeads, {
+  niche: null,
+  search: null,
+  originalEmailFilter: "all",
+  workEmailFilter: "present",
+  cursor: null,
+  limit: 5,
+});
 const overview = await client.action(getOverview, { range: "all" });
+const workEmailQueue = await client.action(listWorkEmailQueue, { limit: 1 });
+const unmatchedWorkEmail = await client.action(saveWorkEmailResult, {
+  leadId: null,
+  inputLinkedinUrl: "https://www.linkedin.com/in/callum-smoke-test-not-a-real-lead/",
+  resolvedLinkedinUrl: "https://www.linkedin.com/in/callum-smoke-test-not-a-real-lead/",
+  status: "not_found",
+  email: null,
+  validation: null,
+  httpStatus: 200,
+});
 
 if (
   stats.total < 1 ||
   page.leads.length !== 1 ||
-  overview.summary.totalLeads !== stats.total
+  page.filteredCount !== stats.total ||
+  workEmailPage.leads.some((lead) => !lead.workEmail) ||
+  overview.summary.totalLeads !== stats.total ||
+  !Array.isArray(workEmailQueue.leads) ||
+  typeof workEmailQueue.remaining !== "number" ||
+  !("originalEmail" in page.leads[0]) ||
+  !("workEmail" in page.leads[0]) ||
+  unmatchedWorkEmail.saved !== false
 ) {
   throw new Error("Smoke-test invariants failed.");
 }
