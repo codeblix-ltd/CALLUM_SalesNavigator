@@ -3,8 +3,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
+  COMMUNITY_MATCH_OUTPUT_SCHEMA,
   FLIPPA_SYSTEM_PROMPT,
   LUNA_SYSTEM_PROMPT,
+  VEBLEN_MATCH_SYSTEM_PROMPT,
   normalizeFlippaDraft,
   normalizeLunaDraft,
 } from "./app-server-client.mjs";
@@ -34,6 +36,13 @@ if (FLIPPA_SYSTEM_PROMPT.includes("\u2014")) {
 if (normalizeFlippaDraft('```text\n"Clear\u2014direct"\n```') !== "Clear, direct") {
   throw new Error("The Flippa output guard did not normalize wrapper text.");
 }
+if (
+  !VEBLEN_MATCH_SYSTEM_PROMPT.includes("admin-review pilot") ||
+  !VEBLEN_MATCH_SYSTEM_PROMPT.includes("Never include or infer names") ||
+  COMMUNITY_MATCH_OUTPUT_SCHEMA.properties.matches.maxItems !== 12
+) {
+  throw new Error("The Veblen matching prompt or output contract is incomplete.");
+}
 
 const sharedSecret = process.env.CODEX_GATEWAY_SHARED_SECRET;
 if (!sharedSecret) {
@@ -45,6 +54,7 @@ const temporaryHome = await mkdtemp(
 );
 const port = 8791;
 const extensionToken = "smoke-extension-token-1234567890";
+const veblenToken = "smoke-veblen-token-1234567890";
 const child = spawn(process.execPath, ["gateway/server.mjs"], {
   cwd: path.resolve("."),
   env: {
@@ -53,6 +63,7 @@ const child = spawn(process.execPath, ["gateway/server.mjs"], {
     CODEX_HOME: temporaryHome,
     CODEX_DISABLE_AUTH_BACKUP: "1",
     CODEX_GATEWAY_EXTENSION_TOKEN: extensionToken,
+    CODEX_GATEWAY_VEBLEN_TOKEN: veblenToken,
   },
   stdio: ["ignore", "pipe", "pipe"],
   windowsHide: true,
@@ -119,6 +130,49 @@ try {
   if (invalidFlippaDraft.status !== 400) {
     throw new Error("The Flippa route did not validate its request contract.");
   }
+  const veblenHeaders = { authorization: `Bearer ${veblenToken}` };
+  const forbiddenVeblenStatus = await fetch(
+    `http://127.0.0.1:${port}/v1/status`,
+    { headers: veblenHeaders },
+  );
+  if (forbiddenVeblenStatus.status !== 403) {
+    throw new Error("The scoped Veblen token could read subscription status.");
+  }
+  const forbiddenVeblenLogout = await fetch(
+    `http://127.0.0.1:${port}/v1/auth/logout`,
+    { method: "POST", headers: veblenHeaders },
+  );
+  if (forbiddenVeblenLogout.status !== 403) {
+    throw new Error("The scoped Veblen token could log out the subscription.");
+  }
+  const forbiddenVeblenFlippa = await fetch(
+    `http://127.0.0.1:${port}/v1/flippa/comments/draft`,
+    {
+      method: "POST",
+      headers: { ...veblenHeaders, "content-type": "application/json" },
+      body: JSON.stringify({}),
+    },
+  );
+  if (forbiddenVeblenFlippa.status !== 403) {
+    throw new Error("The scoped Veblen token could use the Flippa route.");
+  }
+  const invalidVeblenMatch = await fetch(
+    `http://127.0.0.1:${port}/v1/veblen/community-matches`,
+    {
+      method: "POST",
+      headers: { ...veblenHeaders, "content-type": "application/json" },
+      body: JSON.stringify({
+        requestId: "smoke-veblen",
+        days: 60,
+        includeSameBoard: false,
+        reports: [],
+        actions: [],
+      }),
+    },
+  );
+  if (invalidVeblenMatch.status !== 400) {
+    throw new Error("The Veblen route did not validate its request contract.");
+  }
   const preflight = await fetch(
     `http://127.0.0.1:${port}/v1/flippa/comments/draft`,
     {
@@ -148,7 +202,7 @@ try {
     throw new Error("The official device-login start contract failed.");
   }
   console.log(
-    "Gateway smoke passed: auth scopes, CORS, Flippa validation, and official device login.",
+    "Gateway smoke passed: auth scopes, CORS, Flippa and Veblen validation, and official device login.",
   );
 } catch (error) {
   throw new Error(`${error.message}\nGateway output:\n${output.slice(-4_000)}`);

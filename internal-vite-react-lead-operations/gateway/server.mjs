@@ -73,6 +73,7 @@ async function route(request, response) {
   const accessScope = authorize(request);
 
   if (request.method === "GET" && url.pathname === "/v1/status") {
+    requireAnyScope(accessScope, ["admin", "extension"]);
     const result = await codex.readAccount();
     sendJson(response, 200, {
       connected: result.account?.type === "chatgpt",
@@ -89,11 +90,13 @@ async function route(request, response) {
   }
 
   if (request.method === "POST" && url.pathname === "/v1/auth/device/start") {
+    requireAnyScope(accessScope, ["admin", "extension"]);
     sendJson(response, 200, await codex.startDeviceLogin());
     return;
   }
 
   if (request.method === "GET" && url.pathname === "/v1/auth/device/status") {
+    requireAnyScope(accessScope, ["admin", "extension"]);
     const loginId = url.searchParams.get("loginId")?.trim();
     if (!loginId || loginId.length > 200) {
       throw new GatewayError(400, "A valid loginId is required.");
@@ -134,6 +137,7 @@ async function route(request, response) {
     request.method === "POST" &&
     url.pathname === "/v1/flippa/comments/draft"
   ) {
+    requireAnyScope(accessScope, ["admin", "extension"]);
     const body = await readJson(request);
     const requestId = requiredString(body.requestId, "requestId", 200);
     const listingId = requiredString(body.listingId, "listingId", 100);
@@ -162,6 +166,31 @@ async function route(request, response) {
     return;
   }
 
+  if (
+    request.method === "POST" &&
+    url.pathname === "/v1/veblen/community-matches"
+  ) {
+    requireAnyScope(accessScope, ["admin", "veblen"]);
+    const body = await readJson(request);
+    const requestId = requiredString(body.requestId, "requestId", 200);
+    const days = readDays(body.days);
+    const includeSameBoard = readBoolean(body.includeSameBoard, "includeSameBoard");
+    const reports = readCommunityReports(body.reports);
+    const actions = readCommunityActions(body.actions);
+    sendJson(
+      response,
+      200,
+      await codex.enqueueCommunityMatches({
+        requestId,
+        days,
+        includeSameBoard,
+        reports,
+        actions,
+      }),
+    );
+    return;
+  }
+
   throw new GatewayError(404, "Route not found.");
 }
 
@@ -169,6 +198,7 @@ function readConfig() {
   const databaseUrl = requiredEnvironment("COCKROACH_DATABASE_URL");
   const sharedSecret = requiredEnvironment("CODEX_GATEWAY_SHARED_SECRET");
   const extensionToken = process.env.CODEX_GATEWAY_EXTENSION_TOKEN?.trim() || null;
+  const veblenToken = process.env.CODEX_GATEWAY_VEBLEN_TOKEN?.trim() || null;
   const encryptionKey = requiredEnvironment("CODEX_AUTH_ENCRYPTION_KEY");
   const model = process.env.CODEX_MODEL?.trim() || "gpt-5.6-luna";
   if (model !== "gpt-5.6-luna") {
@@ -182,6 +212,7 @@ function readConfig() {
     databaseUrl,
     sharedSecret,
     extensionToken,
+    veblenToken,
     allowedOrigins: new Set(
       (process.env.CODEX_GATEWAY_ALLOWED_ORIGINS ?? "")
         .split(",")
@@ -206,11 +237,19 @@ function authorize(request) {
     config.extensionToken &&
     safeTokenEqual(received, config.extensionToken)
   ) return "extension";
+  if (
+    config.veblenToken &&
+    safeTokenEqual(received, config.veblenToken)
+  ) return "veblen";
   throw new GatewayError(401, "Unauthorized.");
 }
 
 function requireScope(actual, expected) {
   if (actual !== expected) throw new GatewayError(403, "Forbidden.");
+}
+
+function requireAnyScope(actual, allowed) {
+  if (!allowed.includes(actual)) throw new GatewayError(403, "Forbidden.");
 }
 
 function safeTokenEqual(received, expected) {
@@ -245,7 +284,7 @@ async function readJson(request) {
   let size = 0;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > 65_536) {
+    if (size > 524_288) {
       throw new GatewayError(413, "Request body is too large.");
     }
     chunks.push(chunk);
@@ -317,6 +356,65 @@ function readPreviousComments(value) {
         `previousComments[${index}].content`,
         1_500,
       ),
+    };
+  });
+}
+
+function readDays(value) {
+  if (![30, 60, 120, 365].includes(value)) {
+    throw new GatewayError(400, "days must be 30, 60, 120, or 365.");
+  }
+  return value;
+}
+
+function readBoolean(value, name) {
+  if (typeof value !== "boolean") {
+    throw new GatewayError(400, `${name} must be a boolean.`);
+  }
+  return value;
+}
+
+function readCommunityReports(value) {
+  if (!Array.isArray(value) || value.length < 2 || value.length > 80) {
+    throw new GatewayError(400, "reports must contain between 2 and 80 items.");
+  }
+  return value.map((report, index) => {
+    if (!report || typeof report !== "object" || Array.isArray(report)) {
+      throw new GatewayError(400, `reports[${index}] must be an object.`);
+    }
+    const content = requiredString(report.content, `reports[${index}].content`, 6_000);
+    if (content.length < 24) {
+      throw new GatewayError(400, `reports[${index}].content is too short.`);
+    }
+    return {
+      reportId: requiredString(report.reportId, `reports[${index}].reportId`, 120),
+      memberRef: requiredString(report.memberRef, `reports[${index}].memberRef`, 40),
+      boardRef: requiredString(report.boardRef, `reports[${index}].boardRef`, 40),
+      month: requiredString(report.month, `reports[${index}].month`, 120),
+      submittedAt: requiredString(report.submittedAt, `reports[${index}].submittedAt`, 120),
+      status: requiredString(report.status, `reports[${index}].status`, 60),
+      content,
+    };
+  });
+}
+
+function readCommunityActions(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > 160) {
+    throw new GatewayError(400, "actions must be an array containing at most 160 items.");
+  }
+  return value.map((action, index) => {
+    if (!action || typeof action !== "object" || Array.isArray(action)) {
+      throw new GatewayError(400, `actions[${index}] must be an object.`);
+    }
+    return {
+      actionRef: requiredString(action.actionRef, `actions[${index}].actionRef`, 40),
+      memberRef: requiredString(action.memberRef, `actions[${index}].memberRef`, 40),
+      boardRef: requiredString(action.boardRef, `actions[${index}].boardRef`, 40),
+      task: requiredString(action.task, `actions[${index}].task`, 700),
+      completed: readBoolean(action.completed, `actions[${index}].completed`),
+      status: requiredString(action.status, `actions[${index}].status`, 60),
+      date: requiredString(action.date, `actions[${index}].date`, 120),
     };
   });
 }
