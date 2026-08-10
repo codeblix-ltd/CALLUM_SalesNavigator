@@ -172,11 +172,20 @@ LinkedIn's Premium status page and confirms that it did not redirect.
 Run the streaming importer once per niche:
 
 ```powershell
-npm run db:import -- --niche "Institute of Directors" --copy-chunk-size 2000 --defer-search-index "C:\path\to\leads.csv"
+npm run db:import -- --niche "Institute of Directors" --copy-chunk-size 5000 --defer-search-index "C:\path\to\leads.csv"
 ```
 
-The importer deduplicates by normalized LinkedIn URL and can safely be rerun
-after an interruption.
+The importer saves a durable checkpoint after every committed chunk. If the
+database connection drops, it retries temporary connection and transaction
+errors automatically. If the process still exits, rerun the same command and
+it skips all committed rows before continuing. The importer also deduplicates
+by normalized LinkedIn URL, so replaying the current chunk is safe.
+
+Fast COPY mode defaults to 5,000 rows per chunk and accepts values from 250 to
+20,000. Larger chunks reduce database round trips but need longer transactions.
+Use `--force` only when you intentionally want to discard a saved checkpoint
+and reimport a completed file from row 1. The retry count defaults to 12 and can
+be changed with `--max-retries`.
 
 ## Development and verification
 

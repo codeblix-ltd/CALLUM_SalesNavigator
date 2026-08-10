@@ -54,6 +54,9 @@ const LEAD_COLUMNS = [
   "source_row",
 ];
 
+const DEFAULT_MAX_RETRIES = 12;
+const MAX_RETRY_DELAY_MS = 30_000;
+
 const args = parseArguments(process.argv.slice(2));
 const databaseUrl = process.env.COCKROACH_DATABASE_URL;
 if (!databaseUrl) {
@@ -72,10 +75,22 @@ const pool = new pg.Pool({
   max: 3,
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 20_000,
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10_000,
+});
+
+// pg emits an error when an idle connection dies. Without a listener Node
+// treats that as an uncaught error and exits, which used to interrupt imports.
+pool.on("error", (error) => {
+  console.warn(`Database connection dropped while idle: ${error.message}`);
 });
 
 if (args.deferSearchIndex) {
-  await dropSearchIndex();
+  await withRetry(
+    () => dropSearchIndex(),
+    "defer the lead search index",
+    args.maxRetries,
+  );
 }
 
 try {
@@ -92,7 +107,11 @@ try {
 } finally {
   try {
     if (args.deferSearchIndex) {
-      await restoreSearchIndex();
+      await withRetry(
+        () => restoreSearchIndex(),
+        "rebuild the lead search index",
+        args.maxRetries,
+      );
     }
   } finally {
     await pool.end();
@@ -110,11 +129,15 @@ async function importFile(
   const fileStat = await stat(filePath);
   const digest = await hashFile(filePath);
   const sourceFile = path.basename(filePath);
-  const existing = await pool.query(
-    `SELECT id, status, processed_rows
-       FROM lead_imports
-      WHERE sha256 = $1 AND niche = $2`,
-    [digest, niche],
+  const existing = await withRetry(
+    () => pool.query(
+      `SELECT id, status, processed_rows
+         FROM lead_imports
+        WHERE sha256 = $1 AND niche = $2`,
+      [digest, niche],
+    ),
+    "load the import checkpoint",
+    args.maxRetries,
   );
 
   if (existing.rows[0]?.status === "completed" && !force) {
@@ -122,72 +145,100 @@ async function importFile(
     return;
   }
 
-  const importResult = await pool.query(
-    `INSERT INTO lead_imports
-      (source_file, niche, sha256, file_bytes, status, processed_rows, error_message, started_at, completed_at)
-     VALUES ($1, $2, $3, $4, 'importing', 0, NULL, now(), NULL)
-     ON CONFLICT (sha256, niche) DO UPDATE SET
-       source_file = excluded.source_file,
-       file_bytes = excluded.file_bytes,
-       status = 'importing',
-       processed_rows = 0,
-       error_message = NULL,
-       started_at = now(),
-       completed_at = NULL
-     RETURNING id`,
-    [sourceFile, niche, digest, fileStat.size],
+  const resumeRows = force
+    ? 0
+    : Math.max(0, Number(existing.rows[0]?.processed_rows ?? 0));
+
+  const importResult = await withRetry(
+    () => pool.query(
+      `INSERT INTO lead_imports
+        (source_file, niche, sha256, file_bytes, status, processed_rows, error_message, started_at, completed_at)
+       VALUES ($1, $2, $3, $4, 'importing', $5, NULL, now(), NULL)
+       ON CONFLICT (sha256, niche) DO UPDATE SET
+         source_file = excluded.source_file,
+         file_bytes = excluded.file_bytes,
+         status = 'importing',
+         processed_rows = excluded.processed_rows,
+         error_message = NULL,
+         started_at = now(),
+         completed_at = NULL
+       RETURNING id`,
+      [sourceFile, niche, digest, fileStat.size, resumeRows],
+    ),
+    "start or resume the import",
+    args.maxRetries,
   );
   const importId = importResult.rows[0].id;
-  let processedRows = 0;
+  let processedRows = resumeRows;
   console.log(
     `Importing ${sourceFile} into niche "${niche}" using ${mode === "copy" ? "fast COPY" : "batched UPSERT"} mode...`,
   );
+  if (resumeRows > 0) {
+    console.log(
+      `Resuming after ${resumeRows.toLocaleString()} safely committed rows.`,
+    );
+  }
 
   try {
     if (mode === "copy") {
-      await clearStaging(importId);
       processedRows = await copyAndMergeFile(
         filePath,
         sourceFile,
         importId,
         niche,
         copyChunkSize,
+        resumeRows,
+        args.maxRetries,
       );
     } else {
       let batch = [];
+      let skippedRows = 0;
       for await (const lead of readLeads(filePath, sourceFile)) {
+        if (skippedRows < resumeRows) {
+          skippedRows += 1;
+          continue;
+        }
         batch.push(lead);
         if (batch.length >= batchSize) {
-          await upsertBatch(batch, niche, importId);
-          processedRows += batch.length;
+          const nextProcessedRows = processedRows + batch.length;
+          await withRetry(
+            () => upsertBatch(batch, niche, importId, nextProcessedRows),
+            `commit rows ${(processedRows + 1).toLocaleString()}-${nextProcessedRows.toLocaleString()}`,
+            args.maxRetries,
+          );
+          processedRows = nextProcessedRows;
           batch = [];
-          if (processedRows % (batchSize * 10) === 0) {
-            await recordProgress(importId, processedRows);
-            console.log(`  ${processedRows.toLocaleString()} rows processed`);
-          }
+          console.log(`  ${processedRows.toLocaleString()} rows committed`);
         }
       }
       if (batch.length > 0) {
-        await upsertBatch(batch, niche, importId);
-        processedRows += batch.length;
+        const nextProcessedRows = processedRows + batch.length;
+        await withRetry(
+          () => upsertBatch(batch, niche, importId, nextProcessedRows),
+          `commit rows ${(processedRows + 1).toLocaleString()}-${nextProcessedRows.toLocaleString()}`,
+          args.maxRetries,
+        );
+        processedRows = nextProcessedRows;
+        console.log(`  ${processedRows.toLocaleString()} rows committed`);
       }
     }
 
-    await refreshStats(niche);
-    await pool.query(
-      `UPDATE lead_imports
-          SET status = 'completed', processed_rows = $2, completed_at = now()
-        WHERE id = $1`,
-      [importId, processedRows],
+    await withRetry(
+      () => finalizeImport(importId, niche, processedRows),
+      "finalize the import",
+      args.maxRetries,
     );
     console.log(`Completed ${sourceFile}: ${processedRows.toLocaleString()} rows.`);
   } catch (error) {
-    await pool.query(
-      `UPDATE lead_imports
-          SET status = 'failed', processed_rows = $2, error_message = $3
-        WHERE id = $1`,
-      [importId, processedRows, String(error).slice(0, 4000)],
-    );
+    try {
+      await withRetry(
+        () => markImportFailed(importId, processedRows, error),
+        "save the failed import checkpoint",
+        args.maxRetries,
+      );
+    } catch (checkpointError) {
+      console.warn(`Could not mark the import as failed: ${checkpointError.message}`);
+    }
     throw error;
   }
 }
@@ -198,42 +249,91 @@ async function copyAndMergeFile(
   importId,
   niche,
   copyChunkSize,
+  resumeRows,
+  maxRetries,
 ) {
   let chunk = [];
-  let processedRows = 0;
+  let processedRows = resumeRows;
   let mergedProfiles = 0;
+  let skippedRows = 0;
+
+  await withRetry(
+    () => clearStaging(pool, importId),
+    "prepare the import staging area",
+    maxRetries,
+  );
 
   for await (const lead of readLeads(filePath, sourceFile)) {
+    if (skippedRows < resumeRows) {
+      skippedRows += 1;
+      continue;
+    }
     chunk.push(lead);
     if (chunk.length < copyChunkSize) continue;
 
-    await copyChunkToStaging(chunk, importId);
-    mergedProfiles += await mergeStagedChunk(importId, niche);
-    processedRows += chunk.length;
+    const nextProcessedRows = processedRows + chunk.length;
+    mergedProfiles += await withRetry(
+      () => commitCopyChunk(chunk, importId, niche, nextProcessedRows),
+      `commit rows ${(processedRows + 1).toLocaleString()}-${nextProcessedRows.toLocaleString()}`,
+      maxRetries,
+    );
+    processedRows = nextProcessedRows;
     chunk = [];
-    await clearStaging(importId);
-    await recordProgress(importId, processedRows);
     console.log(
-      `  ${processedRows.toLocaleString()} rows processed / ${mergedProfiles.toLocaleString()} profile merges`,
+      `  ${processedRows.toLocaleString()} rows committed / ${mergedProfiles.toLocaleString()} profile merges this run`,
     );
   }
 
   if (chunk.length > 0) {
-    await copyChunkToStaging(chunk, importId);
-    mergedProfiles += await mergeStagedChunk(importId, niche);
-    processedRows += chunk.length;
-    await clearStaging(importId);
-    await recordProgress(importId, processedRows);
+    const nextProcessedRows = processedRows + chunk.length;
+    mergedProfiles += await withRetry(
+      () => commitCopyChunk(chunk, importId, niche, nextProcessedRows),
+      `commit rows ${(processedRows + 1).toLocaleString()}-${nextProcessedRows.toLocaleString()}`,
+      maxRetries,
+    );
+    processedRows = nextProcessedRows;
     console.log(
-      `  ${processedRows.toLocaleString()} rows processed / ${mergedProfiles.toLocaleString()} profile merges`,
+      `  ${processedRows.toLocaleString()} rows committed / ${mergedProfiles.toLocaleString()} profile merges this run`,
     );
   }
 
   return processedRows;
 }
 
-async function copyChunkToStaging(leads, importId) {
+async function commitCopyChunk(leads, importId, niche, processedRows) {
   const client = await pool.connect();
+  let clientError = null;
+  const onClientError = (error) => {
+    clientError = error;
+  };
+  client.on("error", onClientError);
+
+  try {
+    await client.query("BEGIN");
+    await copyChunkToStaging(client, leads, importId);
+    const mergedProfiles = await mergeStagedChunk(client, importId, niche);
+    await clearStaging(client, importId);
+    await client.query(
+      "UPDATE lead_imports SET processed_rows = $2 WHERE id = $1",
+      [importId, processedRows],
+    );
+    await client.query("COMMIT");
+    return mergedProfiles;
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      // A dead connection cannot roll back, and the database will discard its
+      // open transaction. The whole chunk is safe to retry.
+    }
+    throw error;
+  } finally {
+    client.removeListener("error", onClientError);
+    client.release(clientError ? true : undefined);
+  }
+}
+
+async function copyChunkToStaging(client, leads, importId) {
   const copyColumns = ["import_id", ...LEAD_COLUMNS];
   let copyStream;
 
@@ -259,18 +359,16 @@ async function copyChunkToStaging(leads, importId) {
   } catch (error) {
     copyStream?.destroy(error);
     throw error;
-  } finally {
-    client.release();
   }
 }
 
-async function mergeStagedChunk(importId, niche) {
+async function mergeStagedChunk(client, importId, niche) {
   const updates = LEAD_COLUMNS
     .filter((column) => !["profile_key", "source_row"].includes(column))
     .map((column) => `${column} = excluded.${column}`)
     .join(",\n       ");
 
-  const upsertResult = await pool.query(
+  const upsertResult = await client.query(
     `WITH ranked AS (
        SELECT
          ${LEAD_COLUMNS.map((column) => `s.${column}`).join(",\n         ")},
@@ -287,12 +385,11 @@ async function mergeStagedChunk(importId, niche) {
       WHERE duplicate_rank = 1
      ON CONFLICT (profile_key) DO UPDATE SET
        ${updates},
-       updated_at = now()
-     RETURNING profile_key`,
+       updated_at = now()`,
     [importId],
   );
 
-  await pool.query(
+  await client.query(
     `WITH batch_keys AS (
        SELECT profile_key
          FROM lead_import_staging
@@ -310,8 +407,8 @@ async function mergeStagedChunk(importId, niche) {
   return upsertResult.rowCount ?? 0;
 }
 
-async function clearStaging(importId) {
-  await pool.query(
+async function clearStaging(client, importId) {
+  await client.query(
     "DELETE FROM lead_import_staging WHERE import_id = $1",
     [importId],
   );
@@ -333,11 +430,17 @@ async function restoreSearchIndex() {
   console.log("Lead search index is ready.");
 }
 
-async function upsertBatch(leads, niche, importId) {
+async function upsertBatch(leads, niche, importId, processedRows) {
   // A single INSERT ... ON CONFLICT cannot update the same key twice. LinkedIn
   // exports occasionally repeat profiles, so collapse duplicates per batch.
   leads = [...new Map(leads.map((lead) => [lead.profile_key, lead])).values()];
   const client = await pool.connect();
+  let clientError = null;
+  const onClientError = (error) => {
+    clientError = error;
+  };
+  client.on("error", onClientError);
+
   try {
     await client.query("BEGIN");
     const values = [];
@@ -373,12 +476,21 @@ async function upsertBatch(leads, niche, importId) {
        ON CONFLICT (niche, lead_id) DO NOTHING`,
       nicheValues,
     );
+    await client.query(
+      "UPDATE lead_imports SET processed_rows = $2 WHERE id = $1",
+      [importId, processedRows],
+    );
     await client.query("COMMIT");
   } catch (error) {
-    await client.query("ROLLBACK");
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      // The database rolls back an open transaction when its connection dies.
+    }
     throw error;
   } finally {
-    client.release();
+    client.removeListener("error", onClientError);
+    client.release(clientError ? true : undefined);
   }
 }
 
@@ -428,10 +540,27 @@ async function refreshStats(niche) {
   );
 }
 
-async function recordProgress(importId, processedRows) {
+async function finalizeImport(importId, niche, processedRows) {
+  await refreshStats(niche);
   await pool.query(
-    "UPDATE lead_imports SET processed_rows = $2 WHERE id = $1",
+    `UPDATE lead_imports
+        SET status = 'completed',
+            processed_rows = $2,
+            error_message = NULL,
+            completed_at = now()
+      WHERE id = $1`,
     [importId, processedRows],
+  );
+}
+
+async function markImportFailed(importId, processedRows, error) {
+  await pool.query(
+    `UPDATE lead_imports
+        SET status = 'failed',
+            processed_rows = greatest(processed_rows, $2),
+            error_message = $3
+      WHERE id = $1`,
+    [importId, processedRows, String(error).slice(0, 4000)],
   );
 }
 
@@ -524,6 +653,80 @@ function booleanOrNull(value) {
   return null;
 }
 
+async function withRetry(operation, label, maxRetries) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!isRetryableDatabaseError(error) || attempt >= maxRetries) {
+        throw error;
+      }
+
+      const delayMs = retryDelayMs(attempt);
+      console.warn(
+        `Database issue while trying to ${label}: ${error.message}`,
+      );
+      console.warn(
+        `Retrying in ${Math.ceil(delayMs / 1000)}s (${attempt + 1}/${maxRetries})...`,
+      );
+      await delay(delayMs);
+    }
+  }
+}
+
+function isRetryableDatabaseError(error) {
+  const retryableCodes = new Set([
+    "40001", // CockroachDB serialization retry
+    "40003", // statement completion unknown
+    "53300", // too many connections
+    "57P01", // admin shutdown
+    "57P02", // crash shutdown
+    "57P03", // cannot connect now
+    "08000",
+    "08001",
+    "08003",
+    "08004",
+    "08006",
+    "08007",
+    "08P01",
+    "ECONNREFUSED",
+    "ECONNRESET",
+    "EHOSTUNREACH",
+    "ENETDOWN",
+    "ENETUNREACH",
+    "EPIPE",
+    "ETIMEDOUT",
+  ]);
+  if (retryableCodes.has(error?.code)) return true;
+
+  const message = String(error?.message ?? error).toLowerCase();
+  return [
+    "connection terminated unexpectedly",
+    "connection terminated",
+    "connection closed",
+    "connection reset",
+    "connection timeout",
+    "connect timeout",
+    "socket hang up",
+    "server closed the connection",
+    "client has already been closed",
+    "the database system is starting up",
+    "restart transaction",
+  ].some((part) => message.includes(part));
+}
+
+function retryDelayMs(attempt) {
+  const exponentialDelay = Math.min(
+    MAX_RETRY_DELAY_MS,
+    1_000 * (2 ** attempt),
+  );
+  return exponentialDelay + Math.floor(Math.random() * 500);
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 function hashFile(filePath) {
   return new Promise((resolve, reject) => {
     const hash = createHash("sha256");
@@ -539,10 +742,11 @@ function parseArguments(argv) {
     files: [],
     niche: "",
     batchSize: 200,
-    copyChunkSize: 2_000,
+    copyChunkSize: 5_000,
     mode: "copy",
     deferSearchIndex: false,
     force: false,
+    maxRetries: DEFAULT_MAX_RETRIES,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
@@ -553,7 +757,7 @@ function parseArguments(argv) {
     } else if (value === "--copy-chunk-size") {
       result.copyChunkSize = Math.max(
         250,
-        Math.min(5_000, Number(argv[++index]) || 2_000),
+        Math.min(20_000, Number(argv[++index]) || 5_000),
       );
     } else if (value === "--mode") {
       const mode = clean(argv[++index]).toLowerCase();
@@ -565,6 +769,17 @@ function parseArguments(argv) {
       result.deferSearchIndex = true;
     } else if (value === "--force") {
       result.force = true;
+    } else if (value === "--max-retries") {
+      const parsedMaxRetries = Number(argv[++index]);
+      result.maxRetries = Math.max(
+        0,
+        Math.min(
+          100,
+          Number.isFinite(parsedMaxRetries)
+            ? Math.trunc(parsedMaxRetries)
+            : DEFAULT_MAX_RETRIES,
+        ),
+      );
     } else {
       result.files.push(value);
     }
