@@ -39,6 +39,7 @@ export const listQueue = action({
              l.work_email_status,
              l.work_email_last_error,
              l.work_email_checked_at,
+             l.created_at,
              l.source_file,
              l.source_row,
              l.id AS sort_id
@@ -57,11 +58,10 @@ export const listQueue = action({
              )
            )
          ORDER BY
-           CASE work_email_status WHEN 'error' THEN 0 WHEN 'processing' THEN 1 ELSE 2 END,
-           work_email_checked_at NULLS FIRST,
+           created_at,
            source_file,
            source_row,
-            sort_id
+           sort_id
          LIMIT $1`,
         [limit],
       ),
