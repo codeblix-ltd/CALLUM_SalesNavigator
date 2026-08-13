@@ -3,8 +3,11 @@ import { webcrypto } from "node:crypto";
 import test from "node:test";
 import {
   describeHttpFailure,
+  isRateLimitFailure,
   isRateLimitMessage,
   isTransientFailure,
+  rateLimitAction,
+  RATE_LIMIT_RETRY_DELAY_MS,
   retryDelayMs,
 } from "../queue-policy.js";
 
@@ -15,11 +18,20 @@ test("temporary failures are classified for bounded retries", () => {
   assert.match(describeHttpFailure(503), /HTTP 503/);
   assert.equal(describeHttpFailure(200), null);
   assert.equal(isRateLimitMessage("Too many requests; try again later"), true);
+  assert.equal(isRateLimitFailure(429, ""), true);
+  assert.equal(isRateLimitFailure(200, "Mailmeteor rate limit detected"), true);
   assert.equal(isTransientFailure(429, "", "error"), true);
   assert.equal(isTransientFailure(503, "", "error"), true);
   assert.equal(isTransientFailure(null, "Timed out waiting for Mailmeteor", "timeout"), true);
   assert.equal(isTransientFailure(400, "Bad request", "error"), false);
   assert.deepEqual([1, 2, 3].map(retryDelayMs), [15_000, 30_000, 60_000]);
+});
+
+test("HTTP 429 waits exactly three minutes once, then pauses", () => {
+  assert.equal(RATE_LIMIT_RETRY_DELAY_MS, 180_000);
+  assert.equal(rateLimitAction(0), "retry");
+  assert.equal(rateLimitAction(1), "pause");
+  assert.equal(rateLimitAction(2), "pause");
 });
 
 test("a job error pauses before the next lead is launched", async () => {
@@ -32,6 +44,8 @@ test("a job error pauses before the next lead is launched", async () => {
   };
   const messageListeners = [];
   let tabCreateCount = 0;
+  let processingWindowOptions = null;
+  let processingTabOptions = null;
 
   globalThis.chrome = {
     storage: {
@@ -48,20 +62,36 @@ test("a job error pauses before the next lead is launched", async () => {
         },
       },
     },
+    alarms: {
+      onAlarm: { addListener() {} },
+      async create() {},
+      async clear() { return true; },
+    },
     runtime: {
+      getURL(path) { return `chrome-extension://test/${path}`; },
       onMessage: { addListener(listener) { messageListeners.push(listener); } },
       onInstalled: { addListener() {} },
     },
     tabs: {
       onUpdated: { addListener() {} },
       onRemoved: { addListener() {} },
-      async create() {
+      async create(options) {
         tabCreateCount += 1;
+        processingTabOptions = options;
         throw new Error("Synthetic tab launch failure");
       },
       async update() {},
       async remove() {},
       async get() { return null; },
+    },
+    windows: {
+      onRemoved: { addListener() {} },
+      async get() { throw new Error("Window not found"); },
+      async create(options) {
+        processingWindowOptions = options;
+        return { id: 77 };
+      },
+      async remove() {},
     },
     debugger: {
       onEvent: { addListener() {} },
@@ -102,6 +132,13 @@ test("a job error pauses before the next lead is launched", async () => {
 
   await waitFor(() => stored.queueState?.paused === true);
   assert.equal(tabCreateCount, 1);
+  assert.deepEqual(processingWindowOptions, {
+    url: "chrome-extension://test/worker.html",
+    focused: false,
+    type: "normal",
+  });
+  assert.equal(processingTabOptions.windowId, 77);
+  assert.equal(processingTabOptions.active, false);
   assert.equal(stored.queueState.running, false);
   assert.match(stored.queueState.pauseReason, /Synthetic tab launch failure/);
   assert.equal(stored.queueState.jobs[0].status, "error");

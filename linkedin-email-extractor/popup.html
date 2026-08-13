@@ -31,19 +31,19 @@
 
     <section class="panel input-panel">
       <div class="source-switch" role="radiogroup" aria-label="Lead source">
-        <label><input type="radio" name="source" value="paste" checked><span>Paste LinkedIn links</span></label>
-        <label><input type="radio" name="source" value="database"><span>Use pending database leads</span></label>
+        <label><input type="radio" name="source" value="database" checked><span>Use pending database leads</span></label>
+        <label><input type="radio" name="source" value="paste"><span>Paste LinkedIn links</span></label>
       </div>
 
-      <div id="pasteSource">
+      <div id="pasteSource" hidden>
         <label for="urls">LinkedIn profile URLs — one per line</label>
-        <textarea id="urls" spellcheck="false" placeholder="https://www.linkedin.com/in/callumlaing/&#10;https://linkedin.com/in/ACwAAD3Xy04BHTT4FFZf2Ez5eHiMedMDtec5wYo"></textarea>
+        <textarea id="urls" spellcheck="false"></textarea>
       </div>
 
-      <div id="databaseSource" class="database-source" hidden>
+      <div id="databaseSource" class="database-source">
         <label for="dbLimit">Number of pending leads to load</label>
-        <input id="dbLimit" type="number" min="1" max="500" step="1" value="25">
-        <p>Errors and stale interrupted rows are loaded first, followed by untouched leads.</p>
+        <input id="dbLimit" type="number" min="1" max="500" step="1" value="100">
+        <p>The oldest pending or retryable database leads are loaded first.</p>
       </div>
 
       <div class="settings-grid">
@@ -72,7 +72,9 @@
             <option value="30000">30 seconds</option>
             <option value="60000">60 seconds</option>
             <option value="90000">90 seconds</option>
-            <option value="120000" selected>2 minutes</option>
+            <option value="120000">2 minutes</option>
+            <option value="180000">3 minutes</option>
+            <option value="300000" selected>5 minutes</option>
           </select>
         </label>
         <label class="checkbox-label">
@@ -82,13 +84,13 @@
       </div>
 
       <div class="actions">
-        <button id="start" class="primary">Start queue</button>
+        <button id="start" class="primary">Start from database</button>
         <button id="stop" class="danger" disabled>Stop</button>
         <button id="retry" disabled>Resume from error</button>
         <button id="clear">Clear</button>
       </div>
       <p id="message" class="message" aria-live="polite"></p>
-      <p class="note">Up to four leads run together. Rate limits, timeouts, and temporary network/server failures retry after 15, 30, and 60 seconds. The queue pauses on the same lead if retries are exhausted or another error occurs.</p>
+      <p class="note">HTTP 429 rings an alert and retries the same lead once after exactly 3 minutes. If that retry fails, it rings again and pauses the queue. Other temporary failures retry after 15, 30, and 60 seconds.</p>
     </section>
 
     <section class="stats" aria-label="Queue statistics">
@@ -97,6 +99,7 @@
       <div><strong id="foundCount">0</strong><span>Found</span></div>
       <div><strong id="notFoundCount">0</strong><span>Not found</span></div>
       <div><strong id="errorCount">0</strong><span>Errors</span></div>
+      <div class="run-time"><strong id="runTime">0m 00s</strong><span id="runTimeLabel">Run time</span></div>
     </section>
 
     <section class="panel results-panel">

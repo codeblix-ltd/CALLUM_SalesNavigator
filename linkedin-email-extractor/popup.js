@@ -1,4 +1,5 @@
 import { WorkEmailApi } from "./api.js";
+import { formatRunDuration, getRunDurationMs } from "./run-timer.js";
 
 const els = {
   loginForm: document.querySelector("#loginForm"),
@@ -28,6 +29,8 @@ const els = {
   foundCount: document.querySelector("#foundCount"),
   notFoundCount: document.querySelector("#notFoundCount"),
   errorCount: document.querySelector("#errorCount"),
+  runTime: document.querySelector("#runTime"),
+  runTimeLabel: document.querySelector("#runTimeLabel"),
   resultsBody: document.querySelector("#resultsBody")
 };
 
@@ -65,7 +68,7 @@ function settingsFromForm() {
 function applySettings(settings = {}) {
   els.concurrency.value = String(settings.concurrency || 4);
   els.staggerMs.value = String(settings.staggerMs || 1800);
-  els.timeoutMs.value = String(settings.timeoutMs || 120000);
+  els.timeoutMs.value = String(settings.timeoutMs || 300000);
   els.keepFailedTabs.checked = settings.keepFailedTabs !== false;
 }
 
@@ -74,6 +77,9 @@ function isDone(status) {
 }
 
 function displayStatus(job) {
+  if (job.status === "queued" && job.rateLimitRetryCount) {
+    return "Rate-limit retry waiting";
+  }
   if (job.status === "queued" && job.retryCount) {
     return `Retry ${job.retryCount}/${currentState?.settings?.maxRetries || 3} waiting`;
   }
@@ -94,6 +100,16 @@ function displayStatus(job) {
 
 function resultValue(job, key) {
   return job.result?.[key] ?? "";
+}
+
+function renderRunTime(state, now = Date.now()) {
+  const leadCount = state?.jobs?.length || 0;
+  els.runTime.textContent = formatRunDuration(getRunDurationMs(state, now));
+  els.runTimeLabel.textContent = leadCount === 1
+    ? "Time for 1 lead"
+    : leadCount > 1
+      ? `Time for ${leadCount} leads`
+      : "Run time";
 }
 
 function render(state) {
@@ -129,6 +145,7 @@ function render(state) {
   els.foundCount.textContent = found;
   els.notFoundCount.textContent = notFound;
   els.errorCount.textContent = errors;
+  renderRunTime(state);
 
   if (!jobs.length) {
     els.resultsBody.innerHTML = '<tr><td colspan="10" class="empty">No jobs yet.</td></tr>';
@@ -199,6 +216,7 @@ function exportRows() {
     company: job.result?.company ?? "",
     http_status: job.httpStatus ?? "",
     retry_count: job.retryCount ?? 0,
+    rate_limit_retry_count: job.rateLimitRetryCount ?? 0,
     next_retry_at: job.nextRetryAt ? new Date(job.nextRetryAt).toISOString() : "",
     database_status: databaseStatus(job),
     error: job.error ?? "",
@@ -293,6 +311,10 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     render(changes.queueState.newValue);
   }
 });
+
+setInterval(() => {
+  if (currentState?.running) renderRunTime(currentState);
+}, 1000);
 
 for (const input of document.querySelectorAll('input[name="source"]')) {
   input.addEventListener("change", renderSource);

@@ -1,3 +1,5 @@
+export const RATE_LIMIT_RETRY_DELAY_MS = 180_000;
+
 export function describeHttpFailure(status) {
   const code = Number(status);
   if (code === 429) {
@@ -11,6 +13,14 @@ export function describeHttpFailure(status) {
 
 export function isRateLimitMessage(value) {
   return /rate.?limit|too many requests|try again later|quota|\b429\b/i.test(String(value || ""));
+}
+
+export function isRateLimitFailure(status, error) {
+  return Number(status) === 429 || isRateLimitMessage(error);
+}
+
+export function rateLimitAction(rateLimitRetryCount) {
+  return Number(rateLimitRetryCount || 0) < 1 ? "retry" : "pause";
 }
 
 export function isTransientFailure(status, error, outcome = "error") {

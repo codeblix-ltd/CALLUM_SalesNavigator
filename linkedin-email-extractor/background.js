@@ -1,8 +1,11 @@
 import { WorkEmailApi } from "./api.js";
 import {
   describeHttpFailure,
+  isRateLimitFailure,
   isRateLimitMessage,
   isTransientFailure,
+  rateLimitAction,
+  RATE_LIMIT_RETRY_DELAY_MS,
   retryDelayMs,
 } from "./queue-policy.js";
 
@@ -11,11 +14,14 @@ const TOOL_PAGE = "https://mailmeteor.com/tools/linkedin-email-finder";
 const API_HOST = "tools.mailmeteor.com";
 const API_PATH = "/api/email-finder/linkedin";
 const RESOLVE_SETTLE_MS = 2200;
+const WORKER_PAGE = "worker.html";
+const OFFSCREEN_PAGE = "offscreen.html";
+const RATE_LIMIT_RETRY_ALARM = "workEmailRateLimitRetry";
 
 const DEFAULT_SETTINGS = Object.freeze({
   concurrency: 4,
   staggerMs: 1800,
-  timeoutMs: 120000,
+  timeoutMs: 300000,
   maxRetries: 3,
   keepFailedTabs: true
 });
@@ -28,18 +34,22 @@ const resolutionByTab = new Map();
 const finishingJobs = new Set();
 let schedulerTimer = null;
 let stateLock = Promise.resolve();
+let processingWindowPromise = null;
+let offscreenDocumentPromise = null;
 
 function emptyState() {
   return {
-    version: 4,
+    version: 5,
     runId: null,
     running: false,
     paused: false,
     pauseReason: null,
     stopRequested: false,
     createdAt: null,
+    completedAt: null,
     updatedAt: Date.now(),
     nextLaunchAllowedAt: 0,
+    workerWindowId: null,
     settings: { ...DEFAULT_SETTINGS },
     jobs: []
   };
@@ -52,24 +62,26 @@ async function readState() {
 
 function normalizeStoredState(stored) {
   if (!stored) return emptyState();
-  const legacy = Number(stored.version || 0) < 4;
+  const storedVersion = Number(stored.version || 0);
+  const legacyQueue = storedVersion < 4;
   const legacySettings = stored.settings || {};
   const settings = validateSettings({
     ...legacySettings,
-    concurrency: legacy && Number(legacySettings.concurrency) === 1
+    concurrency: legacyQueue && Number(legacySettings.concurrency) === 1
       ? DEFAULT_SETTINGS.concurrency
       : legacySettings.concurrency,
-    timeoutMs: legacy && Number(legacySettings.timeoutMs) === 60000
+    timeoutMs: storedVersion < 5 && [60000, 120000].includes(Number(legacySettings.timeoutMs))
       ? DEFAULT_SETTINGS.timeoutMs
       : legacySettings.timeoutMs,
   });
   return {
     ...emptyState(),
     ...stored,
-    version: 4,
+    version: 5,
     settings,
     jobs: (stored.jobs || []).map((job) => ({
       retryCount: 0,
+      rateLimitRetryCount: 0,
       nextRetryAt: null,
       lastRetryError: null,
       ...job,
@@ -134,7 +146,7 @@ function requiresRedirectChange(value) {
 function validateSettings(input = {}) {
   const concurrency = Math.min(4, Math.max(1, Math.trunc(Number(input.concurrency) || DEFAULT_SETTINGS.concurrency)));
   const staggerMs = Math.min(10000, Math.max(500, Number(input.staggerMs) || DEFAULT_SETTINGS.staggerMs));
-  const timeoutMs = Math.min(180000, Math.max(20000, Number(input.timeoutMs) || DEFAULT_SETTINGS.timeoutMs));
+  const timeoutMs = Math.min(300000, Math.max(20000, Number(input.timeoutMs) || DEFAULT_SETTINGS.timeoutMs));
   const requestedRetries = Number(input.maxRetries);
   const maxRetries = Math.min(5, Math.max(
     0,
@@ -172,6 +184,7 @@ function makeJob(input, index) {
     rawResponse: null,
     error: null,
     retryCount: 0,
+    rateLimitRetryCount: 0,
     nextRetryAt: null,
     lastRetryError: null,
     dbSaveStatus: null
@@ -212,16 +225,20 @@ async function startRun(rawItems, rawSettings) {
   }
 
   const settings = validateSettings(rawSettings);
+  await chrome.alarms.clear(RATE_LIMIT_RETRY_ALARM);
+  if (current.workerWindowId) await safeCloseWindow(current.workerWindowId);
   const state = {
-    version: 4,
+    version: 5,
     runId: crypto.randomUUID(),
     running: true,
     paused: false,
     pauseReason: null,
     stopRequested: false,
     createdAt: Date.now(),
+    completedAt: null,
     updatedAt: Date.now(),
     nextLaunchAllowedAt: 0,
+    workerWindowId: null,
     settings,
     jobs: items.map(makeJob)
   };
@@ -231,7 +248,7 @@ async function startRun(rawItems, rawSettings) {
 }
 
 async function startDatabaseRun(limit, rawSettings) {
-  const requested = Math.max(1, Math.min(500, Math.trunc(Number(limit) || 25)));
+  const requested = Math.max(1, Math.min(500, Math.trunc(Number(limit) || 100)));
   const queue = await WorkEmailApi.authenticatedAction("workEmails:listQueue", {
     limit: requested,
   });
@@ -284,9 +301,21 @@ async function pumpQueue() {
 
   if (!next) {
     if (active === 0) {
-      await updateState((draft) => {
+      const completion = await updateState((draft) => {
+        if (!draft.running || draft.stopRequested || draft.paused) return null;
+        if (activeJobCount(draft) !== 0 || queuedJob(draft)) return null;
         draft.running = false;
+        draft.completedAt = Date.now();
+        const workerWindowId = draft.workerWindowId;
+        draft.workerWindowId = null;
+        return { workerWindowId };
       });
+      if (completion.result) {
+        if (completion.result.workerWindowId) {
+          await safeCloseWindow(completion.result.workerWindowId);
+        }
+        await playCompletionSound();
+      }
     }
     return;
   }
@@ -331,7 +360,12 @@ async function launchJob(job, settings) {
       leadId: job.leadId,
     });
   }
-  const tab = await chrome.tabs.create({ url: "about:blank", active: false });
+  const workerWindowId = await ensureProcessingWindow();
+  const tab = await chrome.tabs.create({
+    windowId: workerWindowId,
+    url: "about:blank",
+    active: false,
+  });
   if (!tab.id) throw new Error("Chrome did not return a tab ID.");
 
   const tabId = tab.id;
@@ -368,6 +402,39 @@ async function launchJob(job, settings) {
   } catch (error) {
     clearResolution(tabId);
     throw error;
+  }
+}
+
+async function ensureProcessingWindow() {
+  if (!processingWindowPromise) {
+    processingWindowPromise = (async () => {
+      const state = await readState();
+      if (Number.isInteger(state.workerWindowId)) {
+        try {
+          await chrome.windows.get(state.workerWindowId);
+          return state.workerWindowId;
+        } catch {
+          // The previous processing window was closed. Create a fresh one.
+        }
+      }
+
+      const window = await chrome.windows.create({
+        url: chrome.runtime.getURL(WORKER_PAGE),
+        focused: false,
+        type: "normal",
+      });
+      if (!window.id) throw new Error("Chrome did not return a processing window ID.");
+      await updateState((draft) => {
+        draft.workerWindowId = window.id;
+      });
+      return window.id;
+    })();
+  }
+
+  try {
+    return await processingWindowPromise;
+  } finally {
+    processingWindowPromise = null;
   }
 }
 
@@ -640,8 +707,22 @@ async function finalizeJob(jobId, status, result = null, error = null, rawRespon
   const httpStatus = Number.isFinite(Number(existingJob.httpStatus))
     ? Number(existingJob.httpStatus)
     : null;
+  const rateLimited = ["error", "timeout"].includes(status)
+    && isRateLimitFailure(httpStatus, error);
+  const failedAfterRateLimitRetry = ["error", "timeout"].includes(status)
+    && rateLimitAction(existingJob.rateLimitRetryCount) === "pause";
 
-  if (["error", "timeout"].includes(status) && isTransientFailure(httpStatus, error, status)) {
+  if (failedAfterRateLimitRetry) {
+    finalError = `${error || "The lookup failed."} The retry after 3 minutes failed. Queue paused.`;
+    await haltQueueForRateLimit(finalError);
+    await playRateLimitAlert();
+  } else if (rateLimited) {
+    const retry = await scheduleRateLimitRetry(existingJob, status, error, rawResponse);
+    await playRateLimitAlert();
+    if (retry) return;
+    finalError = `${error || "Mailmeteor rate limit detected (HTTP 429)."} Queue paused.`;
+    await haltQueueForRateLimit(finalError);
+  } else if (["error", "timeout"].includes(status) && isTransientFailure(httpStatus, error, status)) {
     const retry = await scheduleAutomaticRetry(existingJob, status, error, rawResponse);
     if (retry) return;
   }
@@ -739,6 +820,72 @@ async function finalizeJob(jobId, status, result = null, error = null, rawRespon
   }
 }
 
+async function haltQueueForRateLimit(message) {
+  if (schedulerTimer) {
+    clearTimeout(schedulerTimer);
+    schedulerTimer = null;
+  }
+  await chrome.alarms.clear(RATE_LIMIT_RETRY_ALARM);
+  await updateState((state) => {
+    state.running = false;
+    state.paused = true;
+    state.stopRequested = false;
+    state.pauseReason = message;
+  });
+}
+
+async function scheduleRateLimitRetry(existingJob, status, error, rawResponse) {
+  const update = await updateState((state) => {
+    const job = state.jobs.find((item) => item.id === existingJob.id);
+    if (!job || !state.running || state.paused || state.stopRequested) return null;
+    if (!["starting", "resolving", "running", "capturing"].includes(job.status)) return null;
+    if (rateLimitAction(job.rateLimitRetryCount) !== "retry") return null;
+
+    const retryAt = Date.now() + RATE_LIMIT_RETRY_DELAY_MS;
+    const detail = error || (status === "timeout"
+      ? "The lookup timed out after a Mailmeteor rate limit."
+      : "Mailmeteor rate limit detected (HTTP 429).");
+    const tabId = job.tabId;
+
+    job.status = "queued";
+    job.tabId = null;
+    job.startedAt = null;
+    job.finishedAt = null;
+    job.responseUrl = null;
+    job.httpStatus = null;
+    job.result = null;
+    job.rawResponse = rawResponse;
+    job.rateLimitRetryCount = 1;
+    job.nextRetryAt = retryAt;
+    job.lastRetryError = detail;
+    job.error = `${detail} Retrying this same lead once in exactly 3 minutes.`;
+    job.dbSaveStatus = null;
+    state.nextLaunchAllowedAt = Math.max(state.nextLaunchAllowedAt || 0, retryAt);
+    return { tabId, delayMs: RATE_LIMIT_RETRY_DELAY_MS, retryAt };
+  });
+
+  if (!update.result) return false;
+  if (schedulerTimer) {
+    clearTimeout(schedulerTimer);
+    schedulerTimer = null;
+  }
+  const { tabId, delayMs, retryAt } = update.result;
+  if (tabId != null) {
+    clearResolution(tabId);
+    const timeoutId = timeoutByTab.get(tabId);
+    if (timeoutId) clearTimeout(timeoutId);
+    timeoutByTab.delete(tabId);
+    captureByTab.delete(tabId);
+    requestsByTab.delete(tabId);
+    tabToJob.delete(tabId);
+    await safeDetach(tabId);
+    await safeCloseTab(tabId);
+  }
+  await chrome.alarms.create(RATE_LIMIT_RETRY_ALARM, { when: retryAt });
+  schedulePump(delayMs);
+  return true;
+}
+
 async function scheduleAutomaticRetry(existingJob, status, error, rawResponse) {
   const update = await updateState((state) => {
     const job = state.jobs.find((item) => item.id === existingJob.id);
@@ -814,10 +961,12 @@ async function stopRun() {
         if (job.tabId != null) active.push(job.tabId);
       }
     }
-    return active;
+    const workerWindowId = state.workerWindowId;
+    state.workerWindowId = null;
+    return { active, workerWindowId };
   });
 
-  for (const tabId of update.result || []) {
+  for (const tabId of update.result?.active || []) {
     clearResolution(tabId);
     const timeoutId = timeoutByTab.get(tabId);
     if (timeoutId) clearTimeout(timeoutId);
@@ -828,16 +977,23 @@ async function stopRun() {
     await safeDetach(tabId);
     await safeCloseTab(tabId);
   }
+  await chrome.alarms.clear(RATE_LIMIT_RETRY_ALARM);
+  if (update.result?.workerWindowId) {
+    await safeCloseWindow(update.result.workerWindowId);
+  }
 }
 
 async function clearRun() {
   const state = await readState();
   if (state.running) throw new Error("Stop the current queue before clearing it.");
+  await chrome.alarms.clear(RATE_LIMIT_RETRY_ALARM);
+  if (state.workerWindowId) await safeCloseWindow(state.workerWindowId);
   await writeState(emptyState());
 }
 
 async function retryFailed() {
   await requireDatabaseAuth();
+  await chrome.alarms.clear(RATE_LIMIT_RETRY_ALARM);
   const update = await updateState((state) => {
     if (state.running) throw new Error("The queue is already running.");
     let accepted = 0;
@@ -853,6 +1009,7 @@ async function retryFailed() {
       job.rawResponse = null;
       job.error = null;
       job.retryCount = 0;
+      job.rateLimitRetryCount = 0;
       job.nextRetryAt = null;
       job.lastRetryError = null;
       job.dbSaveStatus = null;
@@ -864,6 +1021,7 @@ async function retryFailed() {
     state.pauseReason = null;
     state.stopRequested = false;
     state.nextLaunchAllowedAt = 0;
+    state.completedAt = null;
     return accepted;
   });
   schedulePump(0);
@@ -893,6 +1051,54 @@ async function safeCloseTab(tabId) {
   }
 }
 
+async function safeCloseWindow(windowId) {
+  try {
+    await chrome.windows.remove(windowId);
+  } catch {
+    // The processing window may already be closed.
+  }
+}
+
+async function playCompletionSound() {
+  await playSound("playCompletionSound", "completion sound");
+}
+
+async function playRateLimitAlert() {
+  await playSound("playRateLimitAlert", "rate-limit alert");
+}
+
+async function playSound(type, label) {
+  try {
+    await ensureOffscreenDocument();
+    await chrome.runtime.sendMessage({ target: "offscreen", type });
+  } catch (error) {
+    console.warn(`Could not play the ${label}`, error);
+  }
+}
+
+async function ensureOffscreenDocument() {
+  const documentUrl = chrome.runtime.getURL(OFFSCREEN_PAGE);
+  const contexts = await chrome.runtime.getContexts({
+    contextTypes: ["OFFSCREEN_DOCUMENT"],
+    documentUrls: [documentUrl],
+  });
+  if (contexts.length) return;
+
+  if (!offscreenDocumentPromise) {
+    offscreenDocumentPromise = chrome.offscreen.createDocument({
+        url: OFFSCREEN_PAGE,
+        reasons: ["AUDIO_PLAYBACK"],
+        justification: "Play completion and rate-limit alerts for the work-email queue.",
+    });
+  }
+
+  try {
+    await offscreenDocumentPromise;
+  } finally {
+    offscreenDocumentPromise = null;
+  }
+}
+
 chrome.tabs.onRemoved.addListener((tabId) => {
   const jobId = tabToJob.get(tabId);
   if (!jobId) return;
@@ -904,6 +1110,21 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   if (timeoutId) clearTimeout(timeoutId);
   timeoutByTab.delete(tabId);
   finishJob(jobId, "error", null, "The processing tab was closed before a result was captured.").catch(console.error);
+});
+
+chrome.windows.onRemoved.addListener((windowId) => {
+  readState()
+    .then((state) => {
+      if (state.workerWindowId !== windowId) return;
+      return updateState((draft) => {
+        if (draft.workerWindowId === windowId) draft.workerWindowId = null;
+      });
+    })
+    .catch(console.error);
+});
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === RATE_LIMIT_RETRY_ALARM) schedulePump(0);
 });
 
 chrome.debugger.onDetach.addListener((source, reason) => {
@@ -922,6 +1143,7 @@ chrome.debugger.onDetach.addListener((source, reason) => {
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.target === "offscreen") return false;
   (async () => {
     switch (message?.type) {
       case "getState":

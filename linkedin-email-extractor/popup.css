@@ -56,10 +56,12 @@ button.danger { color: #b42318; border-color: #f1b4ae; background: #fff6f5; }
 .message.success { color: #067647; }
 .note { margin: 3px 0 0; color: #667085; font-size: 11px; }
 
-.stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin: 10px 0; }
+.stats { display: grid; grid-template-columns: repeat(5, 1fr) minmax(150px, 1.35fr); gap: 8px; margin: 10px 0; }
 .stats div { background: #fff; border: 1px solid #e4e7ec; border-radius: 10px; padding: 8px 10px; }
 .stats strong { display: block; font-size: 17px; }
 .stats span { display: block; margin-top: 1px; color: #667085; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+.stats .run-time { background: #f2f4ff; border-color: #b9c8ff; }
+.stats .run-time strong { color: #3448a5; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 .results-panel { overflow: hidden; }
 .results-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; border-bottom: 1px solid #e4e7ec; }
