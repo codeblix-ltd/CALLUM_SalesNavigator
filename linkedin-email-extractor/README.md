@@ -36,6 +36,8 @@ The lead record now has two explicit email fields:
 ## Parallel runs, retries, and stop guarantees
 
 - Up to four leads can be active, with four selected by default.
+- When one active lookup finishes, the next queued lead starts without waiting
+  for the other active lookups to finish.
 - Processing tabs open in their own unfocused Chrome window, so the extension
   does not take over the window and tab you are actively using.
 - Each LinkedIn resolution and Mailmeteor request has a five-minute default

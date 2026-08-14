@@ -4,7 +4,7 @@
   "version": "2.2.0",
   "type": "module",
   "scripts": {
-    "check": "node --check background.js && node --check popup.js && node --check api.js && node --check queue-policy.js && node --check run-timer.js && node --check offscreen.js",
+    "check": "node --check background.js && node --check popup.js && node --check api.js && node --check queue-policy.js && node --check queue-scheduler.js && node --check run-timer.js && node --check offscreen.js",
     "test": "node --test tests/*.test.mjs"
   }
 }

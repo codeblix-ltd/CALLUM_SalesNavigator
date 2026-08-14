@@ -1,4 +1,5 @@
 import { WorkEmailApi } from "./api.js";
+import { createQueueScheduler } from "./queue-scheduler.js";
 import {
   describeHttpFailure,
   isRateLimitFailure,
@@ -32,10 +33,16 @@ const requestsByTab = new Map();
 const timeoutByTab = new Map();
 const resolutionByTab = new Map();
 const finishingJobs = new Set();
-let schedulerTimer = null;
 let stateLock = Promise.resolve();
 let processingWindowPromise = null;
 let offscreenDocumentPromise = null;
+const queueScheduler = createQueueScheduler(() => pumpQueue(), {
+  onError(error) {
+    pauseQueueAfterInternalError(error).catch((pauseError) => {
+      console.error("Queue scheduler and pause handling failed", error, pauseError);
+    });
+  },
+});
 
 function emptyState() {
   return {
@@ -271,15 +278,7 @@ function queuedJob(state) {
 }
 
 function schedulePump(delayMs) {
-  if (schedulerTimer) clearTimeout(schedulerTimer);
-  schedulerTimer = setTimeout(() => {
-    schedulerTimer = null;
-    pumpQueue().catch((error) => {
-      pauseQueueAfterInternalError(error).catch((pauseError) => {
-        console.error("Queue scheduler and pause handling failed", error, pauseError);
-      });
-    });
-  }, Math.max(0, delayMs));
+  queueScheduler.schedule(delayMs);
 }
 
 async function pauseQueueAfterInternalError(error) {
@@ -792,10 +791,7 @@ async function finalizeJob(jobId, status, result = null, error = null, rawRespon
   });
 
   if (!update.result) return;
-  if (["error", "timeout"].includes(finalStatus) && schedulerTimer) {
-    clearTimeout(schedulerTimer);
-    schedulerTimer = null;
-  }
+  if (["error", "timeout"].includes(finalStatus)) queueScheduler.clear();
   const { tabId, closeTab } = update.result;
 
   if (tabId != null) {
@@ -821,10 +817,7 @@ async function finalizeJob(jobId, status, result = null, error = null, rawRespon
 }
 
 async function haltQueueForRateLimit(message) {
-  if (schedulerTimer) {
-    clearTimeout(schedulerTimer);
-    schedulerTimer = null;
-  }
+  queueScheduler.clear();
   await chrome.alarms.clear(RATE_LIMIT_RETRY_ALARM);
   await updateState((state) => {
     state.running = false;
@@ -865,10 +858,7 @@ async function scheduleRateLimitRetry(existingJob, status, error, rawResponse) {
   });
 
   if (!update.result) return false;
-  if (schedulerTimer) {
-    clearTimeout(schedulerTimer);
-    schedulerTimer = null;
-  }
+  queueScheduler.clear();
   const { tabId, delayMs, retryAt } = update.result;
   if (tabId != null) {
     clearResolution(tabId);
@@ -917,10 +907,7 @@ async function scheduleAutomaticRetry(existingJob, status, error, rawResponse) {
   });
 
   if (!update.result) return false;
-  if (schedulerTimer) {
-    clearTimeout(schedulerTimer);
-    schedulerTimer = null;
-  }
+  queueScheduler.clear();
   const { tabId, delayMs } = update.result;
   if (tabId != null) {
     clearResolution(tabId);
@@ -938,10 +925,7 @@ async function scheduleAutomaticRetry(existingJob, status, error, rawResponse) {
 }
 
 async function stopRun() {
-  if (schedulerTimer) {
-    clearTimeout(schedulerTimer);
-    schedulerTimer = null;
-  }
+  queueScheduler.clear();
 
   const update = await updateState((state) => {
     state.stopRequested = true;
