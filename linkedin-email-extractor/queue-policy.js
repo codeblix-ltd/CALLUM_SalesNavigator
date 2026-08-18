@@ -38,3 +38,21 @@ export function retryDelayMs(retryNumber) {
   const index = Math.max(0, Math.min(delays.length - 1, Math.trunc(Number(retryNumber) || 1) - 1));
   return delays[index];
 }
+
+export function isLinkedInUrlError(error) {
+  const text = String(error || "");
+  return (
+    /could not resolve linkedin url/i.test(text) ||
+    /redirected to a non-profile page/i.test(text) ||
+    /non-profile page/i.test(text) ||
+    /not a valid linkedin profile url/i.test(text) ||
+    /invalid linkedin url/i.test(text)
+  );
+}
+
+export function shouldPauseQueueOnError(status, error) {
+  if (!["error", "timeout"].includes(status)) return false;
+  if (isLinkedInUrlError(error)) return false;
+  return true;
+}
+

@@ -8,6 +8,7 @@ import {
   rateLimitAction,
   RATE_LIMIT_RETRY_DELAY_MS,
   retryDelayMs,
+  shouldPauseQueueOnError,
 } from "./queue-policy.js";
 
 const STORAGE_KEY = "queueState";
@@ -117,7 +118,7 @@ function isLinkedInProfileUrl(value) {
     const url = new URL(value.trim());
     const host = url.hostname.toLowerCase();
     return (
-      (host === "linkedin.com" || host === "www.linkedin.com") &&
+      (host === "linkedin.com" || host === "www.linkedin.com" || /^[a-z0-9-]+\.linkedin\.com$/i.test(host)) &&
       /^\/in\/[^/?#]+\/?$/i.test(url.pathname)
     );
   } catch {
@@ -778,7 +779,8 @@ async function finalizeJob(jobId, status, result = null, error = null, rawRespon
           : null;
     job.finishedAt = Date.now();
 
-    if (["error", "timeout"].includes(finalStatus)) {
+    const shouldPause = shouldPauseQueueOnError(finalStatus, finalError);
+    if (shouldPause) {
       state.running = false;
       state.paused = true;
       state.stopRequested = false;
@@ -787,11 +789,11 @@ async function finalizeJob(jobId, status, result = null, error = null, rawRespon
 
     const tabId = job.tabId;
     const closeTab = finalStatus === "found" || finalStatus === "not_found" || !state.settings.keepFailedTabs;
-    return { tabId, closeTab };
+    return { tabId, closeTab, shouldPause };
   });
 
   if (!update.result) return;
-  if (["error", "timeout"].includes(finalStatus)) queueScheduler.clear();
+  if (update.result.shouldPause) queueScheduler.clear();
   const { tabId, closeTab } = update.result;
 
   if (tabId != null) {
