@@ -12,11 +12,6 @@ const DEFAULT_INVITATION_NOTE =
 const AUTO_LEAD_RUN_STATE_KEY = "autoLeadRunState";
 const AUTOMATION_HOME_URL = chrome.runtime.getURL("automation.html");
 const AUTOMATION_GROUP_TITLE = "CALLUM AUTOMATION";
-const TEMPORARY_LEAD_TEST_KEY = "temporaryLeadTest";
-const TEMPORARY_LEAD_TEST = Object.freeze({
-  scoutUsername: "antish",
-  leadId: "000f8511-0a04-4138-a9d8-93546e40e28e",
-});
 const ACTIVE_RUN_STATUSES = new Set(["running", "pausing"]);
 const CONNECTION_COMPLETION_RETRY_DELAYS_MS = [0, 750, 2_000];
 
@@ -160,7 +155,6 @@ async function initializeExtensionDefaults() {
     "validateBeforeCommenting",
     "invitationNote",
     "linkedInPremium",
-    TEMPORARY_LEAD_TEST_KEY,
   ]);
   const defaults = {};
   if (current.validateBeforeCommenting === undefined) {
@@ -168,12 +162,6 @@ async function initializeExtensionDefaults() {
   }
   if (!current.invitationNote) defaults.invitationNote = DEFAULT_INVITATION_NOTE;
   if (current.linkedInPremium === undefined) defaults.linkedInPremium = false;
-  if (current[TEMPORARY_LEAD_TEST_KEY] === undefined) {
-    defaults[TEMPORARY_LEAD_TEST_KEY] = {
-      ...TEMPORARY_LEAD_TEST,
-      usedAt: null,
-    };
-  }
   if (Object.keys(defaults).length > 0) await chrome.storage.local.set(defaults);
 }
 
@@ -197,18 +185,7 @@ async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
     throw new Error("This run is paused. Resume it or stop it before starting again.");
   }
 
-  let temporaryTestOnly = resume && previousState.temporaryTestOnly === true;
-  let resolvedSpecificLeadId = specificLeadId || null;
-  if (!resume) {
-    const temporaryLeadId = await claimTemporaryTestLead();
-    if (temporaryLeadId) {
-      if (resolvedSpecificLeadId && resolvedSpecificLeadId !== temporaryLeadId) {
-        throw new Error("The temporary test is locked to its selected lead.");
-      }
-      resolvedSpecificLeadId = temporaryLeadId;
-      temporaryTestOnly = true;
-    }
-  }
+  const resolvedSpecificLeadId = specificLeadId || null;
 
   const runId = resume ? previousState.runId : createRunId();
   const inheritedPendingRequests = collectLocallyConfirmedConnectionRequests(
@@ -223,7 +200,6 @@ async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
   const runContext = {
     runId,
     resume,
-    temporaryTestOnly,
     progress,
     automationWindowId: null,
     automationHomeTabId: null,
@@ -249,7 +225,6 @@ async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
       specificLeadId: resume
         ? previousState.specificLeadId || null
         : resolvedSpecificLeadId,
-      temporaryTestOnly,
       startedAt,
       resumedAt: resume ? Date.now() : null,
       pausedAt: null,
@@ -320,34 +295,6 @@ async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
   return workflowPromise;
 }
 
-async function claimTemporaryTestLead() {
-  const stored = await chrome.storage.local.get(TEMPORARY_LEAD_TEST_KEY);
-  const test =
-    stored[TEMPORARY_LEAD_TEST_KEY] === undefined
-      ? { ...TEMPORARY_LEAD_TEST, usedAt: null }
-      : stored[TEMPORARY_LEAD_TEST_KEY];
-  if (
-    !test ||
-    test.usedAt ||
-    test.scoutUsername !== TEMPORARY_LEAD_TEST.scoutUsername ||
-    test.leadId !== TEMPORARY_LEAD_TEST.leadId
-  ) {
-    return null;
-  }
-
-  const dashboard = await ScoutApi.authenticatedAction("scouts:getDashboard");
-  if (dashboard.scout?.username !== TEMPORARY_LEAD_TEST.scoutUsername) {
-    return null;
-  }
-  await chrome.storage.local.set({
-    [TEMPORARY_LEAD_TEST_KEY]: {
-      ...test,
-      usedAt: Date.now(),
-    },
-  });
-  return test.leadId;
-}
-
 async function resumeDailyWorkflow() {
   if (workflowPromise) await workflowPromise.catch(() => {});
   const state = await getAutoLeadRunState();
@@ -356,7 +303,7 @@ async function resumeDailyWorkflow() {
 
 async function runDailyWorkflow(specificLeadId, runContext) {
   const progress = runContext.progress;
-  const temporaryTestOnly = runContext.temporaryTestOnly === true;
+  const isolatedLeadRun = Boolean(specificLeadId);
   throwIfWorkflowControlled(runContext);
   await updateRunProgress(runContext, progress, {
     phase: "preparing",
@@ -370,7 +317,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
   }
 
   let review = progress.review;
-  if (temporaryTestOnly) {
+  if (isolatedLeadRun) {
     if (!progress.reviewComplete) {
       review = emptyConnectionReview();
       progress.review = review;
@@ -382,7 +329,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
     }
     await checkpointRun(runContext, progress, {
       phase: "working_leads",
-      message: "Temporary test mode: only the selected lead will be processed.",
+      message: "Manual mode: only the selected lead will be processed.",
       currentLead: null,
     });
   } else if (!progress.reviewComplete) {
@@ -409,7 +356,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
   }
 
   let autoWithdraw = progress.autoWithdraw;
-  if (!temporaryTestOnly && !progress.autoWithdrawComplete) {
+  if (!isolatedLeadRun && !progress.autoWithdrawComplete) {
     autoWithdraw = await autoWithdrawOldRequests(runContext).catch((error) => {
       if (isWorkflowControlError(error)) throw error;
       console.warn("Auto withdraw old requests failed:", cleanError(error));
@@ -426,9 +373,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
 
   dashboard = await ScoutApi.authenticatedAction("scouts:getDashboard");
   if (progress.targetRequests === null) {
-    progress.targetRequests = specificLeadId
-      ? Math.min(1, dashboard.usage.requestRemaining)
-      : dashboard.usage.requestRemaining;
+    progress.targetRequests = specificLeadId ? 1 : dashboard.usage.requestRemaining;
   }
   const availableRequestSlots = progress.targetRequests;
   const results = progress.results;
@@ -449,6 +394,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
   ) {
     throwIfWorkflowControlled(runContext);
     if (
+      !isolatedLeadRun &&
       dashboard.usage.engagementRemaining <= 0 &&
       dashboard.activeLead?.status !== "engaged"
     ) {
@@ -456,8 +402,10 @@ async function runDailyWorkflow(specificLeadId, runContext) {
     }
     let lead;
     if (specificLeadId && index === 0) {
-      lead = dashboard.activeLead;
-      if (!lead || lead.id !== specificLeadId) {
+      lead = await ScoutApi.authenticatedAction("scouts:claimNextLead", {
+        leadId: specificLeadId,
+      });
+      if (!lead) {
         throw new Error(
           "This lead is no longer available. Refresh the extension and try again.",
         );
@@ -1625,9 +1573,6 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
       clampInteger(usage.engagementRemaining ?? 0, 0, 250),
     );
     const needsEngagement = lead.status !== "engaged";
-    if (needsEngagement && postEngagements < 1) {
-      throw new Error("You’ve used all your likes for today.");
-    }
     const automationOptions = {
       leadId: lead.id,
       postEngagements,
@@ -1696,6 +1641,9 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
         connectionAlreadyPresent: true,
         engagedCount: 0,
       };
+    }
+    if (needsEngagement && postEngagements < 1) {
+      throw new Error("You’ve used all your likes for today.");
     }
 
     let engagementResponse = {

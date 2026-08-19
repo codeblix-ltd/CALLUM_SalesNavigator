@@ -26,6 +26,12 @@ const elements = {
   automationRunLabel: document.querySelector("#automation-run-label"),
   automationRunDetail: document.querySelector("#automation-run-detail"),
   resetOnboarding: document.querySelector("#reset-onboarding"),
+  manualLead: document.querySelector("#manual-lead"),
+  manualLeadPanel: document.querySelector("#manual-lead-panel"),
+  closeManualLead: document.querySelector("#close-manual-lead"),
+  manualLeadSearch: document.querySelector("#manual-lead-search"),
+  manualLeadStatus: document.querySelector("#manual-lead-status"),
+  manualLeadList: document.querySelector("#manual-lead-list"),
   toggleSettings: document.querySelector("#toggle-settings"),
   settingsForm: document.querySelector("#settings-form"),
   saveSettings: document.querySelector("#save-settings"),
@@ -110,6 +116,8 @@ let scoutOperations = null;
 let premiumVerified = false;
 let onboardingSelectedPlan = null;
 let savedPlanIsPremium = false;
+let manualLeadSearchTimer = null;
+let manualLeadRequestId = 0;
 
 elements.loginForm.addEventListener("submit", handleLogin);
 elements.onboardingForm.addEventListener("submit", saveOnboarding);
@@ -123,6 +131,9 @@ elements.pauseAutoLead.addEventListener("click", pauseAutoLead);
 elements.resumeAutoLead.addEventListener("click", resumeAutoLead);
 elements.stopAutoLead.addEventListener("click", stopAutoLead);
 elements.resetOnboarding.addEventListener("click", restartOnboarding);
+elements.manualLead.addEventListener("click", toggleManualLeadPicker);
+elements.closeManualLead.addEventListener("click", closeManualLeadPicker);
+elements.manualLeadSearch.addEventListener("input", queueManualLeadSearch);
 elements.toggleSettings.addEventListener("click", () => {
   elements.settingsForm.hidden = !elements.settingsForm.hidden;
 });
@@ -492,12 +503,19 @@ async function saveOnboarding(event) {
   }
 }
 
-async function startAutoLead() {
+async function startAutoLead(specificLeadId = null, leadName = null) {
   clearMessages();
   elements.startAutoLead.disabled = true;
   try {
-    showSuccess("Starting today’s work...");
-    const response = await chrome.runtime.sendMessage({ type: "START_AUTO_LEAD" });
+    showSuccess(
+      specificLeadId
+        ? `Starting a manual run for ${leadName || "the selected lead"}...`
+        : "Starting today’s work...",
+    );
+    const response = await chrome.runtime.sendMessage({
+      type: "START_AUTO_LEAD",
+      ...(specificLeadId ? { leadId: specificLeadId } : {}),
+    });
     await handleAutoLeadOutcome(response);
   } catch (error) {
     showError(error, true);
@@ -505,6 +523,110 @@ async function startAutoLead() {
     elements.startAutoLead.disabled = false;
     await refreshAutoLeadRunState().catch(() => {});
   }
+}
+
+function toggleManualLeadPicker() {
+  if (!elements.manualLeadPanel.hidden) {
+    closeManualLeadPicker();
+    return;
+  }
+  elements.settingsForm.hidden = true;
+  elements.manualLeadPanel.hidden = false;
+  elements.manualLead.setAttribute("aria-expanded", "true");
+  elements.manualLeadSearch.value = "";
+  void loadManualLeads("");
+  elements.manualLeadSearch.focus();
+}
+
+function closeManualLeadPicker() {
+  elements.manualLeadPanel.hidden = true;
+  elements.manualLead.setAttribute("aria-expanded", "false");
+}
+
+function queueManualLeadSearch() {
+  window.clearTimeout(manualLeadSearchTimer);
+  manualLeadSearchTimer = window.setTimeout(() => {
+    void loadManualLeads(elements.manualLeadSearch.value.trim());
+  }, 220);
+}
+
+async function loadManualLeads(search) {
+  const requestId = ++manualLeadRequestId;
+  elements.manualLeadStatus.textContent = "Loading leads…";
+  elements.manualLeadList.replaceChildren();
+  try {
+    const response = await ScoutApi.authenticatedAction("scouts:getLeadProgress", {
+      page: 1,
+      pageSize: 10,
+      search: String(search || "").slice(0, 120),
+      stage: "automation_ready",
+      sort: "name",
+    });
+    if (requestId !== manualLeadRequestId) return;
+    const leads = (response?.leads || []).slice(0, 5);
+    renderManualLeadList(leads);
+    if (leads.length === 0) {
+      elements.manualLeadStatus.textContent = search
+        ? "No ready leads match that name."
+        : "No leads are ready for manual automation.";
+      return;
+    }
+    const total = Number(response.total || leads.length);
+    elements.manualLeadStatus.textContent = search
+      ? `Showing ${leads.length} of ${total} matching lead${total === 1 ? "" : "s"}.`
+      : `Showing the first ${leads.length} ready lead${leads.length === 1 ? "" : "s"}.`;
+  } catch (error) {
+    if (requestId !== manualLeadRequestId) return;
+    elements.manualLeadStatus.textContent = "Could not load leads.";
+    showError(error);
+  }
+}
+
+function renderManualLeadList(leads) {
+  elements.manualLeadList.replaceChildren();
+  for (const lead of leads) {
+    const option = document.createElement("button");
+    option.type = "button";
+    option.className = "manual-lead-option";
+    option.dataset.leadId = lead.id;
+    const text = document.createElement("span");
+    const name = document.createElement("strong");
+    name.textContent = lead.fullName || "Unnamed lead";
+    const detail = document.createElement("small");
+    detail.textContent = [
+      lead.currentTitle,
+      lead.companyName,
+      formatManualLeadStatus(lead.status),
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    text.append(name, detail);
+    const action = document.createElement("em");
+    action.textContent = "Select";
+    option.append(text, action);
+    option.addEventListener("click", () => {
+      void startManualLead(lead);
+    });
+    elements.manualLeadList.append(option);
+  }
+}
+
+async function startManualLead(lead) {
+  closeManualLeadPicker();
+  await startAutoLead(lead.id, lead.fullName);
+}
+
+function formatManualLeadStatus(status) {
+  const labels = {
+    assigned: "new",
+    viewed: "viewed",
+    engaged: "engaged",
+    connected: "connected",
+    connection_requested: "request sent",
+    accepted: "accepted",
+    email_collected: "email saved",
+  };
+  return labels[String(status || "")] || String(status || "");
 }
 
 async function pauseAutoLead() {
@@ -677,6 +799,7 @@ function renderAutoLeadRunState(state) {
   const isPausing = status === "pausing";
   const isPaused = status === "paused";
   elements.startAutoLead.hidden = isRunning || isPausing || isPaused;
+  elements.manualLead.disabled = isRunning || isPausing || isPaused;
   elements.pauseAutoLead.hidden = !isRunning;
   elements.resumeAutoLead.hidden = !isPaused;
   elements.stopAutoLead.hidden = !(isRunning || isPausing || isPaused);
@@ -981,6 +1104,7 @@ function timeUntil(timestamp) {
 function showOnboarding(settings) {
   elements.dashboardView.hidden = true;
   elements.onboardingView.hidden = false;
+  closeManualLeadPicker();
   onboardingSelectedPlan = null;
   premiumVerified = false;
   elements.onboardingFreePlan.classList.remove("is-selected");
@@ -1275,6 +1399,7 @@ function showLogin() {
   elements.onboardingView.hidden = true;
   elements.dashboardView.hidden = true;
   elements.signOut.hidden = true;
+  closeManualLeadPicker();
   elements.updated.textContent = "Sign in to see your leads";
 }
 

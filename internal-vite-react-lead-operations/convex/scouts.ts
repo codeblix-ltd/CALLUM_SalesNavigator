@@ -407,6 +407,7 @@ export const getLeadProgress = action({
     const allowedStages = new Set([
       "all",
       "assigned",
+      "automation_ready",
       "viewed",
       "engaged",
       "connection_requested",
@@ -448,6 +449,10 @@ export const getLeadProgress = action({
     } else if (stage === "assigned") {
       filters.push(
         "a.status = 'assigned' AND a.qualification_status <> 'not_qualified'",
+      );
+    } else if (stage === "automation_ready") {
+      filters.push(
+        "(a.status IN ('viewed', 'engaged', 'connected', 'connection_requested', 'accepted', 'email_collected') OR (a.status = 'assigned' AND a.qualification_status <> 'not_qualified'))",
       );
     } else if (stage !== "all") {
       parameters.push(stage);
@@ -535,13 +540,75 @@ export const getLeadProgress = action({
 });
 
 export const claimNextLead = action({
-  args: { excludeLeadIds: v.optional(v.array(v.string())) },
+  args: {
+    excludeLeadIds: v.optional(v.array(v.string())),
+    leadId: v.optional(v.string()),
+  },
   returns: v.union(leadValidator, v.null()),
   handler: async (ctx, args): Promise<ScoutLead | null> => {
     const scout: ScoutIdentity = await ctx.runQuery(
       internal.scoutIdentity.requireScout,
       {},
     );
+    if (args.leadId) {
+      const leadId = String(args.leadId).trim();
+      if (
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+          leadId,
+        )
+      ) {
+        throw new Error("This lead selection is not valid.");
+      }
+      const database = getPool();
+      const client = await database.connect();
+      try {
+        await client.query("BEGIN");
+        const selected = await client.query(
+          `SELECT
+             l.id::STRING AS id,
+             l.full_name,
+             l.current_title,
+             l.company_name,
+             coalesce(a.resolved_linkedin_url, l.linkedin_url) AS linkedin_url,
+             a.status,
+             a.qualification_status
+           FROM lead_assignments AS a
+           INNER JOIN leads AS l ON l.id = a.lead_id
+           WHERE a.operator_id = $1
+             AND a.lead_id = $2::UUID
+             AND (
+               a.status IN ('viewed', 'engaged', 'connected', 'connection_requested', 'accepted', 'email_collected')
+               OR (a.status = 'assigned' AND a.qualification_status <> 'not_qualified')
+             )
+           FOR UPDATE`,
+          [scout.operatorId, leadId],
+        );
+        const row = selected.rows[0];
+        if (!row) {
+          await client.query("ROLLBACK");
+          return null;
+        }
+        if (row.status === "assigned") {
+          await client.query(
+            `UPDATE lead_assignments
+                SET status = 'viewed', viewed_at = coalesce(viewed_at, now()), updated_at = now()
+              WHERE lead_id = $1::UUID AND operator_id = $2`,
+            [leadId, scout.operatorId],
+          );
+          await insertEvent(client, leadId, scout.operatorId, "viewed", {
+            source: "manual_picker",
+          });
+          row.status = "viewed";
+        }
+        await client.query("COMMIT");
+        return mapLead(row);
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
     const excludedLeadIds = [
       ...new Set(
         (args.excludeLeadIds ?? [])
@@ -651,7 +718,7 @@ export const recordProfileVisit = action({
               updated_at = now()
         WHERE lead_id = $1::UUID
           AND operator_id = $2
-          AND status IN ('assigned', 'viewed', 'engaged')
+          AND status IN ('assigned', 'viewed', 'engaged', 'connected', 'connection_requested', 'accepted', 'email_collected')
       RETURNING lead_id`,
       [args.leadId, scout.operatorId, resolvedUrl],
     );

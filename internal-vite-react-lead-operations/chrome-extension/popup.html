@@ -172,8 +172,32 @@
           <button id="reset-onboarding" class="text-button reset-button" type="button">
             Run setup again
           </button>
+          <button id="manual-lead" class="text-button" type="button" aria-expanded="false">
+            Manual
+          </button>
           <button id="toggle-settings" class="text-button" type="button">Settings</button>
         </div>
+
+        <section id="manual-lead-panel" class="card manual-lead-panel" hidden>
+          <div class="manual-lead-heading">
+            <div>
+              <p class="eyebrow">Manual</p>
+              <h2>Run one lead</h2>
+            </div>
+            <button id="close-manual-lead" class="text-button" type="button">Close</button>
+          </div>
+          <p class="muted manual-lead-help">
+            Search by name, then choose one lead. The automation will visit and process only that lead.
+          </p>
+          <label class="manual-lead-search-label">
+            Lead name
+            <input id="manual-lead-search" type="search" placeholder="Search lead name" autocomplete="off" />
+          </label>
+          <p id="manual-lead-status" class="manual-lead-status" role="status" aria-live="polite">
+            Loading leads…
+          </p>
+          <div id="manual-lead-list" class="manual-lead-list" role="listbox" aria-label="Select a lead"></div>
+        </section>
 
         <form id="settings-form" class="card settings-card" hidden>
           <div>
