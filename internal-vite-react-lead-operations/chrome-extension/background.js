@@ -369,7 +369,11 @@ async function runDailyWorkflow(specificLeadId, runContext) {
     progress.processedLeads = Math.max(progress.processedLeads, 1);
   }
 
-  for (let index = progress.processedLeads; index < availableRequestSlots; index++) {
+  for (
+    let index = progress.processedLeads;
+    progress.requestsSent < availableRequestSlots;
+    index++
+  ) {
     throwIfWorkflowControlled(runContext);
     if (
       dashboard.usage.engagementRemaining <= 0 &&
@@ -407,16 +411,17 @@ async function runDailyWorkflow(specificLeadId, runContext) {
 
     let connectionSyncPending = false;
     try {
-      results.push(
-        await runLeadWorkflow(
-          lead,
-          dashboard.settings,
-          dashboard.usage,
-          runContext,
-          progress,
-        ),
+      const workflowResult = await runLeadWorkflow(
+        lead,
+        dashboard.settings,
+        dashboard.usage,
+        runContext,
+        progress,
       );
-      progress.requestsSent += 1;
+      results.push(workflowResult);
+      if (workflowResult.status === "connection_requested") {
+        progress.requestsSent += 1;
+      }
     } catch (error) {
       if (isWorkflowControlError(error)) throw error;
       const message = cleanError(error);
@@ -444,6 +449,27 @@ async function runDailyWorkflow(specificLeadId, runContext) {
             : "connection_requested",
           profileUrl: error?.profileUrl || lead.linkedinUrl,
           engagedCount: error?.engagedCount ?? 0,
+        });
+      } else if (error?.knownConnection === true) {
+        await ScoutApi.authenticatedAction("scouts:reportError", {
+          leadId: lead.id,
+          message,
+        }).catch(() => {});
+        results.push({
+          leadId: lead.id,
+          leadName: lead.fullName,
+          status: "accepted_contact_check_failed",
+          profileUrl: error?.profileUrl || lead.linkedinUrl,
+          email: null,
+          connectionAlreadyPresent: true,
+          message,
+        });
+        failedLeads.push({
+          leadId: lead.id,
+          leadName: lead.fullName,
+          message,
+          requestSent: false,
+          connectionAlreadyPresent: true,
         });
       } else {
         const status =
@@ -487,11 +513,16 @@ async function runDailyWorkflow(specificLeadId, runContext) {
   }
 
   await updateBadge();
+  const knownConnectionResults = results.filter(
+    (result) => result?.connectionAlreadyPresent === true,
+  );
   const summary = {
     reviewedConnections: review.reviewed,
     acceptedMatched: review.acceptedMatched,
-    contactsChecked: review.contactsChecked,
-    emailsCollected: review.emailsCollected,
+    contactsChecked: review.contactsChecked + knownConnectionResults.length,
+    emailsCollected:
+      review.emailsCollected +
+      knownConnectionResults.filter((result) => result?.email).length,
     withdrawnCount: Number(autoWithdraw?.withdrawnCount || 0),
     requestsSent: progress.requestsSent,
     failedLeads,
@@ -1420,6 +1451,75 @@ async function collectAcceptedContact(lead, runContext) {
   }
 }
 
+async function collectKnownConnectionContact(
+  lead,
+  profileUrl,
+  tab,
+  runContext,
+  progress,
+) {
+  const knownConnection = await ScoutApi.authenticatedAction(
+    "scouts:recordKnownConnection",
+    {
+      leadId: lead.id,
+      profileUrl,
+    },
+  );
+  try {
+    if (knownConnection.email) {
+      await updateRunProgress(runContext, progress, {
+        phase: "working_leads",
+        message: `Already connected to ${lead.fullName}; the email was already in the database.`,
+        currentLead: {
+          id: lead.id,
+          fullName: lead.fullName,
+          status: knownConnection.status,
+        },
+      });
+      return {
+        ...knownConnection,
+        source: "database",
+      };
+    }
+
+    await waitForAutomationContentScript(runContext, tab.id);
+    const contact = await sendAutomationMessageToTab(runContext, tab.id, {
+      type: "EXTRACT_CONTACT_INFO",
+      options: { expectedProfileUrl: profileUrl },
+    });
+    throwIfWorkflowControlled(runContext);
+    if (!contact?.ok) {
+      throw new Error(
+        contact?.error || "We couldn’t read this connected lead’s contact info.",
+      );
+    }
+
+    const saved = await ScoutApi.authenticatedAction("scouts:recordContactInfo", {
+      leadId: lead.id,
+      profileUrl,
+      email: contact.result.email || null,
+    });
+    await updateRunProgress(runContext, progress, {
+      phase: "working_leads",
+      message: saved.email
+        ? `Already connected to ${lead.fullName}; the email was saved.`
+        : `Already connected to ${lead.fullName}; no email was available in Contact info.`,
+      currentLead: {
+        id: lead.id,
+        fullName: lead.fullName,
+        status: saved.status,
+      },
+    });
+    return {
+      ...saved,
+      source: "linkedin_contact_info",
+    };
+  } catch (error) {
+    error.knownConnection = true;
+    throw error;
+  }
+}
+
 async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
   let workflowTabId = null;
   let connectionReserved = false;
@@ -1427,6 +1527,7 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
   let connectionPersistencePending = false;
   let completedEngagementCount = 0;
   let resolvedProfileUrl = lead.linkedinUrl;
+  let knownConnectionDetected = false;
   try {
     throwIfWorkflowControlled(runContext);
     let includeNote = Boolean(settings.includeNote && settings.linkedinPremium);
@@ -1481,6 +1582,48 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
       resolvedLinkedinUrl: profileUrl,
     });
     throwIfWorkflowControlled(runContext);
+
+    await waitForAutomationContentScript(runContext, tab.id);
+    const connectionInspection = await sendAutomationMessageToTab(
+      runContext,
+      tab.id,
+      {
+        type: "INSPECT_CONNECTION_STATUS",
+        options: {
+          expectedProfileName: lead.fullName,
+          expectedProfileUrl: profileUrl,
+        },
+      },
+    );
+    throwIfWorkflowControlled(runContext);
+    if (!connectionInspection?.ok) {
+      throw new Error(
+        connectionInspection?.error ||
+          "We couldn’t check this lead’s LinkedIn connection status.",
+      );
+    }
+    if (!connectionInspection.result?.checked) {
+      throw new Error("We couldn’t confirm this lead’s LinkedIn connection status.");
+    }
+    if (!connectionInspection.result.connectAvailable) {
+      const fallback = await collectKnownConnectionContact(
+        lead,
+        profileUrl,
+        tab,
+        runContext,
+        progress,
+      );
+      return {
+        leadId: lead.id,
+        leadName: lead.fullName,
+        status: fallback.status,
+        profileUrl,
+        email: fallback.email || null,
+        emailSource: fallback.source,
+        connectionAlreadyPresent: true,
+        engagedCount: 0,
+      };
+    }
 
     let engagementResponse = {
       ok: true,
@@ -1574,6 +1717,8 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
     };
   } catch (error) {
     const message = cleanError(error);
+    knownConnectionDetected =
+      knownConnectionDetected || error?.knownConnection === true;
     if (connectionReserved && !requestSubmitted) {
       await ScoutApi.authenticatedAction("scouts:releaseConnectionRequest", {
         leadId: lead.id,
@@ -1634,6 +1779,7 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
     workflowError.persistencePending = connectionPersistencePending;
     workflowError.profileUrl = resolvedProfileUrl;
     workflowError.engagedCount = completedEngagementCount;
+    workflowError.knownConnection = knownConnectionDetected;
     throw workflowError;
   } finally {
     if (workflowTabId) {

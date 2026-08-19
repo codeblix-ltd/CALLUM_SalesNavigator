@@ -22,6 +22,13 @@
       );
     }
 
+    if (message?.type === "INSPECT_CONNECTION_STATUS") {
+      return runVisibleWorkflow(
+        () => runConnectionStatusInspection(message.options || {}),
+        sendResponse,
+      );
+    }
+
     if (message?.type === "EXECUTE_CONNECTION_REQUEST") {
       return runVisibleWorkflow(
         () => runConnectionRequest(message.options || {}),
@@ -553,6 +560,90 @@
     }
     updateStatus("Connection request sent.");
     return { success: true, confirmationPending: !modalClosed };
+  }
+
+  async function runConnectionStatusInspection(options = {}) {
+    initOverlay();
+    if (overlayContainer) overlayContainer.style.display = "block";
+
+    const currentProfileSlug = getLinkedInProfileSlug(window.location.href);
+    const expectedProfileSlug = getLinkedInProfileSlug(
+      options.expectedProfileUrl,
+    );
+    if (!currentProfileSlug) {
+      throw new Error("This is not a LinkedIn profile page.");
+    }
+    if (
+      expectedProfileSlug &&
+      normalizeProfileSlug(currentProfileSlug) !==
+        normalizeProfileSlug(expectedProfileSlug)
+    ) {
+      throw new Error("LinkedIn opened a different profile.");
+    }
+
+    const targetProfileName =
+      getCurrentProfileName(options.expectedProfileName) ||
+      String(options.expectedProfileName || "").trim();
+    if (!targetProfileName) {
+      throw new Error("We couldn’t check this LinkedIn profile.");
+    }
+
+    updateStatus("Checking whether you are already connected...");
+    const directConnect = await waitForMatch(
+      () => findDirectConnectButton(targetProfileName),
+      8_000,
+    );
+    if (directConnect) {
+      addLog("Connection", "Connect is available; continuing with posts.");
+      updateStatus("Connect is available. Continuing with posts.");
+      return {
+        checked: true,
+        connectAvailable: true,
+        connectionState: "not_connected",
+      };
+    }
+
+    // LinkedIn often puts Connect behind the profile's More menu. Inspect it
+    // before deciding that this profile is already connected.
+    const moreButton = await findMoreButton(targetProfileName, 8_000);
+    if (moreButton) {
+      if (moreButton.getAttribute("aria-expanded") !== "true") {
+        clickElement(moreButton);
+        await sleep(1_000);
+      }
+      const connectOption = await findConnectOption({
+        targetProfileName,
+        targetProfileSlug: currentProfileSlug,
+        timeoutMs: 8_000,
+      });
+      if (connectOption) {
+        addLog("Connection", "Connect is available in More; continuing with posts.");
+        updateStatus("Connect is available. Continuing with posts.");
+        return {
+          checked: true,
+          connectAvailable: true,
+          connectionState: "not_connected",
+        };
+      }
+      if (moreButton.getAttribute("aria-expanded") === "true") {
+        clickElement(moreButton);
+        await sleep(500);
+      }
+    }
+
+    const connectionState = findVisibleConnectionState();
+    addLog(
+      "Connection",
+      connectionState === "connected"
+        ? "This profile is already connected. Posts were skipped."
+        : "Connect is not available. Posts were skipped safely.",
+    );
+    updateStatus("Already connected. Checking contact info instead.");
+    return {
+      checked: true,
+      connectAvailable: false,
+      connectionState,
+    };
   }
 
   async function runRecentConnectionsScan(options = {}) {
@@ -1349,7 +1440,7 @@
     );
   }
 
-  async function findMoreButton(targetProfileName) {
+  async function findMoreButton(targetProfileName, timeoutMs = 20_000) {
     return waitForMatch(() => {
       const candidates = uniqueElements([
         ...document.querySelectorAll(
@@ -1404,7 +1495,7 @@
           return toolbar && toolbarReferencesCurrentProfile(toolbar);
         }) || null
       );
-    }, 20_000);
+    }, timeoutMs);
   }
 
   function isProfileMoreButton(button) {
@@ -1437,7 +1528,11 @@
     );
   }
 
-  async function findConnectOption({ targetProfileName, targetProfileSlug }) {
+  async function findConnectOption({
+    targetProfileName,
+    targetProfileSlug,
+    timeoutMs = 10_000,
+  }) {
     return waitForMatch(() => {
       const menus = Array.from(
         document.querySelectorAll(
@@ -1467,7 +1562,7 @@
         }
       }
       return null;
-    }, 10_000);
+    }, timeoutMs);
   }
 
   function connectOptionMatchesTarget(
@@ -1654,6 +1749,66 @@
         isElementActive(button),
     );
     if (dismissButton) clickElement(dismissButton);
+  }
+
+  function findDirectConnectButton(targetProfileName) {
+    const main = document.querySelector("main");
+    if (!main) return null;
+    const candidates = uniqueElements([
+      ...main.querySelectorAll(
+        "button, a[role='button'], [role='button']",
+      ),
+    ]).filter(
+      (element) =>
+        isElementVisible(element) &&
+        !element.closest("aside") &&
+        isConnectActionLabel(element),
+    );
+
+    const targetHeading = Array.from(
+      main.querySelectorAll("h1, h2, h3"),
+    ).find(
+      (heading) =>
+        personNamesMatch(heading.textContent, targetProfileName) &&
+        isElementVisible(heading),
+    );
+    if (targetHeading) {
+      let scope = targetHeading.parentElement;
+      while (scope && scope !== main.parentElement) {
+        const scopedButton = candidates.find((button) => scope.contains(button));
+        if (scopedButton) return scopedButton;
+        if (scope === main) break;
+        scope = scope.parentElement;
+      }
+    }
+
+    return (
+      candidates.find((button) => {
+        const toolbar = button.closest("[role='toolbar']");
+        return toolbar && containerReferencesCurrentProfile(toolbar);
+      }) || null
+    );
+  }
+
+  function isConnectActionLabel(element) {
+    const label =
+      element.getAttribute("aria-label")?.trim() ||
+      element.textContent?.replace(/\s+/g, " ").trim() ||
+      "";
+    const href = element.getAttribute("href") || "";
+    return (
+      /^(?:connect|invite .+ to connect)$/i.test(label) ||
+      /\/preload\/custom-invite\//i.test(href)
+    );
+  }
+
+  function findVisibleConnectionState() {
+    const main = document.querySelector("main");
+    if (!main) return "unavailable";
+    const text = main.innerText?.replace(/\s+/g, " ").trim() || "";
+    if (/\bConnected\b/i.test(text)) return "connected";
+    if (/\bPending\b|\bSent\b/i.test(text)) return "pending";
+    return "unavailable";
   }
 
   function getCurrentProfileName(expectedProfileName) {

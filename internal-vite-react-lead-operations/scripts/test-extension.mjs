@@ -193,6 +193,10 @@ assert.match(contentSource, /options\.includeNote/);
 assert.match(contentSource, /SCAN_RECENT_CONNECTIONS/);
 assert.match(contentSource, /Connected on\\s\+/);
 assert.match(contentSource, /EXTRACT_CONTACT_INFO/);
+assert.match(contentSource, /INSPECT_CONNECTION_STATUS/);
+assert.match(contentSource, /runConnectionStatusInspection/);
+assert.match(contentSource, /findDirectConnectButton/);
+assert.match(contentSource, /Posts were skipped safely/);
 assert.match(contentSource, /a\[href\^='mailto:'\]/);
 assert.match(contentSource, /ContactInfoDetailSection/);
 assert.match(contentSource, /contactDetailsStartedAt/);
@@ -235,6 +239,11 @@ assert.match(backgroundSource, /localSettings\.validateBeforeCommenting \?\? fal
 assert.match(backgroundSource, /settings\.includeNote && settings\.linkedinPremium/);
 assert.match(backgroundSource, /getConnectionReviewPlan/);
 assert.match(backgroundSource, /recordConnectionReview/);
+assert.match(backgroundSource, /recordKnownConnection/);
+assert.match(backgroundSource, /collectKnownConnectionContact/);
+assert.match(backgroundSource, /connectionInspection\.result\.connectAvailable/);
+assert.match(backgroundSource, /connectionAlreadyPresent: true/);
+assert.match(backgroundSource, /accepted_contact_check_failed/);
 assert.doesNotMatch(backgroundSource, /if \(!dashboard\.hasSentConnectionRequest\) return empty/);
 assert.match(backgroundSource, /CHECK_ACCEPTED_CONNECTIONS/);
 assert.match(backgroundSource, /forceReview: true/);
@@ -263,6 +272,8 @@ assert.match(
   /ALTER TABLE lead_assignments\s+DROP CONSTRAINT IF EXISTS check_status/,
 );
 assert.match(backgroundSource, /recordContactInfo/);
+assert.match(scoutSource, /export const recordKnownConnection/);
+assert.match(scoutSource, /connection_detected/);
 assert.match(backgroundSource, /reserveConnectionRequest/);
 assert.match(backgroundSource, /completeConnectionRequest/);
 assert.match(backgroundSource, /completeConnectionRequestWithRetry/);

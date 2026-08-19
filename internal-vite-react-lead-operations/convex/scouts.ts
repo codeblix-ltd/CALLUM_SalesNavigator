@@ -665,6 +665,103 @@ export const recordProfileVisit = action({
   },
 });
 
+export const recordKnownConnection = action({
+  args: { leadId: v.string(), profileUrl: v.string() },
+  returns: v.object({ status: v.string(), email: optionalText }),
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ status: string; email: string | null }> => {
+    const scout: ScoutIdentity = await ctx.runQuery(
+      internal.scoutIdentity.requireScout,
+      {},
+    );
+    const profileUrl = normalizeLinkedInProfileUrl(args.profileUrl);
+    const database = getPool();
+    const client = await database.connect();
+    try {
+      await client.query("BEGIN");
+      const current = await client.query(
+        `SELECT a.status,
+                a.email AS legacy_email,
+                l.original_email,
+                l.work_email
+           FROM lead_assignments AS a
+           INNER JOIN leads AS l ON l.id = a.lead_id
+          WHERE a.lead_id = $1::UUID AND a.operator_id = $2
+          FOR UPDATE`,
+        [args.leadId, scout.operatorId],
+      );
+      const row = current.rows[0];
+      const currentStatus = String(row?.status ?? "");
+      if (
+        !row ||
+        ![
+          "assigned",
+          "viewed",
+          "engaged",
+          "connected",
+          "accepted",
+          "email_collected",
+        ].includes(currentStatus)
+      ) {
+        throw new Error("This lead is not ready for a connection check.");
+      }
+
+      const originalEmail =
+        nullableString(row.original_email) || nullableString(row.legacy_email);
+      const storedEmail = originalEmail || nullableString(row.work_email);
+      const nextStatus = originalEmail
+        ? "email_collected"
+        : currentStatus === "email_collected"
+          ? "email_collected"
+          : "accepted";
+      if (originalEmail) {
+        await client.query(
+          `UPDATE leads
+              SET original_email = coalesce(original_email, $2),
+                  original_email_status = 'found',
+                  original_email_checked_at = coalesce(original_email_checked_at, now()),
+                  original_email_collected_at = coalesce(original_email_collected_at, now()),
+                  updated_at = now()
+            WHERE id = $1::UUID`,
+          [args.leadId, originalEmail],
+        );
+      }
+      await client.query(
+        `UPDATE lead_assignments
+            SET status = $3,
+                accepted_at = coalesce(accepted_at, now()),
+                email_collected_at = CASE
+                  WHEN $3 = 'email_collected'
+                    THEN coalesce(email_collected_at, now())
+                  ELSE email_collected_at
+                END,
+                resolved_linkedin_url = $4,
+                last_error = NULL,
+                last_error_at = NULL,
+                updated_at = now()
+          WHERE lead_id = $1::UUID AND operator_id = $2`,
+        [args.leadId, scout.operatorId, nextStatus, profileUrl],
+      );
+      await insertEvent(
+        client,
+        args.leadId,
+        scout.operatorId,
+        "connection_detected",
+        { profileUrl, emailPresent: Boolean(storedEmail) },
+      );
+      await client.query("COMMIT");
+      return { status: nextStatus, email: storedEmail };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+});
+
 export const recordPostActivity = action({
   args: {
     leadId: v.string(),
