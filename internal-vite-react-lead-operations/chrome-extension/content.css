@@ -1,5 +1,52 @@
 /* Callum Leads LinkedIn Automation Helper Styles */
 
+html[data-callum-automation="true"]::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 999994;
+  border: 3px solid rgba(99, 71, 216, 0.82);
+  box-shadow: inset 0 0 28px rgba(99, 71, 216, 0.1);
+  pointer-events: none;
+}
+
+#callum-automation-marker {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  z-index: 999999;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 13px;
+  color: #ffffff;
+  background: linear-gradient(135deg, #5131bd, #7b5cec);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 999px;
+  box-shadow: 0 10px 26px rgba(50, 32, 121, 0.3);
+  font: 800 11px/1.1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  letter-spacing: 0.55px;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.callum-automation-marker-dot {
+  width: 7px;
+  height: 7px;
+  background: #8ef0bd;
+  border-radius: 50%;
+  box-shadow: 0 0 0 4px rgba(142, 240, 189, 0.18);
+}
+
+#callum-scout-overlay.callum-automation-context {
+  border-color: #7c61e4;
+  box-shadow: 0 14px 38px rgba(56, 38, 130, 0.24);
+}
+
+#callum-scout-overlay.callum-automation-context .callum-header {
+  background: linear-gradient(135deg, #2d1d6d, #6644d1);
+}
+
 #callum-scout-overlay {
   position: fixed;
   bottom: 24px;

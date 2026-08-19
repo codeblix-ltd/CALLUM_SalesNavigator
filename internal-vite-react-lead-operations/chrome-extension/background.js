@@ -10,12 +10,16 @@ const SENT_INVITATIONS_URL =
 const DEFAULT_INVITATION_NOTE =
   "Hi, I saw your profile and would like to connect.";
 const AUTO_LEAD_RUN_STATE_KEY = "autoLeadRunState";
+const AUTOMATION_HOME_URL = chrome.runtime.getURL("automation.html");
+const AUTOMATION_GROUP_TITLE = "CALLUM AUTOMATION";
 const ACTIVE_RUN_STATUSES = new Set(["running", "pausing"]);
 
 let premiumCheckPromise = null;
 let workflowPromise = null;
 let workflowControlRequest = null;
+let activeRunId = null;
 let activeWorkflowTabId = null;
+let activeAutomationWindowId = null;
 let runStateInitializationPromise = null;
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -33,6 +37,18 @@ chrome.runtime.onStartup.addListener(() => {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === REFRESH_ALARM) refreshBadgeInBackground();
+});
+
+chrome.windows.onRemoved.addListener((windowId) => {
+  if (windowId === activeAutomationWindowId && workflowPromise) {
+    workflowControlRequest = {
+      runId: activeRunId,
+      action: "pause",
+      reason:
+        "The automation window was closed. The run paused safely; Resume will open a protected window and continue.",
+    };
+    void pauseRunAfterAutomationWindowClosed();
+  }
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -127,30 +143,54 @@ async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
     runId,
     resume,
     progress: resume ? normalizeRunProgress(previousState.progress) : defaultRunProgress(),
+    automationWindowId: null,
+    automationHomeTabId: null,
+    automationTabGroupId: null,
   };
   const startedAt = resume
     ? Number(previousState.startedAt || Date.now())
     : Date.now();
   workflowControlRequest = null;
-  await writeAutoLeadRunState({
-    ...(resume ? previousState : defaultAutoLeadRunState()),
-    status: "running",
-    runId,
-    specificLeadId: resume ? previousState.specificLeadId || null : specificLeadId || null,
-    startedAt,
-    resumedAt: resume ? Date.now() : null,
-    pausedAt: null,
-    stoppedAt: null,
-    completedAt: null,
-    phase: resume ? previousState.phase || "preparing" : "preparing",
-    message: resume
-      ? "Resuming from the last completed step..."
-      : "Preparing today’s work...",
-    currentLead: resume ? previousState.currentLead || null : null,
-    progress: runContext.progress,
-    result: null,
-    error: null,
-  });
+  const automationContext = await prepareAutomationWindow(
+    runContext,
+    resume ? previousState : null,
+    resume ? null : previousState,
+  );
+  Object.assign(runContext, automationContext);
+  activeRunId = runId;
+  activeAutomationWindowId = runContext.automationWindowId;
+  try {
+    await writeAutoLeadRunState({
+      ...(resume ? previousState : defaultAutoLeadRunState()),
+      status: "running",
+      runId,
+      specificLeadId: resume ? previousState.specificLeadId || null : specificLeadId || null,
+      startedAt,
+      resumedAt: resume ? Date.now() : null,
+      pausedAt: null,
+      stoppedAt: null,
+      completedAt: null,
+      phase: resume ? previousState.phase || "preparing" : "preparing",
+      message: resume
+        ? "Resuming from the last completed step..."
+        : "Preparing today’s work...",
+      currentLead: resume ? previousState.currentLead || null : null,
+      automationWindowId: runContext.automationWindowId,
+      automationHomeTabId: runContext.automationHomeTabId,
+      automationTabGroupId: runContext.automationTabGroupId,
+      progress: runContext.progress,
+      result: null,
+      error: null,
+    });
+  } catch (error) {
+    activeRunId = null;
+    activeAutomationWindowId = null;
+    await closeManagedAutomationWindow(
+      runContext.automationWindowId,
+      runContext.automationHomeTabId,
+    ).catch(() => {});
+    throw error;
+  }
 
   workflowPromise = runDailyWorkflow(
     resume ? previousState.specificLeadId || null : specificLeadId,
@@ -188,7 +228,9 @@ async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
     .finally(() => {
       workflowPromise = null;
       workflowControlRequest = null;
+      activeRunId = null;
       activeWorkflowTabId = null;
+      activeAutomationWindowId = null;
     });
   return workflowPromise;
 }
@@ -451,28 +493,29 @@ class WorkflowControlError extends Error {
   }
 }
 
-async function requestWorkflowControl(action) {
+async function requestWorkflowControl(action, { reason = null } = {}) {
   await ensureAutoLeadRunState();
   const state = await readAutoLeadRunState();
   if (action === "pause") {
     if (state.status === "paused" || state.status === "pausing") return state;
     if (state.status !== "running") return state;
 
-    workflowControlRequest = { runId: state.runId, action: "pause" };
+    workflowControlRequest = { runId: state.runId, action: "pause", reason };
     const next = await writeAutoLeadRunState({
       ...state,
       status: workflowPromise ? "pausing" : "paused",
       phase: workflowPromise ? state.phase : "paused",
       pausedAt: workflowPromise ? null : Date.now(),
-      message: workflowPromise
-        ? "Pausing after the current safe step..."
-        : "Paused. Resume to continue from the last completed step.",
+      message: reason ||
+        (workflowPromise
+          ? "Pausing after the current safe step..."
+          : "Paused. Resume to continue from the last completed step."),
     });
     if (activeWorkflowTabId) {
-      await sendMessageToTab(activeWorkflowTabId, {
-        type: "SHOW_AUTOMATION_STATUS",
-        status: "Pausing after the current safe step...",
-      }).catch(() => {});
+      await sendStatusToProtectedActiveTab(
+        state,
+        "Pausing after the current safe step...",
+      );
     }
     return next;
   }
@@ -481,6 +524,8 @@ async function requestWorkflowControl(action) {
   if (["idle", "completed", "stopped"].includes(state.status)) return state;
 
   workflowControlRequest = { runId: state.runId, action: "stop" };
+  const automationWindowId = state.automationWindowId || activeAutomationWindowId;
+  const automationHomeTabId = state.automationHomeTabId || null;
   const next = await writeAutoLeadRunState({
     ...state,
     status: "stopped",
@@ -488,19 +533,22 @@ async function requestWorkflowControl(action) {
     message: "Run stopped completely. Start again whenever you are ready.",
     specificLeadId: null,
     currentLead: null,
+    automationWindowId: null,
+    automationHomeTabId: null,
+    automationTabGroupId: null,
     progress: null,
     result: null,
     stoppedAt: Date.now(),
     completedAt: Date.now(),
   });
-  if (activeWorkflowTabId) {
-    const tabId = activeWorkflowTabId;
-    await sendMessageToTab(tabId, {
-      type: "SHOW_AUTOMATION_STATUS",
-      status: "Stopped.",
-    }).catch(() => {});
-    await chrome.tabs.remove(tabId).catch(() => {});
+  if (activeWorkflowTabId && automationWindowId) {
+    await sendStatusToProtectedActiveTab(state, "Stopped.");
   }
+  activeAutomationWindowId = null;
+  await closeManagedAutomationWindow(
+    automationWindowId,
+    automationHomeTabId,
+  ).catch(() => {});
   return next;
 }
 
@@ -517,6 +565,9 @@ async function finalizeControlledRun(runContext, control) {
       message: "Run stopped completely. Start again whenever you are ready.",
       specificLeadId: null,
       currentLead: null,
+      automationWindowId: null,
+      automationHomeTabId: null,
+      automationTabGroupId: null,
       progress: null,
       result: null,
       stoppedAt: Date.now(),
@@ -527,7 +578,8 @@ async function finalizeControlledRun(runContext, control) {
     ...state,
     status: "paused",
     phase: "paused",
-    message: "Paused. Resume to continue from the last completed step.",
+    message: workflowControlRequest?.reason ||
+      "Paused. Resume to continue from the last completed step.",
     pausedAt: Date.now(),
   });
 }
@@ -546,6 +598,9 @@ function defaultAutoLeadRunState() {
     phase: "idle",
     message: "Ready to start today’s work.",
     currentLead: null,
+    automationWindowId: null,
+    automationHomeTabId: null,
+    automationTabGroupId: null,
     progress: null,
     result: null,
     error: null,
@@ -624,6 +679,239 @@ function emptyConnectionReview() {
   };
 }
 
+async function prepareAutomationWindow(
+  runContext,
+  resumeState = null,
+  previousStateToClose = null,
+) {
+  if (resumeState) {
+    const existing = await getManagedAutomationContext(resumeState).catch(
+      () => null,
+    );
+    if (existing) {
+      await chrome.windows.update(existing.automationWindowId, { focused: true });
+      await chrome.tabs.update(existing.automationHomeTabId, { active: true });
+      return existing;
+    }
+    await closeManagedAutomationWindow(
+      resumeState.automationWindowId,
+      resumeState.automationHomeTabId,
+    ).catch(() => {});
+  }
+
+  if (previousStateToClose?.automationWindowId) {
+    await closeManagedAutomationWindow(
+      previousStateToClose.automationWindowId,
+      previousStateToClose.automationHomeTabId,
+    ).catch(() => {});
+  }
+
+  throwIfWorkflowControlled(runContext);
+  const created = await chrome.windows.create({
+    url: AUTOMATION_HOME_URL,
+    type: "normal",
+    focused: true,
+    width: 1180,
+    height: 820,
+  });
+  if (!created?.id) {
+    throw new Error("We couldn’t open the dedicated automation window.");
+  }
+  const tabs = created.tabs?.length
+    ? created.tabs
+    : await chrome.tabs.query({ windowId: created.id });
+  const homeTab = tabs.find(
+    (tab) => tab.url === AUTOMATION_HOME_URL || tab.pendingUrl === AUTOMATION_HOME_URL,
+  );
+  if (!homeTab?.id) {
+    await chrome.windows.remove(created.id).catch(() => {});
+    throw new Error("The automation window opened without its status tab.");
+  }
+  try {
+    const groupId = await chrome.tabs.group({
+      tabIds: homeTab.id,
+      createProperties: { windowId: created.id },
+    });
+    await styleAutomationTabGroup(groupId);
+    return {
+      automationWindowId: created.id,
+      automationHomeTabId: homeTab.id,
+      automationTabGroupId: groupId,
+    };
+  } catch (error) {
+    await chrome.windows.remove(created.id).catch(() => {});
+    throw error;
+  }
+}
+
+async function getManagedAutomationContext(state) {
+  const windowId = Number(state.automationWindowId);
+  const homeTabId = Number(state.automationHomeTabId);
+  if (!Number.isInteger(windowId) || !Number.isInteger(homeTabId)) return null;
+  const window = await chrome.windows.get(windowId, { populate: true });
+  const homeTab = window.tabs?.find((tab) => tab.id === homeTabId);
+  if (!isManagedAutomationHomeTab(homeTab, windowId)) {
+    return null;
+  }
+
+  let groupId = Number(state.automationTabGroupId);
+  let group = Number.isInteger(groupId)
+    ? await chrome.tabGroups.get(groupId).catch(() => null)
+    : null;
+  if (!group || group.windowId !== windowId) {
+    groupId = Number(homeTab.groupId);
+    group = Number.isInteger(groupId) && groupId >= 0
+      ? await chrome.tabGroups.get(groupId).catch(() => null)
+      : null;
+    if (!group || group.windowId !== windowId) {
+      groupId = await chrome.tabs.group({
+        tabIds: homeTabId,
+        createProperties: { windowId },
+      });
+    }
+  }
+  await styleAutomationTabGroup(groupId);
+  const staleWorkerTabIds = (window.tabs || [])
+    .filter((tab) => tab.id !== homeTabId && tab.groupId === groupId)
+    .map((tab) => tab.id)
+    .filter(Number.isInteger);
+  if (staleWorkerTabIds.length > 0) {
+    await chrome.tabs.remove(staleWorkerTabIds).catch(() => {});
+  }
+  return {
+    automationWindowId: windowId,
+    automationHomeTabId: homeTabId,
+    automationTabGroupId: groupId,
+  };
+}
+
+async function styleAutomationTabGroup(groupId) {
+  await chrome.tabGroups.update(groupId, {
+    title: AUTOMATION_GROUP_TITLE,
+    color: "purple",
+    collapsed: false,
+  });
+}
+
+async function closeManagedAutomationWindow(windowId, homeTabId) {
+  if (!Number.isInteger(Number(windowId)) || !Number.isInteger(Number(homeTabId))) {
+    return false;
+  }
+  const homeTab = await chrome.tabs.get(Number(homeTabId)).catch(() => null);
+  if (!isManagedAutomationHomeTab(homeTab, Number(windowId))) {
+    return false;
+  }
+  await chrome.windows.remove(Number(windowId));
+  return true;
+}
+
+async function createAutomationTab(runContext, url, { active = true } = {}) {
+  throwIfWorkflowControlled(runContext);
+  await assertAutomationWindow(runContext);
+  const tab = await chrome.tabs.create({
+    windowId: runContext.automationWindowId,
+    url,
+    active,
+  });
+  if (!tab?.id) throw new Error("The automation tab did not open.");
+  try {
+    const groupId = await chrome.tabs.group({
+      tabIds: tab.id,
+      groupId: runContext.automationTabGroupId,
+    });
+    if (groupId !== runContext.automationTabGroupId) {
+      throw new Error("The automation tab opened outside its protected group.");
+    }
+  } catch (error) {
+    await chrome.tabs.remove(tab.id).catch(() => {});
+    throw error;
+  }
+  setActiveWorkflowTab(runContext, tab.id);
+  return tab;
+}
+
+async function assertAutomationWindow(runContext) {
+  const windowId = Number(runContext.automationWindowId);
+  if (!Number.isInteger(windowId) || windowId !== activeAutomationWindowId) {
+    throw new Error("The dedicated automation window is not available.");
+  }
+  await chrome.windows.get(windowId);
+}
+
+async function assertAutomationTab(runContext, tabId) {
+  await assertAutomationWindow(runContext);
+  const tab = await chrome.tabs.get(tabId);
+  if (!isProtectedAutomationTab(tab, runContext)) {
+    throw new Error(
+      "Automation stopped because its tab was moved outside the protected window.",
+    );
+  }
+  return tab;
+}
+
+function isProtectedAutomationTab(tab, runContext) {
+  return Boolean(
+    tab &&
+      tab.windowId === runContext.automationWindowId &&
+      tab.groupId === runContext.automationTabGroupId,
+  );
+}
+
+function isManagedAutomationHomeTab(tab, windowId) {
+  return Boolean(
+    tab &&
+      tab.windowId === windowId &&
+      (tab.url === AUTOMATION_HOME_URL ||
+        tab.pendingUrl === AUTOMATION_HOME_URL),
+  );
+}
+
+async function waitForAutomationContentScript(runContext, tabId) {
+  await assertAutomationTab(runContext, tabId);
+  const page = await waitForContentScript(tabId);
+  await assertAutomationTab(runContext, tabId);
+  const marker = await sendMessageToTab(tabId, {
+    type: "SET_AUTOMATION_CONTEXT",
+    runId: runContext.runId,
+    groupTitle: AUTOMATION_GROUP_TITLE,
+  });
+  if (!marker?.ok) {
+    throw new Error("We couldn’t mark the protected automation tab.");
+  }
+  return page;
+}
+
+async function sendAutomationMessageToTab(runContext, tabId, message) {
+  await assertAutomationTab(runContext, tabId);
+  return sendMessageToTab(tabId, message);
+}
+
+async function sendStatusToProtectedActiveTab(state, status) {
+  if (!activeWorkflowTabId) return;
+  const tab = await chrome.tabs.get(activeWorkflowTabId).catch(() => null);
+  if (!isProtectedAutomationTab(tab, state)) return;
+  await sendMessageToTab(activeWorkflowTabId, {
+    type: "SHOW_AUTOMATION_STATUS",
+    status,
+  }).catch(() => {});
+}
+
+async function pauseRunAfterAutomationWindowClosed() {
+  activeAutomationWindowId = null;
+  const state = await requestWorkflowControl("pause", {
+    reason:
+      "The automation window was closed. The run paused safely; Resume will open a protected window and continue.",
+  });
+  if (state.runId) {
+    await writeAutoLeadRunState({
+      ...state,
+      automationWindowId: null,
+      automationHomeTabId: null,
+      automationTabGroupId: null,
+    });
+  }
+}
+
 function createRunId() {
   return globalThis.crypto?.randomUUID?.() ||
     `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -648,15 +936,14 @@ async function reviewAcceptedConnections(dashboard, runContext) {
   );
   if (!plan.shouldReview) return empty;
 
-  const tab = await chrome.tabs.create({ url: CONNECTIONS_URL, active: true });
+  const tab = await createAutomationTab(runContext, CONNECTIONS_URL);
   if (!tab?.id) throw new Error("We couldn’t open your LinkedIn connections.");
-  setActiveWorkflowTab(runContext, tab.id);
   let reviewResult;
   try {
     await waitForTabComplete(tab.id);
     throwIfWorkflowControlled(runContext);
-    await waitForContentScript(tab.id);
-    const scan = await sendMessageToTab(tab.id, {
+    await waitForAutomationContentScript(runContext, tab.id);
+    const scan = await sendAutomationMessageToTab(runContext, tab.id, {
       type: "SCAN_RECENT_CONNECTIONS",
       options: {
         checkpoint: plan.checkpoint,
@@ -735,21 +1022,26 @@ async function autoWithdrawOldRequests(runContext = null) {
     };
   }
 
-  const tab = await chrome.tabs.create({ url: SENT_INVITATIONS_URL, active: true });
+  const tab = runContext
+    ? await createAutomationTab(runContext, SENT_INVITATIONS_URL)
+    : await chrome.tabs.create({ url: SENT_INVITATIONS_URL, active: true });
   if (!tab?.id) {
     throw new Error("We couldn’t open your LinkedIn sent invitations.");
   }
-  if (runContext) setActiveWorkflowTab(runContext, tab.id);
 
   try {
     await waitForTabComplete(tab.id);
     if (runContext) throwIfWorkflowControlled(runContext);
-    await waitForContentScript(tab.id);
+    if (runContext) await waitForAutomationContentScript(runContext, tab.id);
+    else await waitForContentScript(tab.id);
 
-    const withdrawResponse = await sendMessageToTab(tab.id, {
+    const withdrawMessage = {
       type: "WITHDRAW_OLD_SENT_INVITATIONS",
       options: { dbLeads: oldRequests },
-    });
+    };
+    const withdrawResponse = runContext
+      ? await sendAutomationMessageToTab(runContext, tab.id, withdrawMessage)
+      : await sendMessageToTab(tab.id, withdrawMessage);
 
     if (!withdrawResponse?.ok) {
       if (runContext) throwIfWorkflowControlled(runContext);
@@ -783,9 +1075,8 @@ async function autoWithdrawOldRequests(runContext = null) {
 
 async function collectAcceptedContact(lead, runContext) {
   const requestedProfileUrl = normalizeLinkedInProfileUrl(lead.profileUrl);
-  const tab = await chrome.tabs.create({ url: requestedProfileUrl, active: true });
+  const tab = await createAutomationTab(runContext, requestedProfileUrl);
   if (!tab?.id) throw new Error("We couldn’t open this LinkedIn profile.");
-  setActiveWorkflowTab(runContext, tab.id);
   try {
     await waitForTabComplete(tab.id);
     throwIfWorkflowControlled(runContext);
@@ -793,8 +1084,8 @@ async function collectAcceptedContact(lead, runContext) {
       tab.id,
       requestedProfileUrl,
     );
-    await waitForContentScript(tab.id);
-    const contact = await sendMessageToTab(tab.id, {
+    await waitForAutomationContentScript(runContext, tab.id);
+    const contact = await sendAutomationMessageToTab(runContext, tab.id, {
       type: "EXTRACT_CONTACT_INFO",
       options: { expectedProfileUrl: profileUrl },
     });
@@ -824,7 +1115,7 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
     let includeNote = Boolean(settings.includeNote && settings.linkedinPremium);
     let noteDisabledForEligibility = false;
     if (includeNote) {
-      const eligibility = await verifyLinkedInPremium();
+      const eligibility = await verifyLinkedInPremium(runContext);
       if (!eligibility.premium) {
         includeNote = false;
         noteDisabledForEligibility = true;
@@ -859,9 +1150,8 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
         .slice(0, 300),
     };
 
-    const tab = await chrome.tabs.create({ url: requestedProfileUrl, active: true });
+    const tab = await createAutomationTab(runContext, requestedProfileUrl);
     workflowTabId = tab.id;
-    setActiveWorkflowTab(runContext, tab.id);
     await waitForTabComplete(tab.id);
     throwIfWorkflowControlled(runContext);
     const profileUrl = await waitForResolvedLinkedInProfileUrl(
@@ -883,8 +1173,8 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
       await chrome.tabs.update(tab.id, { url: recentActivityUrl });
       await waitForTabComplete(tab.id);
       throwIfWorkflowControlled(runContext);
-      await waitForContentScript(tab.id);
-      engagementResponse = await sendMessageToTab(tab.id, {
+      await waitForAutomationContentScript(runContext, tab.id);
+      engagementResponse = await sendAutomationMessageToTab(runContext, tab.id, {
         type: "EXECUTE_POST_ENGAGEMENT",
         options: { ...automationOptions, profileUrl },
       });
@@ -910,9 +1200,9 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
     await chrome.tabs.update(tab.id, { url: profileUrl });
     await waitForTabComplete(tab.id);
     throwIfWorkflowControlled(runContext);
-    await waitForContentScript(tab.id);
+    await waitForAutomationContentScript(runContext, tab.id);
     if (noteDisabledForEligibility) {
-      await sendMessageToTab(tab.id, {
+      await sendAutomationMessageToTab(runContext, tab.id, {
         type: "SHOW_AUTOMATION_STATUS",
         status:
           "Premium is not active, so no note will be added.",
@@ -924,7 +1214,7 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
     });
     connectionReserved = true;
     throwIfWorkflowControlled(runContext);
-    const connectResponse = await sendMessageToTab(tab.id, {
+    const connectResponse = await sendAutomationMessageToTab(runContext, tab.id, {
       type: "EXECUTE_CONNECTION_REQUEST",
       options: {
         expectedProfileName: lead.fullName,
@@ -976,7 +1266,7 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
         : new WorkflowControlError(requestedControl);
     }
     if (workflowTabId) {
-      await sendMessageToTab(workflowTabId, {
+      await sendAutomationMessageToTab(runContext, workflowTabId, {
         type: "SHOW_AUTOMATION_ERROR",
         error: message,
       }).catch(() => {});
@@ -1012,16 +1302,19 @@ function sendMessageToTab(tabId, message) {
   });
 }
 
-function verifyLinkedInPremium() {
+function verifyLinkedInPremium(runContext = null) {
+  if (runContext) return inspectLinkedInPremium(runContext);
   if (premiumCheckPromise) return premiumCheckPromise;
-  premiumCheckPromise = inspectLinkedInPremium().finally(() => {
+  premiumCheckPromise = inspectLinkedInPremium(null).finally(() => {
     premiumCheckPromise = null;
   });
   return premiumCheckPromise;
 }
 
-async function inspectLinkedInPremium() {
-  const tab = await chrome.tabs.create({ url: PREMIUM_URL, active: false });
+async function inspectLinkedInPremium(runContext = null) {
+  const tab = runContext
+    ? await createAutomationTab(runContext, PREMIUM_URL, { active: false })
+    : await chrome.tabs.create({ url: PREMIUM_URL, active: false });
   if (!tab?.id) throw new Error("We couldn’t open LinkedIn to check Premium.");
   try {
     const finalUrl = await waitForStableTabUrl(tab.id);
@@ -1030,10 +1323,12 @@ async function inspectLinkedInPremium() {
       evidence: "LinkedIn did not open the Premium page. Try again.",
     };
     if (isLinkedInPremiumUrl(finalUrl)) {
-      await waitForContentScript(tab.id);
-      const response = await sendMessageToTab(tab.id, {
-        type: "INSPECT_PREMIUM_ACCOUNT",
-      });
+      if (runContext) await waitForAutomationContentScript(runContext, tab.id);
+      else await waitForContentScript(tab.id);
+      const inspectionMessage = { type: "INSPECT_PREMIUM_ACCOUNT" };
+      const response = runContext
+        ? await sendAutomationMessageToTab(runContext, tab.id, inspectionMessage)
+        : await sendMessageToTab(tab.id, inspectionMessage);
       if (!response?.ok) {
         throw new Error(
           response?.error || "We couldn’t check your Premium plan.",
@@ -1051,6 +1346,7 @@ async function inspectLinkedInPremium() {
     });
     return inspection;
   } finally {
+    if (runContext) clearActiveWorkflowTab(tab.id);
     await chrome.tabs.remove(tab.id).catch(() => {});
   }
 }

@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Callum Scout | Automation Window</title>
+    <link rel="stylesheet" href="automation.css" />
+  </head>
+  <body>
+    <div class="page-glow" aria-hidden="true"></div>
+    <main class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <img src="icon.png" alt="" />
+          <div>
+            <strong>Callum Scout</strong>
+            <span>Dedicated automation window</span>
+          </div>
+        </div>
+        <div class="protected-badge">
+          <span></span>
+          Protected window
+        </div>
+      </header>
+
+      <section class="hero">
+        <p class="eyebrow">CALLUM AUTOMATION</p>
+        <h1>This window is reserved for today’s work.</h1>
+        <p class="intro">
+          Callum Scout will only control protected LinkedIn tabs inside this purple group. Your LinkedIn tabs in other Chrome windows are left alone.
+        </p>
+      </section>
+
+      <section id="run-card" class="run-card" data-status="idle" aria-live="polite">
+        <div class="status-orb" aria-hidden="true"><span></span></div>
+        <div class="run-copy">
+          <p class="run-kicker">Current status</p>
+          <h2 id="run-label">Preparing</h2>
+          <p id="run-detail">The protected window is getting ready.</p>
+        </div>
+        <div class="progress-block">
+          <div class="progress-copy">
+            <span id="progress-label">Run progress</span>
+            <strong id="progress-value">0 / 0</strong>
+          </div>
+          <div class="progress-track"><span id="progress-bar"></span></div>
+        </div>
+        <div id="run-controls" class="run-controls">
+          <button id="pause-run" class="button secondary" type="button" hidden>Pause safely</button>
+          <button id="resume-run" class="button primary" type="button" hidden>Resume</button>
+          <button id="stop-run" class="button danger" type="button" hidden>Stop completely</button>
+        </div>
+        <p id="control-message" class="control-message" hidden></p>
+      </section>
+
+      <section class="safety-grid" aria-label="Automation safety rules">
+        <article>
+          <span class="number">01</span>
+          <strong>Purple group only</strong>
+          <p>Every worker tab is added to the coloured CALLUM AUTOMATION group.</p>
+        </article>
+        <article>
+          <span class="number">02</span>
+          <strong>Exact window check</strong>
+          <p>An action is blocked if its tab is moved to another Chrome window.</p>
+        </article>
+        <article>
+          <span class="number">03</span>
+          <strong>Visible LinkedIn marker</strong>
+          <p>The active automation page has a purple border and protected-tab label.</p>
+        </article>
+      </section>
+
+      <footer>
+        Keep this window open while the run is active. Closing it pauses the run safely.
+      </footer>
+    </main>
+    <script src="automation.js"></script>
+  </body>
+</html>

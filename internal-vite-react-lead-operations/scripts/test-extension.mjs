@@ -12,15 +12,35 @@ const extensionRoot = path.join(projectRoot, "chrome-extension");
 const readExtensionFile = (name) =>
   readFile(path.join(extensionRoot, name), "utf8");
 
-const [manifestSource, popupSource, popupScript, dashboardSource, dashboardScript, backgroundSource, contentSource, clientSource, scoutSource, adminSource, schemaSource] =
+const [
+  manifestSource,
+  popupSource,
+  popupScript,
+  dashboardSource,
+  dashboardScript,
+  automationSource,
+  automationScript,
+  automationStyles,
+  backgroundSource,
+  contentSource,
+  contentStyles,
+  clientSource,
+  scoutSource,
+  adminSource,
+  schemaSource,
+] =
   await Promise.all([
     readExtensionFile("manifest.json"),
     readExtensionFile("popup.html"),
     readExtensionFile("popup.js"),
     readExtensionFile("dashboard.html"),
     readExtensionFile("dashboard.js"),
+    readExtensionFile("automation.html"),
+    readExtensionFile("automation.js"),
+    readExtensionFile("automation.css"),
     readExtensionFile("background.js"),
     readExtensionFile("content.js"),
+    readExtensionFile("content.css"),
     readExtensionFile("convex-client.js"),
     readFile(path.join(projectRoot, "convex", "scouts.ts"), "utf8"),
     readFile(path.join(projectRoot, "convex", "adminAnalytics.ts"), "utf8"),
@@ -28,11 +48,11 @@ const [manifestSource, popupSource, popupScript, dashboardSource, dashboardScrip
   ]);
 const manifest = JSON.parse(manifestSource);
 
-assert.equal(manifest.version, "0.9.0");
+assert.equal(manifest.version, "0.10.0");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
-assert.deepEqual(manifest.permissions, ["alarms", "storage", "tabs"]);
+assert.deepEqual(manifest.permissions, ["alarms", "storage", "tabGroups", "tabs"]);
 for (const source of [manifestSource, popupSource, popupScript, contentSource]) {
   assert.doesNotMatch(
     source,
@@ -60,6 +80,16 @@ assert.match(popupScript, /STOP_AUTO_LEAD/);
 assert.match(popupScript, /saved resume point was cleared/i);
 assert.match(popupSource, /id="open-dashboard"/);
 assert.match(popupScript, /dashboard\.html/);
+assert.match(automationSource, /Dedicated automation window/);
+assert.match(automationSource, /purple group/);
+assert.match(automationSource, /id="pause-run"/);
+assert.match(automationSource, /id="resume-run"/);
+assert.match(automationSource, /id="stop-run"/);
+assert.match(automationScript, /autoLeadRunState/);
+assert.match(automationScript, /PAUSE_AUTO_LEAD/);
+assert.match(automationScript, /RESUME_AUTO_LEAD/);
+assert.match(automationScript, /STOP_AUTO_LEAD/);
+assert.match(automationStyles, /#100b27/);
 assert.match(dashboardSource, /All leads and steps/);
 assert.match(dashboardSource, /id="lead-drawer"/);
 assert.match(dashboardScript, /scouts:getLeadProgress/);
@@ -145,6 +175,10 @@ assert.match(contentSource, /feed\/update\/urn:li:activity/);
 assert.match(contentSource, /INSPECT_PREMIUM_ACCOUNT/);
 assert.match(contentSource, /plan recommendation/i);
 assert.match(contentSource, /manage-premium-account/);
+assert.match(contentSource, /SET_AUTOMATION_CONTEXT/);
+assert.match(contentSource, /markAutomationContext/);
+assert.match(contentStyles, /callum-automation-marker/);
+assert.match(contentStyles, /data-callum-automation/);
 assert.match(backgroundSource, /CHECK_LINKEDIN_PREMIUM/);
 assert.match(backgroundSource, /GET_AUTO_LEAD_RUN_STATE/);
 assert.match(backgroundSource, /PAUSE_AUTO_LEAD/);
@@ -154,6 +188,14 @@ assert.match(backgroundSource, /autoLeadRunState/);
 assert.match(backgroundSource, /Pausing after the current safe step/);
 assert.match(backgroundSource, /lead\.status !== "engaged"/);
 assert.match(backgroundSource, /progress: null/);
+assert.match(backgroundSource, /chrome\.windows\.create/);
+assert.match(backgroundSource, /windowId: runContext\.automationWindowId/);
+assert.match(backgroundSource, /chrome\.tabs\.group/);
+assert.match(backgroundSource, /CALLUM AUTOMATION/);
+assert.match(backgroundSource, /color: "purple"/);
+assert.match(backgroundSource, /assertAutomationTab/);
+assert.match(backgroundSource, /SET_AUTOMATION_CONTEXT/);
+assert.match(backgroundSource, /outside the protected window/);
 assert.match(backgroundSource, /premium\/my-premium/);
 assert.match(backgroundSource, /INSPECT_PREMIUM_ACCOUNT/);
 assert.match(backgroundSource, /localSettings\.validateBeforeCommenting \?\? false/);
@@ -275,6 +317,9 @@ const backgroundContext = {
     action: {},
     alarms: { create() {}, onAlarm: listenerStub() },
     runtime: {
+      getURL(pathname) {
+        return `chrome-extension://test/${pathname}`;
+      },
       onInstalled: listenerStub(),
       onMessage: listenerStub(),
       onStartup: listenerStub(),
@@ -290,6 +335,7 @@ const backgroundContext = {
       },
     },
     tabs: { onUpdated: listenerStub() },
+    windows: { onRemoved: listenerStub() },
   },
 };
 vm.runInNewContext(backgroundSource, backgroundContext);
@@ -312,6 +358,44 @@ assert.equal(
   "https://www.linkedin.com/in/taylor-example",
 );
 assert.equal(backgroundContext.defaultAutoLeadRunState().status, "idle");
+assert.equal(
+  backgroundContext.isProtectedAutomationTab(
+    { windowId: 42, groupId: 7 },
+    { automationWindowId: 42, automationTabGroupId: 7 },
+  ),
+  true,
+);
+assert.equal(
+  backgroundContext.isProtectedAutomationTab(
+    { windowId: 99, groupId: 7 },
+    { automationWindowId: 42, automationTabGroupId: 7 },
+  ),
+  false,
+  "A LinkedIn tab in another Chrome window must never be treated as protected.",
+);
+assert.equal(
+  backgroundContext.isProtectedAutomationTab(
+    { windowId: 42, groupId: 8 },
+    { automationWindowId: 42, automationTabGroupId: 7 },
+  ),
+  false,
+  "An ungrouped or differently grouped tab must never receive automation.",
+);
+assert.equal(
+  backgroundContext.isManagedAutomationHomeTab(
+    { windowId: 42, url: "chrome-extension://test/automation.html" },
+    42,
+  ),
+  true,
+);
+assert.equal(
+  backgroundContext.isManagedAutomationHomeTab(
+    { windowId: 99, url: "chrome-extension://test/automation.html" },
+    42,
+  ),
+  false,
+  "Stop must not close a window unless the extension home tab proves ownership.",
+);
 assert.deepEqual(
   JSON.parse(JSON.stringify(backgroundContext.normalizeRunProgress({
     processedLeads: 3,
@@ -354,5 +438,5 @@ assert.equal(stoppedRun.progress, null);
 assert.equal(stoppedRun.specificLeadId, null);
 
 console.log(
-  "Extension checks passed: production UI, resumable run controls, Premium detection, and auth recovery are wired correctly.",
+  "Extension checks passed: isolated automation window, protected tab group, resumable controls, Premium detection, and auth recovery are wired correctly.",
 );

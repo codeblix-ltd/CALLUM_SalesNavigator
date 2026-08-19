@@ -5,9 +5,16 @@
   window.__CALLUM_SCOUT_CONTENT_LOADED__ = true;
 
   let overlayContainer = null;
+  let automationContext = null;
 
   // Listen for messages from background script or popup
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type === "SET_AUTOMATION_CONTEXT") {
+      markAutomationContext(message);
+      sendResponse({ ok: true, runId: automationContext.runId });
+      return false;
+    }
+
     if (message?.type === "EXECUTE_POST_ENGAGEMENT") {
       return runVisibleWorkflow(
         () => runPostEngagement(message.options || {}),
@@ -184,10 +191,42 @@
       </div>
     `;
     document.body.appendChild(overlayContainer);
+    if (automationContext) applyAutomationOverlayStyle();
 
     document.getElementById("callum-close-btn")?.addEventListener("click", () => {
       overlayContainer.style.display = "none";
     });
+  }
+
+  function markAutomationContext(message) {
+    automationContext = {
+      runId: String(message.runId || ""),
+      groupTitle: String(message.groupTitle || "CALLUM AUTOMATION"),
+    };
+    document.documentElement.dataset.callumAutomation = "true";
+    let marker = document.getElementById("callum-automation-marker");
+    if (!marker) {
+      marker = document.createElement("div");
+      marker.id = "callum-automation-marker";
+      marker.setAttribute("role", "status");
+      marker.setAttribute("aria-label", "Protected Callum automation tab");
+      const dot = document.createElement("span");
+      dot.className = "callum-automation-marker-dot";
+      const text = document.createElement("strong");
+      text.className = "callum-automation-marker-text";
+      marker.append(dot, text);
+      document.body.appendChild(marker);
+    }
+    marker.querySelector(".callum-automation-marker-text").textContent =
+      `${automationContext.groupTitle} · PROTECTED TAB`;
+    initOverlay();
+    applyAutomationOverlayStyle();
+  }
+
+  function applyAutomationOverlayStyle() {
+    overlayContainer?.classList.add("callum-automation-context");
+    const badge = overlayContainer?.querySelector(".callum-badge");
+    if (badge) badge.textContent = "Automation";
   }
 
   function updateStatus(text) {
