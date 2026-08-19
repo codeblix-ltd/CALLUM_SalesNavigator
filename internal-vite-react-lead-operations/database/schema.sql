@@ -589,6 +589,49 @@ CREATE INDEX IF NOT EXISTS lead_simulation_events_by_run_id_and_created_at
 CREATE INDEX IF NOT EXISTS lead_simulation_events_by_operator_id_and_created_at
   ON lead_simulation_events (operator_id, created_at DESC);
 
+-- Auditable, repeat-safe imports from the legacy multi-scout Google Sheet.
+-- Every source row is preserved here even when the canonical lead cannot be
+-- assigned because its LinkedIn profile already belongs to another scout.
+CREATE TABLE IF NOT EXISTS scout_sheet_migrations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  source_name STRING NOT NULL,
+  sha256 STRING NOT NULL UNIQUE,
+  total_rows INT8 NOT NULL,
+  status STRING NOT NULL DEFAULT 'importing'
+    CHECK (status IN ('importing', 'completed', 'failed')),
+  stats JSONB NOT NULL DEFAULT '{}'::JSONB,
+  backup_file STRING NULL,
+  error_message STRING NULL,
+  started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  completed_at TIMESTAMPTZ NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS scout_sheet_migration_rows (
+  migration_id UUID NOT NULL REFERENCES scout_sheet_migrations(id) ON DELETE CASCADE,
+  source_sheet STRING NOT NULL,
+  source_row INT8 NOT NULL,
+  operator_id STRING NOT NULL,
+  profile_key STRING NULL,
+  linkedin_url STRING NULL,
+  raw_record JSONB NOT NULL,
+  normalized_record JSONB NOT NULL DEFAULT '{}'::JSONB,
+  outcome STRING NOT NULL,
+  lead_id UUID NULL REFERENCES leads(id) ON DELETE SET NULL,
+  assignment_operator_id STRING NULL,
+  details STRING NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (migration_id, source_sheet, source_row)
+);
+
+CREATE INDEX IF NOT EXISTS scout_sheet_migration_rows_by_outcome
+  ON scout_sheet_migration_rows (migration_id, outcome, source_sheet, source_row);
+
+CREATE INDEX IF NOT EXISTS scout_sheet_migration_rows_by_profile_key
+  ON scout_sheet_migration_rows (profile_key)
+  WHERE profile_key IS NOT NULL;
+
 -- The VPS gateway keeps the live Codex session in a private Docker volume and
 -- mirrors auth.json here only after encrypting it with a gateway-only key.
 CREATE TABLE IF NOT EXISTS codex_gateway_auth (

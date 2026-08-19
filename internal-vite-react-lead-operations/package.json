@@ -13,6 +13,7 @@
     "db:import": "node --env-file=.env.local scripts/import-leads.mjs",
     "db:reset": "node --env-file=.env.local scripts/reset-db.mjs",
     "db:delete-niche": "node --env-file=.env.local scripts/delete-niche.mjs",
+    "db:migrate-scout-sheet": "node --env-file=.env.local scripts/migrate-scout-sheet-leads.mjs",
     "scout:create": "node --env-file=.env.local scripts/create-scout.mjs",
     "leads:assign": "node --env-file=.env.local scripts/assign-leads.mjs",
     "setup:secrets": "node scripts/configure-secrets.mjs",
