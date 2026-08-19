@@ -222,6 +222,10 @@ assert.match(backgroundSource, /error\?\.requestSubmitted === true/);
 assert.match(backgroundSource, /workflowError\.requestSubmitted = requestSubmitted/);
 assert.match(backgroundSource, /workflowError\.persistencePending/);
 assert.match(backgroundSource, /if \(specificLeadId \|\| connectionSyncPending\) break/);
+assert.match(
+  backgroundSource,
+  /if \(workflowTabId\) \{[\s\S]*?clearActiveWorkflowTab\(workflowTabId\);[\s\S]*?chrome\.tabs\.remove\(workflowTabId\)/,
+);
 assert.doesNotMatch(
   backgroundSource,
   /if \(requestSent\) progress\.requestsSent \+= 1;[\s\S]{0,300}scouts:updateLeadStatus/,

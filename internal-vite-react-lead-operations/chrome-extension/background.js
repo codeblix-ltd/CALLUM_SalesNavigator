@@ -1258,8 +1258,6 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
   let connectionReserved = false;
   let requestSubmitted = false;
   let connectionPersistencePending = false;
-  let workflowCompleted = false;
-  let controlledExit = false;
   let completedEngagementCount = 0;
   let resolvedProfileUrl = lead.linkedinUrl;
   try {
@@ -1385,7 +1383,6 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
       );
     }
     requestSubmitted = true;
-    workflowCompleted = true;
     connectionPersistencePending = true;
     await completeConnectionRequestWithRetry({
       leadId: lead.id,
@@ -1417,7 +1414,6 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
     }
     const requestedControl = getRequestedWorkflowControl(runContext);
     if (isWorkflowControlError(error) || requestedControl) {
-      controlledExit = true;
       throw isWorkflowControlError(error)
         ? error
         : new WorkflowControlError(requestedControl);
@@ -1443,8 +1439,8 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
     workflowError.engagedCount = completedEngagementCount;
     throw workflowError;
   } finally {
-    if (workflowTabId) clearActiveWorkflowTab(workflowTabId);
-    if ((workflowCompleted || controlledExit) && workflowTabId) {
+    if (workflowTabId) {
+      clearActiveWorkflowTab(workflowTabId);
       await chrome.tabs.remove(workflowTabId).catch(() => {});
     }
   }
