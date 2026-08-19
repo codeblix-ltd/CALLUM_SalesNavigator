@@ -1107,6 +1107,9 @@ export const recordConnectionReview = action({
               SET status = 'accepted',
                   accepted_at = coalesce(accepted_at, $3::DATE::TIMESTAMPTZ),
                   resolved_linkedin_url = $4,
+                  connection_request_reserved_on = NULL,
+                  last_error = NULL,
+                  last_error_at = NULL,
                   updated_at = now()
             WHERE lead_id = $1::UUID AND operator_id = $2`,
           [leadId, scout.operatorId, connectedOn, profileUrl],

@@ -211,6 +211,9 @@ ALTER TABLE lead_assignments
   CHECK (icp_score IS NULL OR icp_score BETWEEN 0 AND 100);
 
 ALTER TABLE lead_assignments
+  DROP CONSTRAINT IF EXISTS check_status;
+
+ALTER TABLE lead_assignments
   DROP CONSTRAINT IF EXISTS lead_assignments_status_check;
 
 ALTER TABLE lead_assignments

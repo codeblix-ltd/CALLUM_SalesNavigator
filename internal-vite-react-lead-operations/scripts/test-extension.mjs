@@ -237,6 +237,14 @@ assert.match(
 );
 assert.match(scoutSource, /a\.status <> 'failed'/);
 assert.match(scoutSource, /requiresFullScan/);
+assert.match(
+  scoutSource,
+  /SET status = 'accepted',[\s\S]*connection_request_reserved_on = NULL,[\s\S]*last_error = NULL/,
+);
+assert.match(
+  schemaSource,
+  /ALTER TABLE lead_assignments\s+DROP CONSTRAINT IF EXISTS check_status/,
+);
 assert.match(backgroundSource, /recordContactInfo/);
 assert.match(backgroundSource, /reserveConnectionRequest/);
 assert.match(backgroundSource, /completeConnectionRequest/);
