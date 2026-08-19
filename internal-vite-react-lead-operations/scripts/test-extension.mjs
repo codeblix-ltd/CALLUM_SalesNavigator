@@ -48,7 +48,7 @@ const [
   ]);
 const manifest = JSON.parse(manifestSource);
 
-assert.equal(manifest.version, "0.10.7");
+assert.equal(manifest.version, "0.10.8");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -222,12 +222,20 @@ assert.match(backgroundSource, /localSettings\.validateBeforeCommenting \?\? fal
 assert.match(backgroundSource, /settings\.includeNote && settings\.linkedinPremium/);
 assert.match(backgroundSource, /getConnectionReviewPlan/);
 assert.match(backgroundSource, /recordConnectionReview/);
+assert.doesNotMatch(backgroundSource, /if \(!dashboard\.hasSentConnectionRequest\) return empty/);
 assert.match(backgroundSource, /CHECK_ACCEPTED_CONNECTIONS/);
 assert.match(backgroundSource, /forceReview: true/);
+assert.match(backgroundSource, /checkpoint: forceReview/);
+assert.match(backgroundSource, /cutoffDate: forceReview \? null/);
 assert.match(backgroundSource, /keepConnectionTab: true/);
 assert.match(backgroundSource, /connectionWindowKeptOpen: true/);
 assert.match(backgroundSource, /source: "daily"/);
 assert.match(backgroundSource, /lastAcceptedConnectionReview/);
+assert.match(
+  scoutSource,
+  /status IN \('engaged', 'connected', 'connection_requested'\)/,
+);
+assert.match(scoutSource, /requiresFullScan/);
 assert.match(backgroundSource, /recordContactInfo/);
 assert.match(backgroundSource, /reserveConnectionRequest/);
 assert.match(backgroundSource, /completeConnectionRequest/);

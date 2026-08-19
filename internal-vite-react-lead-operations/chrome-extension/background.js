@@ -1136,7 +1136,6 @@ async function reviewAcceptedConnections(
   { forceReview = false, keepConnectionTab = false, collectContacts = true } = {},
 ) {
   const empty = emptyConnectionReview();
-  if (!forceReview && !dashboard.hasSentConnectionRequest) return empty;
 
   throwIfWorkflowControlled(runContext);
   const plan = await ScoutApi.authenticatedAction(
@@ -1155,8 +1154,10 @@ async function reviewAcceptedConnections(
     const scan = await sendAutomationMessageToTab(runContext, tab.id, {
       type: "SCAN_RECENT_CONNECTIONS",
       options: {
-        checkpoint: plan.checkpoint,
-        cutoffDate: plan.cutoffDate,
+        checkpoint: forceReview
+          ? { topProfileUrl: null, topConnectedOn: null }
+          : plan.checkpoint,
+        cutoffDate: forceReview ? null : plan.cutoffDate,
         maxProfiles: 250,
       },
     });

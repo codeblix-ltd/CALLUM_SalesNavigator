@@ -969,13 +969,7 @@ export const getConnectionReviewPlan = action({
       {},
     );
     const database = getPool();
-    const [history, pending, contact, checkpoint] = await Promise.all([
-      database.query(
-        `SELECT count(*)::FLOAT8 AS count
-           FROM lead_assignments
-          WHERE operator_id = $1 AND connection_requested_at IS NOT NULL`,
-        [scout.operatorId],
-      ),
+    const [pending, contact, checkpoint] = await Promise.all([
       database.query(
         `SELECT
            l.id::STRING AS id,
@@ -984,7 +978,8 @@ export const getConnectionReviewPlan = action({
            a.connection_requested_at::STRING AS requested_at
          FROM lead_assignments AS a
          INNER JOIN leads AS l ON l.id = a.lead_id
-         WHERE a.operator_id = $1 AND a.status = 'connection_requested'
+         WHERE a.operator_id = $1
+           AND a.status IN ('engaged', 'connected', 'connection_requested')
          ORDER BY a.connection_requested_at, a.lead_id
          LIMIT 1000`,
         [scout.operatorId],
@@ -1015,17 +1010,24 @@ export const getConnectionReviewPlan = action({
     const pendingLeads = pending.rows.map(mapReviewLead);
     const contactLeads = contact.rows.map(mapReviewLead);
     const checkpointRow = checkpoint.rows[0] ?? {};
+    const requiresFullScan = pendingLeads.some((lead) => !lead.requestedAt);
     const cutoffDate = pendingLeads
       .map((lead) => lead.requestedAt?.slice(0, 10) ?? null)
       .filter((value): value is string => Boolean(value))
       .sort()[0] ?? null;
     return {
-      shouldReview: Number(history.rows[0]?.count ?? 0) > 0,
-      cutoffDate,
+      shouldReview: pendingLeads.length > 0 || contactLeads.length > 0,
+      cutoffDate: requiresFullScan ? null : cutoffDate,
       checkpoint: {
-        topProfileUrl: nullableString(checkpointRow.top_profile_url),
-        topConnectedOn: nullableString(checkpointRow.top_connected_on),
-        lastReviewedAt: nullableString(checkpointRow.last_reviewed_at),
+        topProfileUrl: requiresFullScan
+          ? null
+          : nullableString(checkpointRow.top_profile_url),
+        topConnectedOn: requiresFullScan
+          ? null
+          : nullableString(checkpointRow.top_connected_on),
+        lastReviewedAt: requiresFullScan
+          ? null
+          : nullableString(checkpointRow.last_reviewed_at),
       },
       pendingLeads,
       contactLeads,
@@ -1071,7 +1073,8 @@ export const recordConnectionReview = action({
            a.connection_requested_at::STRING AS requested_at
          FROM lead_assignments AS a
          INNER JOIN leads AS l ON l.id = a.lead_id
-         WHERE a.operator_id = $1 AND a.status = 'connection_requested'
+         WHERE a.operator_id = $1
+           AND a.status IN ('engaged', 'connected', 'connection_requested')
          ORDER BY a.connection_requested_at, a.lead_id
          LIMIT 1000
          FOR UPDATE`,
