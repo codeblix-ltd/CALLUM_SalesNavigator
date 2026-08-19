@@ -288,7 +288,7 @@ export const uploadLeads = action({
           dateFound: lead.date_found,
           sourceRow: lead.source_row,
         })),
-        scouts,
+        scouts: scouts.map(({ operatorId, username }) => ({ operatorId, username })),
       };
     } catch (error) {
       try {
