@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Callum Scout store preview</title>
+  <style>
+    :root { color: #1f2937; background: #f6f7f9; font: 14px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; }
+    body { width: 1280px; height: 800px; margin: 0; overflow: hidden; background: #f6f7f9; }
+    .app { height: 800px; }
+    .sidebar { position: absolute; inset: 0 auto 0 0; width: 220px; padding: 28px 18px 20px; color: #dfe4ee; background: #202632; border-right: 1px solid #303745; }
+    .brand { display: flex; align-items: center; gap: 11px; margin: 0 8px 34px; }
+    .brand-mark { display: grid; width: 34px; height: 34px; place-items: center; color: #fff; background: #7254d8; border-radius: 9px; font-weight: 800; }
+    .brand strong, .brand small { display: block; }
+    .brand strong { color: #fff; font-size: 14px; }
+    .brand small { margin-top: 2px; color: #929cab; font-size: 11px; }
+    nav { display: grid; gap: 4px; }
+    nav span { padding: 10px 12px; color: #aeb7c5; border-radius: 8px; font-size: 13px; font-weight: 650; }
+    nav span.active { color: #fff; background: #343b4a; }
+    .account { position: absolute; right: 18px; bottom: 24px; left: 18px; padding: 14px 10px 4px; border-top: 1px solid #363d49; }
+    .account small, .account strong { display: block; }
+    .account small { color: #8f99a8; font-size: 10px; }
+    .account strong { margin: 4px 0 8px; color: #fff; font-size: 12px; }
+    .main { margin-left: 220px; padding: 36px 52px 44px; }
+    .header { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 28px; }
+    .eyebrow { margin: 0 0 6px; color: #6a4ec7; text-transform: uppercase; letter-spacing: .1em; font-size: 10px; font-weight: 800; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { margin-bottom: 7px; color: #17202d; font-size: 31px; line-height: 1.15; letter-spacing: -.035em; }
+    h2 { margin-bottom: 0; color: #18212e; font-size: 21px; letter-spacing: -.02em; }
+    .header p { margin: 0; color: #77808d; font-size: 12px; }
+    .header-actions { display: flex; gap: 8px; }
+    button { min-height: 40px; padding: 0 16px; border-radius: 8px; font: inherit; font-weight: 700; }
+    .primary { color: #fff; background: #6648c5; border: 1px solid #6648c5; }
+    .quiet { color: #354052; background: white; border: 1px solid #d8dde5; }
+    .section-heading { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 16px; }
+    .section-heading p { max-width: 440px; margin: 0; color: #848c97; font-size: 11px; text-align: right; }
+    .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 26px; }
+    .metric, .panel { background: #fff; border: 1px solid #e0e4e9; border-radius: 11px; }
+    .metric { min-height: 105px; padding: 16px; }
+    .metric span, .metric small { display: block; }
+    .metric span { color: #7f8792; font-size: 11px; }
+    .metric strong { display: block; margin: 9px 0 5px; color: #192433; font-size: 29px; letter-spacing: -.04em; }
+    .metric small { color: #a0a7b0; font-size: 10px; }
+    .workspace { display: grid; grid-template-columns: 1.15fr .85fr; gap: 16px; }
+    .panel { padding: 19px; }
+    .panel h3 { margin: 0 0 16px; color: #202a38; font-size: 16px; }
+    .pipeline { display: grid; gap: 10px; }
+    .stage { display: grid; grid-template-columns: 118px 1fr 34px; align-items: center; gap: 12px; color: #606b7b; font-size: 11px; }
+    .stage b { color: #263344; font-size: 12px; }
+    .bar { height: 8px; overflow: hidden; background: #edf0f4; border-radius: 99px; }
+    .bar i { display: block; height: 100%; background: #6a4ec7; border-radius: inherit; }
+    .stage em { color: #89919c; font-style: normal; text-align: right; }
+    .run { background: #f8f6ff; border-color: #ddd4fa; }
+    .run-top { display: flex; align-items: center; gap: 10px; margin-bottom: 15px; }
+    .status-dot { width: 9px; height: 9px; background: #2eb97a; border-radius: 50%; box-shadow: 0 0 0 4px #e1f6eb; }
+    .run strong { color: #252c3b; font-size: 14px; }
+    .run p { margin-bottom: 17px; color: #6f7888; font-size: 12px; line-height: 1.55; }
+    .run button { width: 100%; }
+    .directory { margin-top: 18px; }
+    .directory-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    .directory-head span { color: #848c97; font-size: 11px; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #e0e4e9; border-radius: 11px; overflow: hidden; font-size: 11px; }
+    th, td { padding: 11px 14px; border-bottom: 1px solid #edf0f3; text-align: left; }
+    th { color: #89919c; background: #fafbfc; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+    td { color: #4e5969; }
+    td strong { color: #273242; }
+    .pill { display: inline-block; padding: 4px 8px; color: #5c47a8; background: #f0edff; border-radius: 99px; font-size: 10px; font-weight: 700; }
+    .caption { position: absolute; right: 52px; bottom: 14px; color: #a2a8b1; font-size: 9px; }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">C</span><div><strong>Callum Scout</strong><small>Lead progress</small></div></div>
+      <nav aria-label="Dashboard"><span class="active">Overview</span><span>All leads</span><span>Questions</span></nav>
+      <div class="account"><small>Signed in as</small><strong>your account</strong><small>LinkedIn plan · Premium</small></div>
+    </aside>
+    <section class="main">
+      <header class="header"><div><p class="eyebrow">Lead dashboard</p><h1>Lead progress</h1><p>See where every lead is in the workflow.</p></div><div class="header-actions"><button class="quiet">Open LinkedIn</button><button class="primary">Refresh</button></div></header>
+      <div class="section-heading"><div><p class="eyebrow">Overview</p><h2>Where your leads are now</h2></div><p>Counts are cumulative, so a connected lead is also included in reached out.</p></div>
+      <div class="metrics"><article class="metric"><span>Total leads</span><strong>48</strong><small>Assigned to you</small></article><article class="metric"><span>New</span><strong>12</strong><small>Ready to review</small></article><article class="metric"><span>Reached out</span><strong>24</strong><small>Connection or message sent</small></article><article class="metric"><span>Connected</span><strong>9</strong><small>Accepted connections</small></article></div>
+      <div class="workspace">
+        <article class="panel"><h3>The steps for every lead</h3><div class="pipeline"><div class="stage"><b>New leads</b><div class="bar"><i style="width:25%"></i></div><em>12</em></div><div class="stage"><b>Checked</b><div class="bar"><i style="width:50%"></i></div><em>24</em></div><div class="stage"><b>Reached out</b><div class="bar"><i style="width:66%"></i></div><em>32</em></div><div class="stage"><b>Connected</b><div class="bar"><i style="width:19%"></i></div><em>9</em></div></div></article>
+        <article class="panel run"><div class="run-top"><span class="status-dot"></span><strong>Today’s work is ready</strong></div><p>Callum Scout checks new connections, saves available email addresses, and works through likes, comments and connection requests within your daily limits.</p><button class="primary">Start today’s work</button></article>
+      </div>
+      <section class="directory"><div class="directory-head"><h2>All leads and steps</h2><span>Showing 4 of 48 leads</span></div><table><thead><tr><th>Lead</th><th>Stage</th><th>Last activity</th><th>Status</th></tr></thead><tbody><tr><td><strong>Sample lead A</strong></td><td>New</td><td>Today</td><td><span class="pill">Ready</span></td></tr><tr><td><strong>Sample lead B</strong></td><td>Reached out</td><td>Yesterday</td><td><span class="pill">Waiting</span></td></tr><tr><td><strong>Sample lead C</strong></td><td>Connected</td><td>2 days ago</td><td><span class="pill">Follow up</span></td></tr></tbody></table></section>
+    </section>
+    <span class="caption">Callum Scout · lead operations overview</span>
+  </main>
+</body>
+</html>
