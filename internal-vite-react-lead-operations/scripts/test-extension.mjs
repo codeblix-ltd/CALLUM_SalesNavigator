@@ -48,7 +48,7 @@ const [
   ]);
 const manifest = JSON.parse(manifestSource);
 
-assert.equal(manifest.version, "0.10.9");
+assert.equal(manifest.version, "0.10.10");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -141,11 +141,13 @@ assert.ok(
 );
 assert.match(popupSource, /id="check-accepted-connections"/);
 assert.match(popupSource, /id="connection-review-status"/);
+assert.match(popupSource, /opens each accepted profile’s Contact info/);
 assert.match(popupScript, /CHECK_ACCEPTED_CONNECTIONS/);
 assert.match(popupScript, /lastAcceptedConnectionReview/);
 assert.match(popupScript, /renderConnectionReviewStatus/);
 assert.match(popupScript, /connectionWindowKeptOpen/);
 assert.match(popupScript, /protected LinkedIn window is still open/);
+assert.match(popupScript, /email addresses/);
 assert.match(popupScript, /scouts:getScoutOperations/);
 assert.match(popupScript, /scouts:setDailyTask/);
 assert.match(popupScript, /scouts:completeFollowupTask/);
@@ -183,6 +185,8 @@ assert.match(contentSource, /SCAN_RECENT_CONNECTIONS/);
 assert.match(contentSource, /Connected on\\s\+/);
 assert.match(contentSource, /EXTRACT_CONTACT_INFO/);
 assert.match(contentSource, /a\[href\^='mailto:'\]/);
+assert.match(contentSource, /ContactInfoDetailSection/);
+assert.match(contentSource, /contactDetailsStartedAt/);
 assert.match(contentSource, /recordPostActivity/);
 assert.match(contentSource, /options\.validateBeforeCommenting/);
 assert.match(contentSource, /feed\/update\/urn:li:activity/);
@@ -228,6 +232,7 @@ assert.match(backgroundSource, /forceReview: true/);
 assert.match(backgroundSource, /checkpoint: forceReview/);
 assert.match(backgroundSource, /cutoffDate: forceReview \? null/);
 assert.match(backgroundSource, /keepConnectionTab: true/);
+assert.match(backgroundSource, /collectContacts: true/);
 assert.match(backgroundSource, /canCloseReviewWindow/);
 assert.match(backgroundSource, /closeManagedAutomationWindow/);
 assert.match(backgroundSource, /connectionWindowKeptOpen: !reviewWindowClosed/);

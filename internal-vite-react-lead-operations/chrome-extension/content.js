@@ -658,12 +658,19 @@
     clickElement(contactLink);
     const dialog = await waitForMatch(findContactInfoDialog, 20_000);
     if (!dialog) throw new Error("LinkedIn did not open Contact info.");
+    const contactDetailsStartedAt = Date.now();
     await waitForMatch(
       () => {
+        if (dialog.querySelector("a[href^='mailto:']")) return true;
         const progress = dialog.querySelector(
           "[role='progressbar'], progress, [data-testid*='progress']",
         );
-        return !progress || dialog.querySelector("a[href^='mailto:']")
+        if (progress) return null;
+        const content = dialog.querySelector("[data-testid='dialog-content']");
+        const detailsLoaded = content?.querySelector(
+          "[id*='ContactInfoDetailSection'], [componentkey*='ContactInfoDetailSection']",
+        );
+        return detailsLoaded && Date.now() - contactDetailsStartedAt >= 2_000
           ? true
           : null;
       },

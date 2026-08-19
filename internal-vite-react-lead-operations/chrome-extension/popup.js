@@ -578,8 +578,13 @@ async function checkAcceptedConnections() {
     await refreshDashboard();
     renderConnectionReviewStatus(result);
     const matched = formatCount(result.acceptedMatched, "lead");
+    const emails = formatCount(
+      result.emailsCollected,
+      "email address",
+      "email addresses",
+    );
     showSuccess(
-      `Accepted connection check complete: ${matched} newly accepted.`,
+      `Accepted connection check complete: ${matched} newly accepted; ${emails} saved.`,
     );
   } catch (error) {
     elements.connectionReviewStatus.textContent =
@@ -599,11 +604,16 @@ function renderConnectionReviewStatus(review) {
   }
   const scanned = formatCount(review.connectionsScanned, "connection");
   const matched = formatCount(review.acceptedMatched, "lead");
+  const emails = formatCount(
+    review.emailsCollected,
+    "email address",
+    "email addresses",
+  );
   const windowNote = review.connectionWindowKeptOpen
     ? " The protected LinkedIn window is still open for review."
     : "";
   elements.connectionReviewStatus.textContent =
-    `Last checked ${relativeTime(review.checkedAt)}: ${scanned} scanned; ${matched} marked accepted.${windowNote}`;
+    `Last checked ${relativeTime(review.checkedAt)}: ${scanned} scanned; ${matched} marked accepted; ${emails} saved.${windowNote}`;
 }
 
 async function handleAutoLeadOutcome(response) {

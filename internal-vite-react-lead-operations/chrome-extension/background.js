@@ -1281,7 +1281,7 @@ async function runManualAcceptedConnectionReview() {
     const result = await reviewAcceptedConnections(dashboard, runContext, {
       forceReview: true,
       keepConnectionTab: true,
-      collectContacts: false,
+      collectContacts: true,
     });
     if (result.connectionTabId) {
       await chrome.tabs.update(result.connectionTabId, { active: true }).catch(
