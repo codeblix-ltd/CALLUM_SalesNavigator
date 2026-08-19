@@ -4,17 +4,21 @@ import { useAuthActions, useConvexAuth } from "@convex-dev/auth/react";
 import { useAction, useQuery } from "convex/react";
 import {
   Activity,
+  AlertTriangle,
   ArrowLeft,
   ArrowRight,
   BarChart3,
   Bot,
+  Check,
   CheckCircle2,
   Clock3,
+  CloudUpload,
   Copy,
   Database,
   ChevronDown,
   Download,
   ExternalLink,
+  FileCheck2,
   KeyRound,
   LockKeyhole,
   LogOut,
@@ -129,6 +133,44 @@ type Analytics = {
   trend: TrendPoint[];
   recentActivity: RecentActivity[];
   postActivities: PostActivity[];
+};
+
+type HermesUploadLead = {
+  id: string;
+  linkedinUrl: string;
+  firstName: string;
+  lastName: string;
+  headline: string;
+  location: string;
+  currentRole: string | null;
+  currentCompany: string | null;
+  dateFound: string;
+  sourceRow: number;
+};
+
+type HermesUploadScout = {
+  operatorId: string;
+  username: string;
+};
+
+type HermesUploadResult = {
+  importId: string;
+  fileName: string;
+  niche: string;
+  totalRows: number;
+  uniqueRows: number;
+  leads: HermesUploadLead[];
+  scouts: HermesUploadScout[];
+};
+
+type HermesAssignmentResult = {
+  assignedCount: number;
+  skippedCount: number;
+  allocations: Array<{
+    operatorId: string;
+    username: string;
+    count: number;
+  }>;
 };
 
 type Lead = {
@@ -339,6 +381,8 @@ function Dashboard({ adminName }: { adminName: string }) {
   const startCodexLogin = useAction(api.codexGateway.startDeviceLogin);
   const getCodexLoginStatus = useAction(api.codexGateway.getDeviceLoginStatus);
   const logoutCodex = useAction(api.codexGateway.logout);
+  const uploadHermesLeads = useAction(api.hermesUpload.uploadLeads);
+  const confirmHermesAssignments = useAction(api.hermesUpload.confirmAssignments);
   const [view, setView] = useState<View>("overview");
   const [range, setRange] = useState<Range>("all");
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
@@ -374,6 +418,7 @@ function Dashboard({ adminName }: { adminName: string }) {
   const [codexError, setCodexError] = useState("");
   const [codexBusy, setCodexBusy] = useState(false);
   const [deviceLogin, setDeviceLogin] = useState<DeviceLogin | null>(null);
+  const [uploadLeadsOpen, setUploadLeadsOpen] = useState(false);
 
   const refreshOverview = useCallback(async () => {
     setAnalyticsLoading(true);
@@ -688,6 +733,9 @@ function Dashboard({ adminName }: { adminName: string }) {
           <button className={view === "leads" ? "active" : ""} onClick={() => setView("leads")}>Lead directory</button>
         </nav>
         <div className="topbar-actions">
+          <button className="upload-leads-button" onClick={() => setUploadLeadsOpen(true)}>
+            <CloudUpload size={16} /> Upload leads
+          </button>
           <span className={`connection-state ${connectionError ? "has-error" : ""}`}>
             <span className="connection-dot" />
             {connectionError ? "Data needs attention" : "Private workspace"}
@@ -793,6 +841,16 @@ function Dashboard({ adminName }: { adminName: string }) {
           connectCodex={connectCodex}
           disconnectCodex={disconnectCodex}
           lockWorkspace={() => void signOut()}
+        />
+      )}
+      {uploadLeadsOpen && (
+        <UploadLeadsModal
+          close={() => setUploadLeadsOpen(false)}
+          upload={uploadHermesLeads}
+          confirm={confirmHermesAssignments}
+          onAssigned={async () => {
+            await Promise.all([refreshOverview(), refreshStats()]);
+          }}
         />
       )}
     </div>
@@ -1443,6 +1501,165 @@ function SettingsModal({ codexStatus, codexError, codexBusy, deviceLogin, close,
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={close}><div className="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}><button className="modal-close" onClick={close} aria-label="Close"><X size={18} /></button><p className="eyebrow">Workspace security</p><h2 id="settings-title">Admin session</h2><p>This browser is signed in with the private administrator account. Analytics and lead data are checked server-side on every request.</p><div className="security-card"><ShieldCheck size={19} /><div><strong>Credentials verified</strong><span>Only the admin role can call dashboard APIs.</span></div></div><button className="danger-button lock-button" onClick={lockWorkspace}><LogOut size={15} /> Sign out and lock</button><div className="modal-divider" /><div className="codex-heading"><div className="codex-icon"><Bot size={19} /></div><div><h3>Codex subscription</h3><p>Draft with GPT-5.6 Luna</p></div></div>{codexStatus?.connected ? <div className="codex-connected"><div><CheckCircle2 size={18} /><span><strong>Connected</strong>{codexStatus.account?.email || "ChatGPT account"} · {codexStatus.account?.planType}</span></div><p>Model: {codexStatus.model}{codexStatus.queuedDrafts > 0 ? ` · ${codexStatus.queuedDrafts} queued` : ""}</p><button className="danger-button codex-disconnect" onClick={() => void disconnectCodex()} disabled={codexBusy}>Disconnect subscription</button></div> : deviceLogin ? <div className="device-login"><p>Open the official OpenAI device page, then enter this one-time code:</p><div className="device-code"><strong>{deviceLogin.userCode}</strong><button type="button" onClick={() => void navigator.clipboard.writeText(deviceLogin.userCode)} title="Copy code"><Copy size={16} /></button></div><a className="primary-button" href={deviceLogin.verificationUrl} target="_blank" rel="noreferrer">Open OpenAI authorization <ExternalLink size={15} /></a><span className="polling-label"><RefreshCw size={13} className="spin" /> Waiting for approval…</span></div> : <button className="primary-button codex-connect" onClick={() => void connectCodex()} disabled={codexBusy}>{codexBusy ? <RefreshCw size={15} className="spin" /> : <Bot size={16} />}Connect ChatGPT subscription</button>}{codexError && <p className="codex-error">{codexError}</p>}</div></div>
   );
+}
+
+function UploadLeadsModal({ close, upload, confirm, onAssigned }: {
+  close: () => void;
+  upload: (args: { fileName: string; csvText: string }) => Promise<HermesUploadResult>;
+  confirm: (args: { leadIds: string[] }) => Promise<HermesAssignmentResult>;
+  onAssigned: () => Promise<void>;
+}) {
+  const fileInput = useRef<HTMLInputElement | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [fileName, setFileName] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<HermesUploadResult | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [assignment, setAssignment] = useState<HermesAssignmentResult | null>(null);
+
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const selectedCount = selectedIds.length;
+  const allocations = useMemo(
+    () => calculateHermesAllocations(selectedIds, result?.scouts ?? []),
+    [result?.scouts, selectedIds],
+  );
+
+  async function handleFile(file: File | undefined) {
+    if (!file) return;
+    setError("");
+    setAssignment(null);
+    setResult(null);
+    setSelectedIds([]);
+    setFileName(file.name);
+    if (!file.name.toLowerCase().endsWith(".csv")) {
+      setError("Please choose a .csv file.");
+      return;
+    }
+    if (file.size > 5_000_000) {
+      setError("CSV files must be 5 MB or smaller.");
+      return;
+    }
+    setUploading(true);
+    try {
+      const nextResult = await upload({ fileName: file.name, csvText: await file.text() });
+      setResult(nextResult);
+      setSelectedIds(nextResult.leads.map((lead) => lead.id));
+    } catch (uploadError) {
+      setError(readError(uploadError));
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  function toggleLead(leadId: string) {
+    setSelectedIds((current) => current.includes(leadId)
+      ? current.filter((id) => id !== leadId)
+      : [...current, leadId]);
+  }
+
+  function toggleAll() {
+    if (!result) return;
+    setSelectedIds(selectedCount === result.leads.length ? [] : result.leads.map((lead) => lead.id));
+  }
+
+  async function confirmSelection() {
+    if (selectedCount === 0) return;
+    setError("");
+    setConfirming(true);
+    try {
+      const nextAssignment = await confirm({ leadIds: selectedIds });
+      setAssignment(nextAssignment);
+      await onAssigned();
+    } catch (confirmError) {
+      setError(readError(confirmError));
+    } finally {
+      setConfirming(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={close}>
+      <div className="modal upload-modal" role="dialog" aria-modal="true" aria-labelledby="upload-leads-title" onMouseDown={(event) => event.stopPropagation()}>
+        <button className="modal-close" type="button" onClick={close} aria-label="Close upload leads"><X size={18} /></button>
+        <div className="upload-modal-heading">
+          <div className="upload-modal-icon"><CloudUpload size={20} /></div>
+          <div><p className="eyebrow">Hermes intake</p><h2 id="upload-leads-title">Upload leads</h2></div>
+        </div>
+        <p className="upload-modal-copy">Drop a CSV to add leads to the <strong>Hermes</strong> niche. Nothing is assigned until you review the selection and confirm the allocation.</p>
+
+        {!result && (
+          <>
+            <div
+              className={`upload-dropzone ${dragging ? "is-dragging" : ""} ${uploading ? "is-uploading" : ""}`}
+              role="button"
+              tabIndex={0}
+              onClick={() => fileInput.current?.click()}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  fileInput.current?.click();
+                }
+              }}
+              onDragEnter={(event) => { event.preventDefault(); setDragging(true); }}
+              onDragOver={(event) => event.preventDefault()}
+              onDragLeave={(event) => { event.preventDefault(); setDragging(false); }}
+              onDrop={(event) => { event.preventDefault(); setDragging(false); void handleFile(event.dataTransfer.files[0]); }}
+            >
+              <input ref={fileInput} className="upload-file-input" type="file" accept=".csv,text/csv" onChange={(event) => { void handleFile(event.target.files?.[0]); event.currentTarget.value = ""; }} />
+              <span className="upload-drop-icon">{uploading ? <RefreshCw size={21} className="spin" /> : <CloudUpload size={21} />}</span>
+              <strong>{uploading ? "Reading and validating…" : "Drop your Hermes CSV here"}</strong>
+              <span>{uploading ? "The file is being mapped to the lead database." : "or click to browse · CSV only · max 5 MB"}</span>
+            </div>
+            <div className="upload-format-note"><FileCheck2 size={15} /><span>Required: linkedin_url, first_name, last_name, headline, location, date_found. Other columns may be blank.</span></div>
+          </>
+        )}
+
+        {result && !assignment && (
+          <>
+            <div className="upload-file-summary"><FileCheck2 size={17} /><div><strong>{fileName}</strong><span>{result.uniqueRows} unique Hermes leads ready · {result.totalRows - result.uniqueRows} duplicate rows merged</span></div><button type="button" className="secondary-button" onClick={() => fileInput.current?.click()}>Replace</button></div>
+            <input ref={fileInput} className="upload-file-input" type="file" accept=".csv,text/csv" onChange={(event) => { void handleFile(event.target.files?.[0]); event.currentTarget.value = ""; }} />
+            <div className="upload-review-toolbar"><div><strong>Review leads before allocation</strong><span>{selectedCount} of {result.leads.length} selected</span></div><button type="button" className="secondary-button" onClick={toggleAll}>{selectedCount === result.leads.length ? "Uncheck all" : "Check all"}</button></div>
+            <div className="upload-lead-list">
+              {result.leads.map((lead) => (
+                <label className={`upload-lead-row ${selectedSet.has(lead.id) ? "is-selected" : ""}`} key={lead.id}>
+                  <input type="checkbox" checked={selectedSet.has(lead.id)} onChange={() => toggleLead(lead.id)} />
+                  <span className="upload-lead-check"><Check size={13} /></span>
+                  <span className="upload-lead-info"><strong>{lead.firstName} {lead.lastName}</strong><small>{lead.headline}</small><small>{lead.location} · Found {lead.dateFound}</small></span>
+                  <a href={lead.linkedinUrl} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>Open <ExternalLink size={11} /></a>
+                </label>
+              ))}
+            </div>
+            <div className="upload-allocation">
+              <div className="upload-review-toolbar allocation-heading"><div><strong>Automatic scout allocation</strong><span>Round-robin across all {result.scouts.length} active scouts</span></div><span className="allocation-total">{selectedCount} total</span></div>
+              <div className="allocation-grid">
+                {allocations.map((scout) => (
+                  <label key={scout.operatorId}><span>{scout.username}</span><input type="number" value={scout.count} disabled readOnly aria-label={`${scout.username} leads to assign`} /></label>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
+
+        {assignment && (
+          <div className="upload-assignment-success"><span><Check size={19} /></span><div><strong>{assignment.assignedCount} leads assigned across {assignment.allocations.filter((item) => item.count > 0).length} scouts.</strong><p>{assignment.skippedCount ? `${assignment.skippedCount} lead${assignment.skippedCount === 1 ? " was" : "s were"} skipped because it was already assigned or unavailable.` : "The Hermes upload is now ready in the scouts' queues."}</p></div></div>
+        )}
+
+        {error && <div className="upload-error"><AlertTriangle size={16} /><span>{error}</span></div>}
+        <div className="upload-modal-actions">
+          {assignment ? <button type="button" className="primary-button" onClick={close}>Done</button> : <><button type="button" className="secondary-button" onClick={close}>Cancel</button>{result && <button type="button" className="primary-button upload-confirm-button" onClick={() => void confirmSelection()} disabled={confirming || selectedCount === 0}>{confirming ? <RefreshCw size={15} className="spin" /> : <Check size={15} />}{confirming ? "Assigning…" : `Confirm and assign ${selectedCount} leads`}</button>}</>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function calculateHermesAllocations(leadIds: string[], scouts: HermesUploadScout[]) {
+  return scouts.map((scout, index) => ({
+    ...scout,
+    count: leadIds.reduce((total, _leadId, leadIndex) => total + (leadIndex % scouts.length === index ? 1 : 0), 0),
+  }));
 }
 
 function Notice({ message, onRetry }: { message: string; onRetry: () => void | Promise<void> }) {

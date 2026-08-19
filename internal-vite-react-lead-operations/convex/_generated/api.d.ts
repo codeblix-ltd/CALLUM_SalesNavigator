@@ -12,6 +12,7 @@ import type * as adminAnalytics from "../adminAnalytics.js";
 import type * as adminIdentity from "../adminIdentity.js";
 import type * as auth from "../auth.js";
 import type * as codexGateway from "../codexGateway.js";
+import type * as hermesUpload from "../hermesUpload.js";
 import type * as http from "../http.js";
 import type * as leads from "../leads.js";
 import type * as lib_cockroach from "../lib/cockroach.js";
@@ -33,6 +34,7 @@ declare const fullApi: ApiFromModules<{
   adminIdentity: typeof adminIdentity;
   auth: typeof auth;
   codexGateway: typeof codexGateway;
+  hermesUpload: typeof hermesUpload;
   http: typeof http;
   leads: typeof leads;
   "lib/cockroach": typeof lib_cockroach;

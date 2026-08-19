@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS lead_import_staging (
   last_name STRING NULL,
   domain STRING NULL,
   company_name STRING NULL,
+  profile_role STRING NULL,
   current_title STRING NULL,
   linkedin_url STRING NOT NULL,
   geographic_region STRING NULL,
@@ -36,6 +37,11 @@ CREATE TABLE IF NOT EXISTS lead_import_staging (
   premium BOOL NULL,
   company_description STRING NULL,
   summary STRING NULL,
+  profile_urn STRING NULL,
+  public_identifier STRING NULL,
+  network_distance STRING NULL,
+  day_rotation STRING NULL,
+  date_found DATE NULL,
   search_text STRING NOT NULL,
   source_file STRING NOT NULL,
   source_row INT8 NOT NULL
@@ -54,6 +60,7 @@ CREATE TABLE IF NOT EXISTS leads (
   last_name STRING NULL,
   domain STRING NULL,
   company_name STRING NULL,
+  profile_role STRING NULL,
   current_title STRING NULL,
   linkedin_url STRING NOT NULL,
   geographic_region STRING NULL,
@@ -67,6 +74,11 @@ CREATE TABLE IF NOT EXISTS leads (
   premium BOOL NULL,
   company_description STRING NULL,
   summary STRING NULL,
+  profile_urn STRING NULL,
+  public_identifier STRING NULL,
+  network_distance STRING NULL,
+  day_rotation STRING NULL,
+  date_found DATE NULL,
   -- The address exposed by LinkedIn contact info belongs to the member's
   -- LinkedIn account. Mailmeteor's company-domain result is stored separately.
   original_email STRING NULL,
@@ -92,6 +104,12 @@ CREATE TABLE IF NOT EXISTS leads (
 );
 
 ALTER TABLE leads
+  ADD COLUMN IF NOT EXISTS profile_role STRING NULL,
+  ADD COLUMN IF NOT EXISTS profile_urn STRING NULL,
+  ADD COLUMN IF NOT EXISTS public_identifier STRING NULL,
+  ADD COLUMN IF NOT EXISTS network_distance STRING NULL,
+  ADD COLUMN IF NOT EXISTS day_rotation STRING NULL,
+  ADD COLUMN IF NOT EXISTS date_found DATE NULL,
   ADD COLUMN IF NOT EXISTS original_email STRING NULL,
   ADD COLUMN IF NOT EXISTS original_email_collected_at TIMESTAMPTZ NULL,
   ADD COLUMN IF NOT EXISTS original_email_status STRING NULL,
