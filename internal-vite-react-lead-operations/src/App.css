@@ -210,6 +210,33 @@ main { max-width: 1320px; margin: 0 auto; padding: 40px 24px 76px; }
 .scout-progress > div > div { height: 6px; overflow: hidden; background: #e4e1ee; border-radius: 8px; }
 .scout-progress > div > div > span { display: block; height: 100%; background: linear-gradient(90deg, #7657df, #5f43cc); border-radius: inherit; }
 .scout-detail-note { margin: 12px 0 0; color: #8b93a3; font-size: 9px; }
+.assigned-leads-section { margin-top: 18px; padding-top: 16px; border-top: 1px solid #e2deef; }
+.assigned-leads-heading { display: flex; align-items: end; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.assigned-leads-heading .eyebrow { margin: 0 0 3px; color: #6f5ab7; font-size: 8px; }
+.assigned-leads-heading strong { color: #303950; font-size: 11px; }
+.assigned-leads-heading > span { color: #8d96a8; font-size: 9px; white-space: nowrap; }
+.assigned-leads-table-scroll { overflow-x: auto; border: 1px solid #e1e5ee; border-radius: 10px; background: white; }
+.assigned-leads-table { width: 100%; min-width: 700px; border-collapse: collapse; }
+.assigned-leads-table th { padding: 9px 10px; color: #7d879b; background: #f8f9fc; border-bottom: 1px solid #e1e5ee; font-size: 8px; text-align: left; text-transform: uppercase; letter-spacing: .65px; }
+.assigned-leads-table td { padding: 9px 10px; color: #59657b; border-bottom: 1px solid #edf0f4; font-size: 9px; vertical-align: middle; }
+.assigned-leads-table tbody tr:last-child td { border-bottom: 0; }
+.assigned-lead-name { display: grid; gap: 3px; min-width: 180px; }
+.assigned-lead-name strong { color: #303950; font-size: 10px; }
+.assigned-lead-name span { color: #8a94a7; font-size: 8px; }
+.assigned-lead-email { display: inline-flex; align-items: center; gap: 4px; color: #248b68; font-size: 8px; font-weight: 700; white-space: nowrap; }
+.muted-value { color: #a0a7b4; font-size: 8px; }
+.assigned-lead-date { color: #7f899e; font-size: 8px; white-space: nowrap; }
+.lead-status { display: inline-flex; padding: 4px 6px; border-radius: 5px; font-size: 8px; font-weight: 800; white-space: nowrap; }
+.lead-status.status-assigned { color: #6f5a28; background: #fff5df; }
+.lead-status.status-viewed, .lead-status.status-engaged { color: #6047b3; background: #eeeafd; }
+.lead-status.status-connected, .lead-status.status-connection_requested { color: #2c6da8; background: #e9f3fd; }
+.lead-status.status-accepted { color: #a36920; background: #fff3df; }
+.lead-status.status-email_collected { color: #238963; background: #e8f7f0; }
+.lead-status.status-skipped, .lead-status.status-withdrawn { color: #7e8798; background: #f0f2f5; }
+.lead-status.status-failed { color: #b64d4d; background: #fff0f0; }
+.assigned-leads-state { min-height: 90px; display: flex; align-items: center; justify-content: center; gap: 8px; color: #8e97a7; font-size: 9px; }
+.assigned-leads-state.error { color: #b64d4d; }
+.assigned-leads-pagination { margin-top: 10px; }
 
 .activity-inventory-grid { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(300px, .55fr); gap: 18px; }
 .activity-panel { scroll-margin-top: 28px; }

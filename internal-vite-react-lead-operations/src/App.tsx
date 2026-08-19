@@ -114,6 +114,32 @@ type RecentActivity = {
   at: string;
 };
 
+type ScoutAssignedLead = {
+  id: string;
+  fullName: string | null;
+  currentTitle: string | null;
+  companyName: string | null;
+  profileUrl: string;
+  status: string;
+  originalEmail: string | null;
+  workEmail: string | null;
+  assignedAt: string;
+  viewedAt: string | null;
+  engagedAt: string | null;
+  connectionRequestedAt: string | null;
+  acceptedAt: string | null;
+  emailCollectedAt: string | null;
+};
+
+type ScoutAssignedLeadsPage = {
+  generatedAt: string;
+  total: number;
+  page: number;
+  pageSize: number;
+  pageCount: number;
+  leads: ScoutAssignedLead[];
+};
+
 type PostActivity = {
   id: string;
   operatorId: string;
@@ -372,6 +398,7 @@ function UnauthorizedScreen() {
 function Dashboard({ adminName }: { adminName: string }) {
   const { signOut } = useAuthActions();
   const getOverview = useAction(api.adminAnalytics.getOverview);
+  const getScoutAssignedLeads = useAction(api.adminAnalytics.getScoutAssignedLeads);
   const getOperations = useAction(api.adminAnalytics.getOperations);
   const exportCleanCsv = useAction(api.adminAnalytics.exportCleanCsv);
   const resolveEscalation = useAction(api.adminAnalytics.resolveEscalation);
@@ -415,6 +442,10 @@ function Dashboard({ adminName }: { adminName: string }) {
   const [scoutSearch, setScoutSearch] = useState("");
   const [scoutSort, setScoutSort] = useState<ScoutSort>("activity");
   const [selectedScout, setSelectedScout] = useState<string | null>(null);
+  const [scoutAssignedLeads, setScoutAssignedLeads] = useState<ScoutAssignedLeadsPage | null>(null);
+  const [scoutAssignedLeadsPage, setScoutAssignedLeadsPage] = useState(1);
+  const [scoutAssignedLeadsLoading, setScoutAssignedLeadsLoading] = useState(false);
+  const [scoutAssignedLeadsError, setScoutAssignedLeadsError] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [codexStatus, setCodexStatus] = useState<CodexStatus | null>(null);
   const [codexError, setCodexError] = useState("");
@@ -522,6 +553,36 @@ function Dashboard({ adminName }: { adminName: string }) {
   useEffect(() => {
     if (view === "operations") void refreshOperations();
   }, [refreshOperations, view]);
+
+  useEffect(() => {
+    setScoutAssignedLeadsPage(1);
+    setScoutAssignedLeads(null);
+    setScoutAssignedLeadsError("");
+  }, [selectedScout]);
+
+  useEffect(() => {
+    if (!selectedScout) {
+      setScoutAssignedLeads(null);
+      return;
+    }
+    let cancelled = false;
+    setScoutAssignedLeadsLoading(true);
+    setScoutAssignedLeadsError("");
+    void getScoutAssignedLeads({
+      operatorId: selectedScout,
+      page: scoutAssignedLeadsPage,
+      pageSize: 25,
+    }).then((result) => {
+      if (!cancelled) setScoutAssignedLeads(result);
+    }).catch((error) => {
+      if (!cancelled) setScoutAssignedLeadsError(readError(error));
+    }).finally(() => {
+      if (!cancelled) setScoutAssignedLeadsLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [getScoutAssignedLeads, scoutAssignedLeadsPage, selectedScout]);
 
   useEffect(() => {
     if (settingsOpen) void refreshCodexStatus();
@@ -785,6 +846,10 @@ function Dashboard({ adminName }: { adminName: string }) {
             activeScout={activeScout}
             scoutActivity={scoutActivity}
             scoutPosts={scoutPosts}
+            scoutAssignedLeads={scoutAssignedLeads}
+            scoutAssignedLeadsLoading={scoutAssignedLeadsLoading}
+            scoutAssignedLeadsError={scoutAssignedLeadsError}
+            onScoutAssignedLeadsPageChange={setScoutAssignedLeadsPage}
           />
         ) : view === "operations" ? (
           <OperationsCenter
@@ -874,6 +939,10 @@ function Overview({
   activeScout,
   scoutActivity,
   scoutPosts,
+  scoutAssignedLeads,
+  scoutAssignedLeadsLoading,
+  scoutAssignedLeadsError,
+  onScoutAssignedLeadsPageChange,
 }: {
   analytics: Analytics | null;
   loading: boolean;
@@ -889,6 +958,10 @@ function Overview({
   activeScout: ScoutMetrics | null;
   scoutActivity: RecentActivity[];
   scoutPosts: PostActivity[];
+  scoutAssignedLeads: ScoutAssignedLeadsPage | null;
+  scoutAssignedLeadsLoading: boolean;
+  scoutAssignedLeadsError: string;
+  onScoutAssignedLeadsPageChange: (page: number) => void;
 }) {
   const [scoutPage, setScoutPage] = useState(1);
   const [activityPage, setActivityPage] = useState(1);
@@ -1064,6 +1137,10 @@ function Overview({
           <ScoutDetail
             scout={activeScout}
             activity={scoutActivity}
+            assignedLeads={scoutAssignedLeads}
+            assignedLeadsLoading={scoutAssignedLeadsLoading}
+            assignedLeadsError={scoutAssignedLeadsError}
+            onAssignedLeadsPageChange={onScoutAssignedLeadsPageChange}
             close={() => setSelectedScout(null)}
           />
         )}
@@ -1358,7 +1435,23 @@ function ScoutTable({ scouts, selectedScout, setSelectedScout }: { scouts: Scout
   );
 }
 
-function ScoutDetail({ scout, activity, close }: { scout: ScoutMetrics; activity: RecentActivity[]; close: () => void }) {
+function ScoutDetail({
+  scout,
+  activity,
+  assignedLeads,
+  assignedLeadsLoading,
+  assignedLeadsError,
+  onAssignedLeadsPageChange,
+  close,
+}: {
+  scout: ScoutMetrics;
+  activity: RecentActivity[];
+  assignedLeads: ScoutAssignedLeadsPage | null;
+  assignedLeadsLoading: boolean;
+  assignedLeadsError: string;
+  onAssignedLeadsPageChange: (page: number) => void;
+  close: () => void;
+}) {
   return (
     <div className="scout-detail">
       <div className="scout-detail-head"><div><p className="eyebrow">Scout snapshot</p><h3>{scout.username}</h3><span>{scout.operatorId}</span></div><button onClick={close} aria-label="Close scout detail"><X size={17} /></button></div>
@@ -1373,7 +1466,74 @@ function ScoutDetail({ scout, activity, close }: { scout: ScoutMetrics; activity
         <ProgressBar label="Accepted leads with email" value={scout.emails} total={scout.accepted} />
       </div>
       <p className="scout-detail-note">{activity.length ? `${activity.length} recent events are available below.` : "No recent events in this period."}</p>
+      <AssignedLeadList
+        page={assignedLeads}
+        loading={assignedLeadsLoading}
+        error={assignedLeadsError}
+        onPageChange={onAssignedLeadsPageChange}
+      />
     </div>
+  );
+}
+
+function AssignedLeadList({
+  page,
+  loading,
+  error,
+  onPageChange,
+}: {
+  page: ScoutAssignedLeadsPage | null;
+  loading: boolean;
+  error: string;
+  onPageChange: (page: number) => void;
+}) {
+  return (
+    <section className="assigned-leads-section" aria-label="Assigned leads">
+      <div className="assigned-leads-heading">
+        <div>
+          <p className="eyebrow">Assigned leads</p>
+          <strong>Every lead in this scout’s queue</strong>
+        </div>
+        {page && <span>{formatNumber(page.total)} total · page {page.page} of {page.pageCount}</span>}
+      </div>
+      {loading && <div className="assigned-leads-state"><RefreshCw size={16} className="spin" /> Loading assigned leads…</div>}
+      {!loading && error && <div className="assigned-leads-state error">{error}</div>}
+      {!loading && !error && page && page.leads.length === 0 && <div className="assigned-leads-state">No assigned leads found.</div>}
+      {!loading && !error && page && page.leads.length > 0 && (
+        <>
+          <div className="assigned-leads-table-scroll">
+            <table className="assigned-leads-table">
+              <thead><tr><th>Lead</th><th>Status</th><th>Original email</th><th>Assigned</th><th>Profile</th></tr></thead>
+              <tbody>
+                {page.leads.map((lead) => (
+                  <tr key={lead.id}>
+                    <td>
+                      <div className="assigned-lead-name">
+                        <strong>{lead.fullName || "Unnamed lead"}</strong>
+                        <span>{[lead.currentTitle, lead.companyName].filter(Boolean).join(" · ") || "No title or company recorded"}</span>
+                      </div>
+                    </td>
+                    <td><span className={`lead-status status-${lead.status}`}>{leadStatusLabel(lead.status)}</span></td>
+                    <td>{lead.originalEmail ? <span className="assigned-lead-email"><Mail size={12} />{lead.originalEmail}</span> : <span className="muted-value">Not collected</span>}</td>
+                    <td><span className="assigned-lead-date">{formatShortDate(lead.assignedAt)}</span></td>
+                    <td><a className="activity-link" href={lead.profileUrl} target="_blank" rel="noreferrer">Open <ExternalLink size={11} /></a></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {page.pageCount > 1 && (
+            <div className="pagination history-pagination assigned-leads-pagination" aria-label="Assigned leads pagination">
+              <p>Showing {(page.page - 1) * page.pageSize + 1}–{Math.min(page.page * page.pageSize, page.total)} of {formatNumber(page.total)}</p>
+              <div>
+                <button onClick={() => onPageChange(Math.max(1, page.page - 1))} disabled={page.page === 1} aria-label="Previous assigned leads page"><ArrowLeft size={15} /> Previous</button>
+                <button onClick={() => onPageChange(Math.min(page.pageCount, page.page + 1))} disabled={page.page === page.pageCount} aria-label="Next assigned leads page">Next <ArrowRight size={15} /></button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </section>
   );
 }
 
@@ -1806,6 +1966,22 @@ function activityIcon(type: string) {
   return <Activity size={13} />;
 }
 
+function leadStatusLabel(status: string) {
+  const labels: Record<string, string> = {
+    assigned: "Fresh",
+    viewed: "Viewed",
+    engaged: "Engaged",
+    connected: "Connected",
+    connection_requested: "Request sent",
+    accepted: "Accepted",
+    email_collected: "Email collected",
+    skipped: "Skipped",
+    failed: "Failed",
+    withdrawn: "Withdrawn",
+  };
+  return labels[status] ?? status.replaceAll("_", " ");
+}
+
 function formatNumber(value: number) {
   return new Intl.NumberFormat("en-US").format(value);
 }
@@ -1818,6 +1994,12 @@ function formatChartDate(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat("en", { month: "short", day: date.getUTCDate() === 1 ? undefined : "numeric", year: date.getUTCMonth() === 0 && date.getUTCDate() === 1 ? "2-digit" : undefined }).format(date);
+}
+
+function formatShortDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: "numeric" }).format(date);
 }
 
 function formatRelativeTime(value: string) {

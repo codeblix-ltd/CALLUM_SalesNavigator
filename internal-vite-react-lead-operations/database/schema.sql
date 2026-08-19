@@ -245,6 +245,17 @@ UPDATE leads AS l
    AND l.original_email IS NULL
    AND a.email IS NOT NULL;
 
+-- An original email is the terminal milestone in the scout workflow. Promote
+-- legacy assignments that retained an earlier status so dashboards and the
+-- extension do not present completed leads as fresh work.
+UPDATE lead_assignments AS a
+   SET status = 'email_collected',
+       updated_at = now()
+  FROM leads AS l
+ WHERE l.id = a.lead_id
+   AND coalesce(l.original_email, a.email) IS NOT NULL
+   AND a.status IN ('assigned', 'viewed', 'engaged', 'connected', 'connection_requested', 'accepted');
+
 ALTER TABLE lead_assignments
   DROP CONSTRAINT IF EXISTS lead_assignments_qualification_status_check;
 

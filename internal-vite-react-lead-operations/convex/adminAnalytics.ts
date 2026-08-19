@@ -82,6 +82,32 @@ const postActivityValidator = v.object({
   at: v.string(),
 });
 
+const scoutAssignedLeadValidator = v.object({
+  id: v.string(),
+  fullName: v.union(v.string(), v.null()),
+  currentTitle: v.union(v.string(), v.null()),
+  companyName: v.union(v.string(), v.null()),
+  profileUrl: v.string(),
+  status: v.string(),
+  originalEmail: v.union(v.string(), v.null()),
+  workEmail: v.union(v.string(), v.null()),
+  assignedAt: v.string(),
+  viewedAt: v.union(v.string(), v.null()),
+  engagedAt: v.union(v.string(), v.null()),
+  connectionRequestedAt: v.union(v.string(), v.null()),
+  acceptedAt: v.union(v.string(), v.null()),
+  emailCollectedAt: v.union(v.string(), v.null()),
+});
+
+const scoutAssignedLeadsValidator = v.object({
+  generatedAt: v.string(),
+  total: v.number(),
+  page: v.number(),
+  pageSize: v.number(),
+  pageCount: v.number(),
+  leads: v.array(scoutAssignedLeadValidator),
+});
+
 const operationsSummaryValidator = v.object({
   oldRequests: v.number(),
   followupsDue: v.number(),
@@ -255,28 +281,87 @@ export const getOverview = action({
           `SELECT
              operator_id,
              count(*)::FLOAT8 AS assigned,
-             count(*) FILTER (WHERE status = 'assigned')::FLOAT8 AS fresh,
              count(*) FILTER (
-               WHERE viewed_at IS NOT NULL
-                 AND ($1::TIMESTAMPTZ IS NULL OR viewed_at >= $1::TIMESTAMPTZ)
+               WHERE status = 'assigned'
+                 AND viewed_at IS NULL
+                 AND engaged_at IS NULL
+                 AND connection_requested_at IS NULL
+                 AND accepted_at IS NULL
+                 AND email_collected_at IS NULL
+                 AND email IS NULL
+             )::FLOAT8 AS fresh,
+             count(*) FILTER (
+               WHERE (
+                 viewed_at IS NOT NULL
+                 OR status IN ('viewed', 'engaged', 'connected', 'connection_requested', 'accepted', 'email_collected')
+               )
+                 AND (
+                   $1::TIMESTAMPTZ IS NULL
+                   OR viewed_at >= $1::TIMESTAMPTZ
+                   OR (viewed_at IS NULL AND assigned_at >= $1::TIMESTAMPTZ)
+                 )
              )::FLOAT8 AS viewed,
              count(*) FILTER (
-               WHERE engaged_at IS NOT NULL
-                 AND ($1::TIMESTAMPTZ IS NULL OR engaged_at >= $1::TIMESTAMPTZ)
+               WHERE (
+                 engaged_at IS NOT NULL
+                 OR connection_requested_at IS NOT NULL
+                 OR accepted_at IS NOT NULL
+                 OR email_collected_at IS NOT NULL
+                 OR email IS NOT NULL
+                 OR status IN ('engaged', 'connected', 'connection_requested', 'accepted', 'email_collected')
+               )
+                 AND (
+                   $1::TIMESTAMPTZ IS NULL
+                   OR engaged_at >= $1::TIMESTAMPTZ
+                   OR connection_requested_at >= $1::TIMESTAMPTZ
+                   OR accepted_at >= $1::TIMESTAMPTZ
+                   OR email_collected_at >= $1::TIMESTAMPTZ
+                   OR (engaged_at IS NULL AND connection_requested_at IS NULL AND accepted_at IS NULL AND email_collected_at IS NULL AND assigned_at >= $1::TIMESTAMPTZ)
+                 )
              )::FLOAT8 AS engaged,
              count(*) FILTER (
-               WHERE connection_requested_at IS NOT NULL
-                 AND ($1::TIMESTAMPTZ IS NULL OR connection_requested_at >= $1::TIMESTAMPTZ)
+               WHERE (
+                 connection_requested_at IS NOT NULL
+                 OR accepted_at IS NOT NULL
+                 OR email_collected_at IS NOT NULL
+                 OR email IS NOT NULL
+                 OR status IN ('connection_requested', 'accepted', 'email_collected')
+               )
+                 AND (
+                   $1::TIMESTAMPTZ IS NULL
+                   OR connection_requested_at >= $1::TIMESTAMPTZ
+                   OR accepted_at >= $1::TIMESTAMPTZ
+                   OR email_collected_at >= $1::TIMESTAMPTZ
+                   OR (connection_requested_at IS NULL AND accepted_at IS NULL AND email_collected_at IS NULL AND assigned_at >= $1::TIMESTAMPTZ)
+                 )
              )::FLOAT8 AS requests,
-             count(*) FILTER (WHERE status = 'connection_requested')::FLOAT8 AS pending,
              count(*) FILTER (
-               WHERE accepted_at IS NOT NULL
-                 AND ($1::TIMESTAMPTZ IS NULL OR accepted_at >= $1::TIMESTAMPTZ)
+               WHERE status = 'connection_requested'
+                 AND accepted_at IS NULL
+                 AND email_collected_at IS NULL
+                 AND email IS NULL
+             )::FLOAT8 AS pending,
+             count(*) FILTER (
+               WHERE (
+                 accepted_at IS NOT NULL
+                 OR email_collected_at IS NOT NULL
+                 OR email IS NOT NULL
+                 OR status IN ('accepted', 'email_collected')
+               )
+                 AND (
+                   $1::TIMESTAMPTZ IS NULL
+                   OR accepted_at >= $1::TIMESTAMPTZ
+                   OR email_collected_at >= $1::TIMESTAMPTZ
+                   OR (accepted_at IS NULL AND email_collected_at IS NULL AND assigned_at >= $1::TIMESTAMPTZ)
+                 )
              )::FLOAT8 AS accepted,
              count(*) FILTER (
-               WHERE email_collected_at IS NOT NULL
-                 AND email IS NOT NULL
-                 AND ($1::TIMESTAMPTZ IS NULL OR email_collected_at >= $1::TIMESTAMPTZ)
+               WHERE (email_collected_at IS NOT NULL OR email IS NOT NULL)
+                 AND (
+                   $1::TIMESTAMPTZ IS NULL
+                   OR email_collected_at >= $1::TIMESTAMPTZ
+                   OR (email_collected_at IS NULL AND assigned_at >= $1::TIMESTAMPTZ)
+                 )
              )::FLOAT8 AS emails,
              count(*) FILTER (
                WHERE status = 'skipped'
@@ -468,6 +553,88 @@ export const getOverview = action({
         commentText: String(row.comment_text),
         liked: Boolean(row.liked),
         at: String(row.at),
+      })),
+    };
+  },
+});
+
+export const getScoutAssignedLeads = action({
+  args: {
+    operatorId: v.string(),
+    page: v.optional(v.number()),
+    pageSize: v.optional(v.number()),
+  },
+  returns: scoutAssignedLeadsValidator,
+  handler: async (ctx, args) => {
+    await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
+    const operatorId = args.operatorId.trim();
+    if (!operatorId) throw new Error("A scout is required.");
+    const pageSize = Math.min(50, Math.max(10, Math.floor(args.pageSize ?? 25)));
+    const requestedPage = Math.max(1, Math.floor(args.page ?? 1));
+    const database = getPool();
+    const countResult = await database.query(
+      `SELECT count(*)::FLOAT8 AS total
+         FROM lead_assignments
+        WHERE operator_id = $1`,
+      [operatorId],
+    );
+    const total = toNumber(countResult.rows[0]?.total);
+    const pageCount = Math.max(1, Math.ceil(total / pageSize));
+    const page = Math.min(requestedPage, pageCount);
+    const result = await database.query(
+      `SELECT
+         l.id::STRING AS id,
+         l.full_name,
+         l.current_title,
+         l.company_name,
+         coalesce(a.resolved_linkedin_url, l.linkedin_url) AS profile_url,
+         CASE
+           WHEN coalesce(l.original_email, a.email) IS NOT NULL OR a.email_collected_at IS NOT NULL
+             THEN 'email_collected'
+           WHEN a.accepted_at IS NOT NULL OR a.status IN ('accepted', 'email_collected')
+             THEN 'accepted'
+           WHEN a.connection_requested_at IS NOT NULL OR a.status IN ('connected', 'connection_requested')
+             THEN 'connection_requested'
+           WHEN a.engaged_at IS NOT NULL OR a.status = 'engaged' THEN 'engaged'
+           WHEN a.viewed_at IS NOT NULL OR a.status = 'viewed' THEN 'viewed'
+           ELSE a.status
+         END AS status,
+         coalesce(l.original_email, a.email) AS original_email,
+         l.work_email,
+         a.assigned_at::STRING AS assigned_at,
+         a.viewed_at::STRING AS viewed_at,
+         a.engaged_at::STRING AS engaged_at,
+         a.connection_requested_at::STRING AS connection_requested_at,
+         a.accepted_at::STRING AS accepted_at,
+         a.email_collected_at::STRING AS email_collected_at
+       FROM lead_assignments AS a
+       INNER JOIN leads AS l ON l.id = a.lead_id
+      WHERE a.operator_id = $1
+      ORDER BY a.assigned_at DESC, a.lead_id
+      LIMIT $2 OFFSET $3`,
+      [operatorId, pageSize, (page - 1) * pageSize],
+    );
+    return {
+      generatedAt: new Date().toISOString(),
+      total,
+      page,
+      pageSize,
+      pageCount,
+      leads: result.rows.map((row) => ({
+        id: String(row.id),
+        fullName: nullableString(row.full_name),
+        currentTitle: nullableString(row.current_title),
+        companyName: nullableString(row.company_name),
+        profileUrl: String(row.profile_url ?? ""),
+        status: String(row.status ?? "assigned"),
+        originalEmail: nullableString(row.original_email),
+        workEmail: nullableString(row.work_email),
+        assignedAt: String(row.assigned_at),
+        viewedAt: nullableString(row.viewed_at),
+        engagedAt: nullableString(row.engaged_at),
+        connectionRequestedAt: nullableString(row.connection_requested_at),
+        acceptedAt: nullableString(row.accepted_at),
+        emailCollectedAt: nullableString(row.email_collected_at),
       })),
     };
   },

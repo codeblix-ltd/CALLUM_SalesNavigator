@@ -359,8 +359,10 @@ function mergeProfileRecords(entry, sourceTitle) {
       record.connection_status,
     )
   );
-  const assignmentStatus = isConnected
-    ? "accepted"
+  const assignmentStatus = email
+    ? "email_collected"
+    : isConnected
+      ? "accepted"
     : requestDate || hasRequestSignal
       ? "connection_requested"
       : "assigned";
