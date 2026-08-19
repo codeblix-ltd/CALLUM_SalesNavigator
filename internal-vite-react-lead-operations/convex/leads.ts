@@ -10,6 +10,11 @@ const emailAvailabilityValidator = v.union(
   v.literal("present"),
   v.literal("missing"),
 );
+const legacyEmailAvailabilityValidator = v.union(
+  v.literal("all"),
+  v.literal("present"),
+  v.literal("missing"),
+);
 const emailValidationValidator = v.union(
   v.literal("validated"),
   v.literal("not_validated"),
@@ -104,11 +109,16 @@ export const getStats = action({
 
 export const list = action({
   args: {
-    niches: v.array(v.string()),
+    // Keep the new array fields optional while cached production clients roll
+    // forward from the previous single-select request shape.
+    niches: v.optional(v.array(v.string())),
+    niche: v.optional(v.union(v.string(), v.null())),
     search: v.union(v.string(), v.null()),
-    originalEmailFilters: v.array(emailAvailabilityValidator),
-    workEmailFilters: v.array(emailAvailabilityValidator),
-    workEmailValidationFilters: v.array(emailValidationValidator),
+    originalEmailFilters: v.optional(v.array(emailAvailabilityValidator)),
+    originalEmailFilter: v.optional(legacyEmailAvailabilityValidator),
+    workEmailFilters: v.optional(v.array(emailAvailabilityValidator)),
+    workEmailFilter: v.optional(legacyEmailAvailabilityValidator),
+    workEmailValidationFilters: v.optional(v.array(emailValidationValidator)),
     cursor: v.union(v.string(), v.null()),
     limit: v.number(),
   },
@@ -122,10 +132,10 @@ export const list = action({
     await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
     const database = getPool();
     const limit = Math.max(1, Math.min(100, Math.trunc(args.limit)));
-    const niches = normalizeList(args.niches, 100);
-    const originalEmailFilters = normalizeList(args.originalEmailFilters);
-    const workEmailFilters = normalizeList(args.workEmailFilters);
-    const workEmailValidationFilters = normalizeList(args.workEmailValidationFilters);
+    const niches = normalizeList(args.niches ?? (args.niche ? [args.niche] : []), 100);
+    const originalEmailFilters = resolveEmailAvailabilityFilters(args.originalEmailFilters, args.originalEmailFilter);
+    const workEmailFilters = resolveEmailAvailabilityFilters(args.workEmailFilters, args.workEmailFilter);
+    const workEmailValidationFilters = normalizeList(args.workEmailValidationFilters ?? []);
     const rawSearch = args.search?.trim().toLowerCase().slice(0, 120) || "";
     const search = rawSearch.length >= 3 ? rawSearch : "";
     const cursor = validateCursor(args.cursor);
@@ -271,6 +281,14 @@ function addEmailValidationCondition(
 
 function normalizeList(values: string[], maximum = 2) {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))].slice(0, maximum);
+}
+
+function resolveEmailAvailabilityFilters(
+  filters: string[] | undefined,
+  legacyFilter: "all" | "present" | "missing" | undefined,
+) {
+  if (filters) return normalizeList(filters);
+  return legacyFilter && legacyFilter !== "all" ? [legacyFilter] : [];
 }
 
 function nullableString(value: unknown) {
