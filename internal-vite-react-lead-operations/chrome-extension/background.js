@@ -142,7 +142,7 @@ async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
   previousState = await reconcileLocallyConfirmedConnectionRequests(
     previousState,
   );
-  if (collectLocallyConfirmedConnectionRequests(previousState).length > 0) {
+  if (shouldBlockForPendingConnectionRequests(previousState, resume)) {
     throw new Error(
       "A sent connection request is still syncing. Refresh in a moment before starting more work.",
     );
@@ -312,6 +312,14 @@ async function runDailyWorkflow(specificLeadId, runContext) {
   const availableRequestSlots = progress.targetRequests;
   const results = progress.results;
   const failedLeads = progress.failedLeads;
+  const pendingConnectionLeadIds = new Set(
+    collectLocallyConfirmedConnectionRequests({ progress }).map(
+      (request) => request.leadId,
+    ),
+  );
+  if (specificLeadId && pendingConnectionLeadIds.has(specificLeadId)) {
+    progress.processedLeads = Math.max(progress.processedLeads, 1);
+  }
 
   for (let index = progress.processedLeads; index < availableRequestSlots; index++) {
     throwIfWorkflowControlled(runContext);
@@ -330,7 +338,9 @@ async function runDailyWorkflow(specificLeadId, runContext) {
         );
       }
     } else {
-      lead = await ScoutApi.authenticatedAction("scouts:claimNextLead");
+      lead = await ScoutApi.authenticatedAction("scouts:claimNextLead", {
+        excludeLeadIds: [...pendingConnectionLeadIds],
+      });
     }
     if (!lead?.linkedinUrl) break;
 
@@ -720,6 +730,13 @@ function collectLocallyConfirmedConnectionRequests(state) {
     unique.set(leadId, { ...candidate, leadId });
   }
   return [...unique.values()];
+}
+
+function shouldBlockForPendingConnectionRequests(state, resume) {
+  return (
+    resume !== true &&
+    collectLocallyConfirmedConnectionRequests(state).length > 0
+  );
 }
 
 async function reconcileLocallyConfirmedConnectionRequests(state = null) {
@@ -1414,6 +1431,36 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
     }
     const requestedControl = getRequestedWorkflowControl(runContext);
     if (isWorkflowControlError(error) || requestedControl) {
+      if (requestSubmitted && connectionPersistencePending) {
+        const alreadyRecorded = progress.results.some(
+          (result) => result?.leadId === lead.id,
+        );
+        progress.pendingConnectionRequests = upsertPendingConnectionRequest(
+          progress.pendingConnectionRequests,
+          {
+            leadId: lead.id,
+            leadName: lead.fullName,
+            profileUrl: resolvedProfileUrl,
+            confirmedAt: Date.now(),
+          },
+        );
+        if (!alreadyRecorded) {
+          progress.requestsSent += 1;
+          progress.processedLeads += 1;
+          progress.results.push({
+            leadId: lead.id,
+            leadName: lead.fullName,
+            status: "connection_requested_pending_sync",
+            profileUrl: resolvedProfileUrl,
+            engagedCount: completedEngagementCount,
+          });
+        }
+        await updateRunProgress(runContext, progress, {
+          message:
+            "Paused safely after sending the connection request. Resume will continue with the next lead while it syncs.",
+          currentLead: null,
+        });
+      }
       throw isWorkflowControlError(error)
         ? error
         : new WorkflowControlError(requestedControl);

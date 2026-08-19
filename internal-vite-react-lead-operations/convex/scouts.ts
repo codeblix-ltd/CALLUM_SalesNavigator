@@ -522,13 +522,34 @@ export const getLeadProgress = action({
 });
 
 export const claimNextLead = action({
-  args: {},
+  args: { excludeLeadIds: v.optional(v.array(v.string())) },
   returns: v.union(leadValidator, v.null()),
-  handler: async (ctx): Promise<ScoutLead | null> => {
+  handler: async (ctx, args): Promise<ScoutLead | null> => {
     const scout: ScoutIdentity = await ctx.runQuery(
       internal.scoutIdentity.requireScout,
       {},
     );
+    const excludedLeadIds = [
+      ...new Set(
+        (args.excludeLeadIds ?? [])
+          .map((leadId) => String(leadId).trim())
+          .filter((leadId) =>
+            /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+              leadId,
+            ),
+          ),
+      ),
+    ].slice(0, 100);
+    const exclusionPlaceholders = excludedLeadIds.map(
+      (_leadId, index) => `$${index + 2}::UUID`,
+    );
+    const existingExclusionSql = exclusionPlaceholders.length
+      ? `AND a.lead_id NOT IN (${exclusionPlaceholders.join(", ")})`
+      : "";
+    const selectedExclusionSql = exclusionPlaceholders.length
+      ? `AND lead_id NOT IN (${exclusionPlaceholders.join(", ")})`
+      : "";
+    const queryParameters = [scout.operatorId, ...excludedLeadIds];
     const database = getPool();
     const existing = await database.query(
       `SELECT
@@ -542,9 +563,10 @@ export const claimNextLead = action({
        INNER JOIN leads AS l ON l.id = a.lead_id
        WHERE a.operator_id = $1
          AND a.status IN ('viewed', 'engaged')
+         ${existingExclusionSql}
        ORDER BY a.updated_at DESC, a.lead_id
        LIMIT 1`,
-      [scout.operatorId],
+      queryParameters,
     );
     if (existing.rows[0]) return mapLead(existing.rows[0]);
 
@@ -557,13 +579,14 @@ export const claimNextLead = action({
           WHERE operator_id = $1
             AND status = 'assigned'
             AND qualification_status <> 'not_qualified'
+            ${selectedExclusionSql}
           ORDER BY
             CASE WHEN qualification_status = 'qualified' THEN 0 ELSE 1 END,
             assigned_at,
             lead_id
           LIMIT 1
           FOR UPDATE SKIP LOCKED`,
-        [scout.operatorId],
+        queryParameters,
       );
       if (!selected.rows[0]) {
         await client.query("ROLLBACK");

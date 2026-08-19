@@ -48,7 +48,7 @@ const [
   ]);
 const manifest = JSON.parse(manifestSource);
 
-assert.equal(manifest.version, "0.10.1");
+assert.equal(manifest.version, "0.10.2");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -215,6 +215,9 @@ assert.match(backgroundSource, /completeConnectionRequestWithRetry/);
 assert.match(backgroundSource, /CONNECTION_COMPLETION_RETRY_DELAYS_MS/);
 assert.match(backgroundSource, /reconcileLocallyConfirmedConnectionRequests/);
 assert.match(backgroundSource, /pendingConnectionRequests/);
+assert.match(backgroundSource, /excludeLeadIds: \[\.\.\.pendingConnectionLeadIds\]/);
+assert.match(backgroundSource, /shouldBlockForPendingConnectionRequests/);
+assert.match(backgroundSource, /Resume will continue with the next lead while it syncs/);
 assert.match(backgroundSource, /dashboard\.usage\.requestRemaining/);
 assert.match(backgroundSource, /no recent posts\|no supported post permalink/);
 assert.match(backgroundSource, /failedLeads\.push/);
@@ -245,6 +248,9 @@ assert.match(
 );
 assert.match(scoutSource, /recoveredFromFailed/);
 assert.match(scoutSource, /status IN \('engaged', 'failed'\)/);
+assert.match(scoutSource, /excludeLeadIds: v\.optional\(v\.array\(v\.string\(\)\)\)/);
+assert.match(scoutSource, /existingExclusionSql/);
+assert.match(scoutSource, /selectedExclusionSql/);
 assert.match(adminSource, /export const exportCleanCsv/);
 assert.match(adminSource, /export const retryCrmDelivery/);
 assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS lead_followup_tasks/);
@@ -469,6 +475,22 @@ const stateWithConfirmedRequest = await backgroundContext.writeAutoLeadRunState(
     ],
   },
 });
+assert.equal(
+  backgroundContext.shouldBlockForPendingConnectionRequests(
+    stateWithConfirmedRequest,
+    false,
+  ),
+  true,
+  "A new run must wait so it cannot resend a locally confirmed request.",
+);
+assert.equal(
+  backgroundContext.shouldBlockForPendingConnectionRequests(
+    stateWithConfirmedRequest,
+    true,
+  ),
+  false,
+  "Resume must continue from a paused checkpoint even while a sent request syncs.",
+);
 const reconciledState =
   await backgroundContext.reconcileLocallyConfirmedConnectionRequests(
     stateWithConfirmedRequest,
