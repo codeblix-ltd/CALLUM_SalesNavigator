@@ -48,7 +48,7 @@ const [
   ]);
 const manifest = JSON.parse(manifestSource);
 
-assert.equal(manifest.version, "0.10.2");
+assert.equal(manifest.version, "0.10.3");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -216,6 +216,7 @@ assert.match(backgroundSource, /CONNECTION_COMPLETION_RETRY_DELAYS_MS/);
 assert.match(backgroundSource, /reconcileLocallyConfirmedConnectionRequests/);
 assert.match(backgroundSource, /pendingConnectionRequests/);
 assert.match(backgroundSource, /excludeLeadIds: \[\.\.\.pendingConnectionLeadIds\]/);
+assert.match(backgroundSource, /pendingConnectionLeadIds\.add\(lead\.id\)/);
 assert.match(backgroundSource, /shouldBlockForPendingConnectionRequests/);
 assert.match(backgroundSource, /Resume will continue with the next lead while it syncs/);
 assert.match(backgroundSource, /dashboard\.usage\.requestRemaining/);
@@ -224,7 +225,8 @@ assert.match(backgroundSource, /failedLeads\.push/);
 assert.match(backgroundSource, /error\?\.requestSubmitted === true/);
 assert.match(backgroundSource, /workflowError\.requestSubmitted = requestSubmitted/);
 assert.match(backgroundSource, /workflowError\.persistencePending/);
-assert.match(backgroundSource, /if \(specificLeadId \|\| connectionSyncPending\) break/);
+assert.match(backgroundSource, /if \(specificLeadId\) break/);
+assert.doesNotMatch(backgroundSource, /if \(specificLeadId \|\| connectionSyncPending\) break/);
 assert.match(
   backgroundSource,
   /if \(workflowTabId\) \{[\s\S]*?clearActiveWorkflowTab\(workflowTabId\);[\s\S]*?chrome\.tabs\.remove\(workflowTabId\)/,

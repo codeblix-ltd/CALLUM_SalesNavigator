@@ -377,6 +377,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
         progress.requestsSent += 1;
         connectionSyncPending = error?.persistencePending === true;
         if (connectionSyncPending) {
+          pendingConnectionLeadIds.add(lead.id);
           progress.pendingConnectionRequests = upsertPendingConnectionRequest(
             progress.pendingConnectionRequests,
             {
@@ -434,7 +435,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
       currentLead: null,
     });
     dashboard = await ScoutApi.authenticatedAction("scouts:getDashboard");
-    if (specificLeadId || connectionSyncPending) break;
+    if (specificLeadId) break;
   }
 
   await updateBadge();
