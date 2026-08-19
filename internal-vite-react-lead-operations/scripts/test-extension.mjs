@@ -48,7 +48,7 @@ const [
   ]);
 const manifest = JSON.parse(manifestSource);
 
-assert.equal(manifest.version, "0.10.8");
+assert.equal(manifest.version, "0.10.9");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -228,7 +228,10 @@ assert.match(backgroundSource, /forceReview: true/);
 assert.match(backgroundSource, /checkpoint: forceReview/);
 assert.match(backgroundSource, /cutoffDate: forceReview \? null/);
 assert.match(backgroundSource, /keepConnectionTab: true/);
-assert.match(backgroundSource, /connectionWindowKeptOpen: true/);
+assert.match(backgroundSource, /canCloseReviewWindow/);
+assert.match(backgroundSource, /closeManagedAutomationWindow/);
+assert.match(backgroundSource, /connectionWindowKeptOpen: !reviewWindowClosed/);
+assert.match(backgroundSource, /Wait for the accepted connection check to finish/);
 assert.match(backgroundSource, /source: "daily"/);
 assert.match(backgroundSource, /lastAcceptedConnectionReview/);
 assert.match(

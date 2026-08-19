@@ -167,6 +167,11 @@ async function initializeExtensionDefaults() {
 
 async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
   await ensureAutoLeadRunState();
+  if (manualConnectionReviewPromise) {
+    throw new Error(
+      "Wait for the accepted connection check to finish before starting today’s automation.",
+    );
+  }
   if (workflowPromise) return workflowPromise;
 
   let previousState = await readAutoLeadRunState();
@@ -1284,10 +1289,20 @@ async function runManualAcceptedConnectionReview() {
       );
     }
     await updateBadge();
+    const latestState = await readAutoLeadRunState();
+    const canCloseReviewWindow =
+      !workflowPromise && !ACTIVE_RUN_STATUSES.has(latestState.status);
+    const reviewWindowClosed = canCloseReviewWindow
+      ? await closeManagedAutomationWindow(
+          runContext.automationWindowId,
+          runContext.automationHomeTabId,
+        ).catch(() => false)
+      : false;
     const completedReview = {
       ...result,
+      connectionTabId: reviewWindowClosed ? null : result.connectionTabId,
       checkedAt: Date.now(),
-      connectionWindowKeptOpen: true,
+      connectionWindowKeptOpen: !reviewWindowClosed,
     };
     await chrome.storage.local.set({
       lastAcceptedConnectionReview: completedReview,
