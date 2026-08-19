@@ -233,8 +233,9 @@ assert.match(backgroundSource, /source: "daily"/);
 assert.match(backgroundSource, /lastAcceptedConnectionReview/);
 assert.match(
   scoutSource,
-  /status IN \('engaged', 'connected', 'connection_requested'\)/,
+  /status IN \('engaged', 'connected', 'connection_requested', 'failed'\)/,
 );
+assert.match(scoutSource, /a\.status <> 'failed'/);
 assert.match(scoutSource, /requiresFullScan/);
 assert.match(backgroundSource, /recordContactInfo/);
 assert.match(backgroundSource, /reserveConnectionRequest/);

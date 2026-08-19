@@ -979,7 +979,11 @@ export const getConnectionReviewPlan = action({
          FROM lead_assignments AS a
          INNER JOIN leads AS l ON l.id = a.lead_id
          WHERE a.operator_id = $1
-           AND a.status IN ('engaged', 'connected', 'connection_requested')
+           AND a.status IN ('engaged', 'connected', 'connection_requested', 'failed')
+           AND (
+             a.status <> 'failed'
+             OR a.connection_request_reserved_on IS NOT NULL
+           )
          ORDER BY a.connection_requested_at, a.lead_id
          LIMIT 1000`,
         [scout.operatorId],
@@ -1074,7 +1078,11 @@ export const recordConnectionReview = action({
          FROM lead_assignments AS a
          INNER JOIN leads AS l ON l.id = a.lead_id
          WHERE a.operator_id = $1
-           AND a.status IN ('engaged', 'connected', 'connection_requested')
+           AND a.status IN ('engaged', 'connected', 'connection_requested', 'failed')
+           AND (
+             a.status <> 'failed'
+             OR a.connection_request_reserved_on IS NOT NULL
+           )
          ORDER BY a.connection_requested_at, a.lead_id
          LIMIT 1000
          FOR UPDATE`,
