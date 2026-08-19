@@ -85,6 +85,8 @@ const elements = {
   oldRequestList: document.querySelector("#old-request-list"),
   autoWithdrawOldRequests: document.querySelector("#auto-withdraw-old-requests"),
   openSentRequests: document.querySelector("#open-sent-requests"),
+  checkAcceptedConnections: document.querySelector("#check-accepted-connections"),
+  connectionReviewStatus: document.querySelector("#connection-review-status"),
   openQuestionCount: document.querySelector("#open-question-count"),
   questionForm: document.querySelector("#question-form"),
   questionSubject: document.querySelector("#question-subject"),
@@ -136,6 +138,10 @@ elements.openSentRequests.addEventListener("click", () =>
     active: true,
   }),
 );
+elements.checkAcceptedConnections.addEventListener(
+  "click",
+  checkAcceptedConnections,
+);
 elements.questionForm.addEventListener("submit", sendQuestion);
 elements.verifyPremium.addEventListener("click", verifyPremiumAndUnlockNote);
 elements.onboardingFreePlan.addEventListener("click", () =>
@@ -179,6 +185,9 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   if (changes.autoLeadRunState?.newValue) {
     renderAutoLeadRunState(changes.autoLeadRunState.newValue);
   }
+  if (changes.lastAcceptedConnectionReview?.newValue) {
+    renderConnectionReviewStatus(changes.lastAcceptedConnectionReview.newValue);
+  }
 });
 
 void hydrate().catch((error) => {
@@ -196,10 +205,12 @@ async function hydrate() {
   const cached = await chrome.storage.local.get([
     "scoutDashboard",
     "scoutDashboardUpdatedAt",
+    "lastAcceptedConnectionReview",
   ]);
   if (cached.scoutDashboard) {
     renderDashboard(cached.scoutDashboard, cached.scoutDashboardUpdatedAt);
   }
+  renderConnectionReviewStatus(cached.lastAcceptedConnectionReview);
   await refreshAutoLeadRunState();
   await refreshDashboard();
 }
@@ -545,6 +556,52 @@ async function stopAutoLead() {
   } finally {
     elements.stopAutoLead.disabled = false;
   }
+}
+
+async function checkAcceptedConnections() {
+  clearMessages();
+  elements.checkAcceptedConnections.disabled = true;
+  elements.connectionReviewStatus.textContent =
+    "Opening LinkedIn Connections in the protected window...";
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "CHECK_ACCEPTED_CONNECTIONS",
+    });
+    if (!response?.ok) {
+      throw new Error(
+        response?.error || "We couldn’t check accepted connections.",
+      );
+    }
+    const result = response.result || {};
+    await refreshDashboard();
+    renderConnectionReviewStatus(result);
+    const matched = formatCount(result.acceptedMatched, "lead");
+    showSuccess(
+      `Accepted connection check complete: ${matched} newly accepted.`,
+    );
+  } catch (error) {
+    elements.connectionReviewStatus.textContent =
+      "The accepted connection check could not finish.";
+    showError(error, true);
+  } finally {
+    elements.checkAcceptedConnections.disabled = false;
+  }
+}
+
+function renderConnectionReviewStatus(review) {
+  if (!review || typeof review !== "object") return;
+  if (review.error) {
+    elements.connectionReviewStatus.textContent =
+      `Last check failed: ${review.error}`;
+    return;
+  }
+  const scanned = formatCount(review.connectionsScanned, "connection");
+  const matched = formatCount(review.acceptedMatched, "lead");
+  const windowNote = review.connectionWindowKeptOpen
+    ? " The protected LinkedIn window is still open for review."
+    : "";
+  elements.connectionReviewStatus.textContent =
+    `Last checked ${relativeTime(review.checkedAt)}: ${scanned} scanned; ${matched} marked accepted.${windowNote}`;
 }
 
 async function handleAutoLeadOutcome(response) {

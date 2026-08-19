@@ -48,7 +48,7 @@ const [
   ]);
 const manifest = JSON.parse(manifestSource);
 
-assert.equal(manifest.version, "0.10.6");
+assert.equal(manifest.version, "0.10.7");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -139,6 +139,13 @@ assert.ok(
     popupSource.indexOf('</form>', popupSource.indexOf('<form id="settings-form"')),
   "Your work should stay at the end of the popup",
 );
+assert.match(popupSource, /id="check-accepted-connections"/);
+assert.match(popupSource, /id="connection-review-status"/);
+assert.match(popupScript, /CHECK_ACCEPTED_CONNECTIONS/);
+assert.match(popupScript, /lastAcceptedConnectionReview/);
+assert.match(popupScript, /renderConnectionReviewStatus/);
+assert.match(popupScript, /connectionWindowKeptOpen/);
+assert.match(popupScript, /protected LinkedIn window is still open/);
 assert.match(popupScript, /scouts:getScoutOperations/);
 assert.match(popupScript, /scouts:setDailyTask/);
 assert.match(popupScript, /scouts:completeFollowupTask/);
@@ -215,6 +222,12 @@ assert.match(backgroundSource, /localSettings\.validateBeforeCommenting \?\? fal
 assert.match(backgroundSource, /settings\.includeNote && settings\.linkedinPremium/);
 assert.match(backgroundSource, /getConnectionReviewPlan/);
 assert.match(backgroundSource, /recordConnectionReview/);
+assert.match(backgroundSource, /CHECK_ACCEPTED_CONNECTIONS/);
+assert.match(backgroundSource, /forceReview: true/);
+assert.match(backgroundSource, /keepConnectionTab: true/);
+assert.match(backgroundSource, /connectionWindowKeptOpen: true/);
+assert.match(backgroundSource, /source: "daily"/);
+assert.match(backgroundSource, /lastAcceptedConnectionReview/);
 assert.match(backgroundSource, /recordContactInfo/);
 assert.match(backgroundSource, /reserveConnectionRequest/);
 assert.match(backgroundSource, /completeConnectionRequest/);
@@ -457,6 +470,7 @@ assert.deepEqual(
       acceptedMatched: 0,
       contactsChecked: 0,
       emailsCollected: 0,
+      connectionsScanned: 0,
     },
     autoWithdrawComplete: false,
     autoWithdraw: { withdrawnCount: 0 },

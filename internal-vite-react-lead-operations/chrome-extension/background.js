@@ -17,6 +17,7 @@ const CONNECTION_COMPLETION_RETRY_DELAYS_MS = [0, 750, 2_000];
 
 let premiumCheckPromise = null;
 let workflowPromise = null;
+let manualConnectionReviewPromise = null;
 let workflowControlRequest = null;
 let activeRunId = null;
 let activeWorkflowTabId = null;
@@ -92,6 +93,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "START_AUTO_LEAD") {
     startDailyWorkflow(message.leadId, { resume: false })
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((error) => sendResponse({ ok: false, error: cleanError(error) }));
+    return true;
+  }
+
+  if (message?.type === "CHECK_ACCEPTED_CONNECTIONS") {
+    checkAcceptedConnectionsManually()
       .then((result) => sendResponse({ ok: true, result }))
       .catch((error) => sendResponse({ ok: false, error: cleanError(error) }));
     return true;
@@ -307,6 +315,14 @@ async function runDailyWorkflow(specificLeadId, runContext) {
     review = await reviewAcceptedConnections(dashboard, runContext);
     progress.review = review;
     progress.reviewComplete = true;
+    await chrome.storage.local.set({
+      lastAcceptedConnectionReview: {
+        ...review,
+        checkedAt: Date.now(),
+        source: "daily",
+        connectionWindowKeptOpen: false,
+      },
+    });
     await checkpointRun(runContext, progress, {
       phase: "withdrawing_old_requests",
       message: "Checking old sent requests...",
@@ -863,6 +879,7 @@ function emptyConnectionReview() {
     acceptedMatched: 0,
     contactsChecked: 0,
     emailsCollected: 0,
+    connectionsScanned: 0,
   };
 }
 
@@ -1113,18 +1130,23 @@ function clearActiveWorkflowTab(tabId) {
   if (activeWorkflowTabId === tabId) activeWorkflowTabId = null;
 }
 
-async function reviewAcceptedConnections(dashboard, runContext) {
+async function reviewAcceptedConnections(
+  dashboard,
+  runContext,
+  { forceReview = false, keepConnectionTab = false, collectContacts = true } = {},
+) {
   const empty = emptyConnectionReview();
-  if (!dashboard.hasSentConnectionRequest) return empty;
+  if (!forceReview && !dashboard.hasSentConnectionRequest) return empty;
 
   throwIfWorkflowControlled(runContext);
   const plan = await ScoutApi.authenticatedAction(
     "scouts:getConnectionReviewPlan",
   );
-  if (!plan.shouldReview) return empty;
+  if (!forceReview && !plan.shouldReview) return empty;
 
   const tab = await createAutomationTab(runContext, CONNECTIONS_URL);
   if (!tab?.id) throw new Error("We couldn’t open your LinkedIn connections.");
+  runContext.connectionReviewTabId = tab.id;
   let reviewResult;
   try {
     await waitForTabComplete(tab.id);
@@ -1149,16 +1171,24 @@ async function reviewAcceptedConnections(dashboard, runContext) {
         top: scan.result.top,
       },
     );
+    reviewResult = {
+      ...reviewResult,
+      connectionsScanned: scan.result.connections.length,
+    };
     throwIfWorkflowControlled(runContext);
   } finally {
     clearActiveWorkflowTab(tab.id);
-    await chrome.tabs.remove(tab.id).catch(() => {});
+    if (!keepConnectionTab) {
+      await chrome.tabs.remove(tab.id).catch(() => {});
+    }
   }
 
-  const contactLeads = uniqueLeads([
-    ...(plan.contactLeads || []),
-    ...(reviewResult.acceptedLeads || []),
-  ]);
+  const contactLeads = collectContacts
+    ? uniqueLeads([
+        ...(plan.contactLeads || []),
+        ...(reviewResult.acceptedLeads || []),
+      ])
+    : [];
   let contactsChecked = 0;
   let emailsCollected = 0;
   for (const lead of contactLeads) {
@@ -1190,7 +1220,90 @@ async function reviewAcceptedConnections(dashboard, runContext) {
     acceptedMatched: Number(reviewResult.matched || 0),
     contactsChecked,
     emailsCollected,
+    connectionsScanned: Number(reviewResult.connectionsScanned || 0),
+    connectionTabId: keepConnectionTab ? tab.id : null,
   };
+}
+
+function checkAcceptedConnectionsManually() {
+  if (manualConnectionReviewPromise) return manualConnectionReviewPromise;
+  manualConnectionReviewPromise = runManualAcceptedConnectionReview().finally(
+    () => {
+      manualConnectionReviewPromise = null;
+    },
+  );
+  return manualConnectionReviewPromise;
+}
+
+async function runManualAcceptedConnectionReview() {
+  if (workflowPromise) {
+    throw new Error(
+      "Finish or pause today’s automation before checking accepted connections manually.",
+    );
+  }
+  await ensureAutoLeadRunState();
+  const state = await readAutoLeadRunState();
+  if (ACTIVE_RUN_STATUSES.has(state.status)) {
+    throw new Error(
+      "Today’s automation is still in progress. Pause it before checking accepted connections manually.",
+    );
+  }
+
+  const dashboard = await ScoutApi.authenticatedAction("scouts:getDashboard");
+  if (!dashboard.settings?.onboardingCompleted) {
+    throw new Error("Finish setup before checking accepted connections.");
+  }
+
+  const runContext = {
+    runId: createRunId(),
+    resume: false,
+    progress: defaultRunProgress(),
+    automationWindowId: null,
+    automationHomeTabId: null,
+    automationTabGroupId: null,
+    connectionReviewTabId: null,
+  };
+  const previousStateToClose = state.automationWindowId ? state : null;
+  const automationContext = await prepareAutomationWindow(
+    runContext,
+    null,
+    previousStateToClose,
+  );
+  Object.assign(runContext, automationContext);
+  activeAutomationWindowId = runContext.automationWindowId;
+  try {
+    const result = await reviewAcceptedConnections(dashboard, runContext, {
+      forceReview: true,
+      keepConnectionTab: true,
+      collectContacts: false,
+    });
+    if (result.connectionTabId) {
+      await chrome.tabs.update(result.connectionTabId, { active: true }).catch(
+        () => {},
+      );
+    }
+    await updateBadge();
+    const completedReview = {
+      ...result,
+      checkedAt: Date.now(),
+      connectionWindowKeptOpen: true,
+    };
+    await chrome.storage.local.set({
+      lastAcceptedConnectionReview: completedReview,
+    });
+    return completedReview;
+  } catch (error) {
+    await chrome.storage.local.set({
+      lastAcceptedConnectionReview: {
+        checkedAt: Date.now(),
+        error: cleanError(error),
+      },
+    });
+    throw error;
+  } finally {
+    activeWorkflowTabId = null;
+    activeAutomationWindowId = null;
+  }
 }
 
 async function autoWithdrawOldRequests(runContext = null) {
