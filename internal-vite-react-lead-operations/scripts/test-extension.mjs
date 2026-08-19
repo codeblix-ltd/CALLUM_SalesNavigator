@@ -27,6 +27,8 @@ const [
   clientSource,
   scoutSource,
   adminSource,
+  leadDirectorySource,
+  adminAppSource,
   schemaSource,
 ] =
   await Promise.all([
@@ -44,11 +46,13 @@ const [
     readExtensionFile("convex-client.js"),
     readFile(path.join(projectRoot, "convex", "scouts.ts"), "utf8"),
     readFile(path.join(projectRoot, "convex", "adminAnalytics.ts"), "utf8"),
+    readFile(path.join(projectRoot, "convex", "leads.ts"), "utf8"),
+    readFile(path.join(projectRoot, "src", "App.tsx"), "utf8"),
     readFile(path.join(projectRoot, "database", "schema.sql"), "utf8"),
   ]);
 const manifest = JSON.parse(manifestSource);
 
-assert.equal(manifest.version, "0.10.10");
+assert.equal(manifest.version, "0.10.11");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -93,6 +97,9 @@ assert.match(automationStyles, /#100b27/);
 assert.match(dashboardSource, /All leads and steps/);
 assert.match(dashboardSource, /id="lead-drawer"/);
 assert.match(dashboardScript, /scouts:getLeadProgress/);
+assert.match(dashboardScript, /scouts:setLeadNote/);
+assert.match(dashboardScript, /data-lead-note-form/);
+assert.match(dashboardScript, /maxlength="10000"/);
 assert.match(popupSource, /id="reset-onboarding"/);
 assert.match(popupSource, /id="onboarding-form"/);
 assert.match(popupSource, /Do you have LinkedIn Premium\?/);
@@ -287,6 +294,13 @@ assert.match(clientSource, /refreshOnce/);
 assert.match(clientSource, /clearAuthIfUnchanged/);
 assert.match(scoutSource, /export const getScoutOperations/);
 assert.match(scoutSource, /export const getLeadProgress/);
+assert.match(scoutSource, /export const setLeadNote/);
+assert.match(scoutSource, /UPDATE leads AS l/);
+assert.match(scoutSource, /lead_note_updated_at/);
+assert.match(leadDirectorySource, /l\.lead_note/);
+assert.match(adminAppSource, /Lead note/);
+assert.match(adminAppSource, /lead\.leadNote/);
+assert.match(schemaSource, /ADD COLUMN IF NOT EXISTS lead_note STRING NULL/);
 assert.match(scoutSource, /export const markOldRequestWithdrawn/);
 assert.match(scoutSource, /export const completeFollowupTask/);
 assert.match(scoutSource, /createFollowupTasks/);

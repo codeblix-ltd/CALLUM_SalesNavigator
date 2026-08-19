@@ -84,6 +84,8 @@ type ScoutProgressLead = {
   status: string;
   qualificationStatus: string;
   qualificationNote: string | null;
+  leadNote: string | null;
+  leadNoteUpdatedAt: string | null;
   hasRecentPost: boolean | null;
   icpScore: number | null;
   recentPostCheckedAt: string | null;
@@ -216,6 +218,8 @@ const scoutProgressLeadValidator = v.object({
   status: v.string(),
   qualificationStatus: v.string(),
   qualificationNote: optionalText,
+  leadNote: optionalText,
+  leadNoteUpdatedAt: optionalText,
   hasRecentPost: v.union(v.boolean(), v.null()),
   icpScore: v.union(v.number(), v.null()),
   recentPostCheckedAt: optionalText,
@@ -422,7 +426,8 @@ export const getLeadProgress = action({
           OR l.company_name ILIKE ${token}
           OR l.current_title ILIKE ${token}
           OR coalesce(l.original_email, a.email, '') ILIKE ${token}
-          OR coalesce(l.work_email, '') ILIKE ${token})`,
+          OR coalesce(l.work_email, '') ILIKE ${token}
+          OR coalesce(l.lead_note, '') ILIKE ${token})`,
       );
     }
 
@@ -480,6 +485,8 @@ export const getLeadProgress = action({
          a.status,
          a.qualification_status,
          a.qualification_note,
+         l.lead_note,
+         l.lead_note_updated_at::STRING AS lead_note_updated_at,
          a.has_recent_post,
          a.icp_score::FLOAT8 AS icp_score,
          a.recent_post_checked_at::STRING AS recent_post_checked_at,
@@ -1670,6 +1677,50 @@ export const setLeadQualification = action({
   },
 });
 
+export const setLeadNote = action({
+  args: {
+    leadId: v.string(),
+    note: v.string(),
+  },
+  returns: v.object({
+    note: optionalText,
+    updatedAt: v.string(),
+  }),
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ note: string | null; updatedAt: string }> => {
+    const scout: ScoutIdentity = await ctx.runQuery(
+      internal.scoutIdentity.requireScout,
+      {},
+    );
+    const note = args.note.trim();
+    if (note.length > 10_000) {
+      throw new Error("Lead notes can contain up to 10,000 characters.");
+    }
+    const result = await getPool().query(
+      `UPDATE leads AS l
+          SET lead_note = $3,
+              lead_note_updated_at = now(),
+              updated_at = now()
+        WHERE l.id = $1::UUID
+          AND EXISTS (
+            SELECT 1
+              FROM lead_assignments AS a
+             WHERE a.lead_id = l.id AND a.operator_id = $2
+          )
+      RETURNING lead_note,
+                lead_note_updated_at::STRING AS lead_note_updated_at`,
+      [args.leadId, scout.operatorId, note || null],
+    );
+    if (!result.rows[0]) throw new Error("This lead is not assigned to you.");
+    return {
+      note: nullableString(result.rows[0].lead_note),
+      updatedAt: String(result.rows[0].lead_note_updated_at),
+    };
+  },
+});
+
 export const createEscalation = action({
   args: {
     leadId: v.union(v.string(), v.null()),
@@ -2092,6 +2143,8 @@ function mapProgressLead(row: Record<string, unknown>): ScoutProgressLead {
     status: String(row.status ?? "assigned"),
     qualificationStatus: String(row.qualification_status ?? "pending"),
     qualificationNote: nullableString(row.qualification_note),
+    leadNote: nullableString(row.lead_note),
+    leadNoteUpdatedAt: nullableString(row.lead_note_updated_at),
     hasRecentPost:
       typeof row.has_recent_post === "boolean" ? row.has_recent_post : null,
     icpScore:

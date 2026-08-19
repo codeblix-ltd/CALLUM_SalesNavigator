@@ -83,6 +83,7 @@ elements.search.addEventListener("input", () => {
 elements.previousPage.addEventListener("click", () => changePage(-1));
 elements.nextPage.addEventListener("click", () => changePage(1));
 elements.leadRows.addEventListener("click", handleLeadRowClick);
+elements.drawerContent.addEventListener("submit", handleLeadNoteSubmit);
 elements.closeDrawer.addEventListener("click", closeDrawer);
 elements.drawerBackdrop.addEventListener("click", closeDrawer);
 document.addEventListener("keydown", (event) => {
@@ -280,6 +281,17 @@ function openDrawer(lead) {
       <p>${escapeHtml([lead.currentTitle, lead.companyName].filter(Boolean).join(" · ") || "Lead details")}</p>
     </header>
     <div class="drawer-actions"><a href="${escapeAttribute(lead.profileUrl)}" target="_blank" rel="noreferrer">Open LinkedIn profile</a></div>
+    <section class="drawer-section lead-note-section">
+      <h3>Lead note</h3>
+      <form class="lead-note-form" data-lead-note-form data-lead-id="${escapeAttribute(lead.id)}">
+        <label for="lead-note-input">Add context that scouts and administrators should always see for this lead.</label>
+        <textarea id="lead-note-input" maxlength="10000" placeholder="Add a note about this lead…">${escapeHtml(lead.leadNote || "")}</textarea>
+        <div class="lead-note-footer">
+          <span data-lead-note-status>${escapeHtml(lead.leadNoteUpdatedAt ? `Last saved ${formatRelativeTime(lead.leadNoteUpdatedAt)}` : "No note saved yet")}</span>
+          <button class="primary-button compact" type="submit">Save note</button>
+        </div>
+      </form>
+    </section>
     <section class="drawer-section"><h3>Workflow progress</h3><div class="timeline">${timeline}</div></section>
     <section class="drawer-section">
       <h3>Lead details</h3>
@@ -309,6 +321,41 @@ function openDrawer(lead) {
   elements.leadDrawer.hidden = false;
   document.body.style.overflow = "hidden";
   elements.closeDrawer.focus();
+}
+
+async function handleLeadNoteSubmit(event) {
+  const form = event.target.closest("form[data-lead-note-form]");
+  if (!form) return;
+  event.preventDefault();
+  const textarea = form.querySelector("textarea");
+  const button = form.querySelector("button[type='submit']");
+  const status = form.querySelector("[data-lead-note-status]");
+  const leadId = form.dataset.leadId;
+  if (!textarea || !button || !status || !leadId) return;
+
+  button.disabled = true;
+  textarea.disabled = true;
+  status.textContent = "Saving…";
+  status.classList.remove("is-error");
+  try {
+    const result = await ScoutApi.authenticatedAction("scouts:setLeadNote", {
+      leadId,
+      note: textarea.value,
+    });
+    const lead = state.leads.find((item) => item.id === leadId);
+    if (lead) {
+      lead.leadNote = result.note;
+      lead.leadNoteUpdatedAt = result.updatedAt;
+    }
+    textarea.value = result.note || "";
+    status.textContent = result.note ? "Saved just now" : "Note cleared";
+  } catch (error) {
+    status.textContent = readError(error);
+    status.classList.add("is-error");
+  } finally {
+    button.disabled = false;
+    textarea.disabled = false;
+  }
 }
 
 function closeDrawer() {

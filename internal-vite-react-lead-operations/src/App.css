@@ -280,7 +280,7 @@ main { max-width: 1320px; margin: 0 auto; padding: 40px 24px 76px; }
 .multi-select-option small { margin-left: auto; color: #98a1b2; font-size: 10px; font-weight: 700; }
 .multi-select-clear { width: 100%; margin-top: 5px; padding: 7px; color: #6245d8; background: #f5f3ff; border: 0; border-radius: 7px; font-size: 10px; font-weight: 800; cursor: pointer; }
 .table-scroll { overflow-x: auto; }
-.table-scroll table { width: 100%; border-collapse: collapse; min-width: 980px; }
+.table-scroll table { width: 100%; border-collapse: collapse; min-width: 1160px; }
 .table-scroll th { padding: 12px 18px; text-align: left; color: #7b879e; background: #f8f9fc; border-bottom: 1px solid #dfe4ee; font-size: 11px; text-transform: uppercase; letter-spacing: .8px; }
 .table-scroll td { padding: 15px 18px; color: #4c5974; border-bottom: 1px solid #e5e9f1; font-size: 12px; vertical-align: middle; }
 .table-scroll tbody tr:hover { background: #faf9ff; }
@@ -289,6 +289,7 @@ main { max-width: 1320px; margin: 0 auto; padding: 40px 24px 76px; }
 .lead-cell strong, .company-name { display: block; color: #28334d; font-size: 12px; }
 .lead-cell span:not(.avatar), .subtle { display: block; margin-top: 3px; color: #8791a6; font-size: 11px; }
 .lead-email { display: block; min-width: 145px; color: #28334d; font-size: 11px; }
+.lead-note-cell { display: block; min-width: 190px; max-width: 300px; color: #3b4760; font-size: 11px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
 .location { max-width: 190px; display: flex; align-items: flex-start; gap: 5px; }
 .location svg { margin-top: 1px; flex: 0 0 auto; color: #917add; }
 .industry-pill { display: inline-flex; padding: 5px 8px; color: #5c4a9e; background: #f0edfb; border-radius: 7px; font-size: 10px; font-weight: 700; white-space: nowrap; }

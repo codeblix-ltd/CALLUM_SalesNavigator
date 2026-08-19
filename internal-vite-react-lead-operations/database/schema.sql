@@ -80,6 +80,8 @@ CREATE TABLE IF NOT EXISTS leads (
   work_email_resolved_linkedin_url STRING NULL,
   work_email_last_error STRING NULL,
   work_email_http_status INT4 NULL,
+  lead_note STRING NULL,
+  lead_note_updated_at TIMESTAMPTZ NULL,
   search_text STRING NOT NULL DEFAULT '',
   source_file STRING NOT NULL,
   source_row INT8 NOT NULL,
@@ -98,7 +100,9 @@ ALTER TABLE leads
   ADD COLUMN IF NOT EXISTS work_email_checked_at TIMESTAMPTZ NULL,
   ADD COLUMN IF NOT EXISTS work_email_resolved_linkedin_url STRING NULL,
   ADD COLUMN IF NOT EXISTS work_email_last_error STRING NULL,
-  ADD COLUMN IF NOT EXISTS work_email_http_status INT4 NULL;
+  ADD COLUMN IF NOT EXISTS work_email_http_status INT4 NULL,
+  ADD COLUMN IF NOT EXISTS lead_note STRING NULL,
+  ADD COLUMN IF NOT EXISTS lead_note_updated_at TIMESTAMPTZ NULL;
 
 ALTER TABLE leads
   DROP CONSTRAINT IF EXISTS leads_work_email_status_check;

@@ -151,6 +151,8 @@ type Lead = {
   workEmail: string | null;
   workEmailValidation: string | null;
   workEmailStatus: string;
+  leadNote: string | null;
+  leadNoteUpdatedAt: string | null;
 };
 
 type CodexStatus = {
@@ -1291,7 +1293,7 @@ function LeadDirectory({ stats, niches, setNiches, search, setSearch, originalEm
     <section className="workspace">
       <div className="workspace-heading"><div><p className="eyebrow">Lead directory</p><h2>{directoryTitle}</h2><p>{formatNumber(viewCount)} profiles in this view</p></div><div className="workspace-actions"><button className="secondary-button" onClick={() => void onExport()} disabled={loading || exporting}><Download size={16} className={exporting ? "spin" : ""} />{exporting ? "Exporting…" : "Export CSV"}</button><button className="secondary-button" onClick={() => void onRefresh()} disabled={loading || exporting}><RefreshCw size={16} className={loading ? "spin" : ""} />Refresh</button></div></div>
       <div className="filters">
-        <label className="search-field"><Search size={18} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search name, company, title, industry, or email…" />{search && <button onClick={() => setSearch("")} aria-label="Clear search"><X size={16} /></button>}</label>
+        <label className="search-field"><Search size={18} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search name, company, email, or lead note…" />{search && <button onClick={() => setSearch("")} aria-label="Clear search"><X size={16} /></button>}</label>
         <MultiSelect label="Niches" allLabel="All niches" options={stats?.niches.map((item) => ({ value: item.name, label: item.name, count: item.count })) ?? []} selected={niches} onChange={setNiches} />
         <MultiSelect label="Original email availability" allLabel="All original emails" options={[{ value: "present" as const, label: "Has original email" }, { value: "missing" as const, label: "Missing original email" }]} selected={originalEmailFilters} onChange={setOriginalEmailFilters} allWhenAllSelected />
         <MultiSelect label="Work email availability" allLabel="All work emails" options={[{ value: "present" as const, label: "Has work email" }, { value: "missing" as const, label: "Missing work email" }]} selected={workEmailFilters} onChange={setWorkEmailFilters} allWhenAllSelected />
@@ -1345,7 +1347,24 @@ function LeadTable({ leads, loading }: { leads: Lead[]; loading: boolean }) {
   if (loading) return <div className="table-loading"><RefreshCw className="spin" size={22} />Loading leads from CockroachDB…</div>;
   if (leads.length === 0) return <div className="empty-state"><Search size={24} /><h3>No leads found</h3><p>Try another niche or a broader search phrase.</p></div>;
   return (
-     <div className="table-scroll"><table><thead><tr><th>Lead</th><th>Company</th><th>Original email</th><th>Work email</th><th>Location</th><th>Industry</th><th>Size</th><th><span className="sr-only">Profile</span></th></tr></thead><tbody>{leads.map((lead) => <tr key={lead.id}><td><div className="lead-cell"><span className="avatar">{initials(lead.fullName)}</span><div><strong>{lead.fullName || "Unnamed lead"}</strong><span>{lead.currentTitle || "Title unavailable"}</span></div></div></td><td><strong className="company-name">{lead.companyName || "—"}</strong><span className="subtle">{lead.domain || lead.companySize || ""}</span></td><td><span className="lead-email">{lead.originalEmail || "—"}</span><span className="subtle">LinkedIn account</span></td><td><span className="lead-email">{lead.workEmail || "—"}</span><span className="subtle">{lead.workEmail ? lead.workEmailValidation || "Not validated" : lead.workEmailStatus.replaceAll("_", " ")}</span></td><td><span className="location"><MapPin size={14} />{lead.geographicRegion || lead.companyLocation || "—"}</span></td><td><span className="industry-pill">{lead.companyIndustry || "Uncategorized"}</span></td><td>{lead.employeeCount ? formatNumber(lead.employeeCount) : lead.companySize || "—"}</td><td>{lead.linkedinUrl ? <a className="profile-link" href={lead.linkedinUrl} target="_blank" rel="noreferrer" title="Open LinkedIn profile"><ExternalLink size={16} /></a> : "—"}</td></tr>)}</tbody></table></div>
+    <div className="table-scroll">
+      <table>
+        <thead><tr><th>Lead</th><th>Company</th><th>Original email</th><th>Work email</th><th>Lead note</th><th>Location</th><th>Industry</th><th>Size</th><th><span className="sr-only">Profile</span></th></tr></thead>
+        <tbody>{leads.map((lead) => (
+          <tr key={lead.id}>
+            <td><div className="lead-cell"><span className="avatar">{initials(lead.fullName)}</span><div><strong>{lead.fullName || "Unnamed lead"}</strong><span>{lead.currentTitle || "Title unavailable"}</span></div></div></td>
+            <td><strong className="company-name">{lead.companyName || "—"}</strong><span className="subtle">{lead.domain || lead.companySize || ""}</span></td>
+            <td><span className="lead-email">{lead.originalEmail || "—"}</span><span className="subtle">LinkedIn account</span></td>
+            <td><span className="lead-email">{lead.workEmail || "—"}</span><span className="subtle">{lead.workEmail ? lead.workEmailValidation || "Not validated" : lead.workEmailStatus.replaceAll("_", " ")}</span></td>
+            <td><span className="lead-note-cell">{lead.leadNote || "—"}</span>{lead.leadNoteUpdatedAt && <span className="subtle">Updated {formatRelativeTime(lead.leadNoteUpdatedAt)}</span>}</td>
+            <td><span className="location"><MapPin size={14} />{lead.geographicRegion || lead.companyLocation || "—"}</span></td>
+            <td><span className="industry-pill">{lead.companyIndustry || "Uncategorized"}</span></td>
+            <td>{lead.employeeCount ? formatNumber(lead.employeeCount) : lead.companySize || "—"}</td>
+            <td>{lead.linkedinUrl ? <a className="profile-link" href={lead.linkedinUrl} target="_blank" rel="noreferrer" title="Open LinkedIn profile"><ExternalLink size={16} /></a> : "—"}</td>
+          </tr>
+        ))}</tbody>
+      </table>
+    </div>
   );
 }
 

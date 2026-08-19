@@ -9,7 +9,7 @@
 
 html { scroll-behavior: smooth; }
 body { min-width: 980px; margin: 0; background: #f6f7f9; }
-button, input, select { font: inherit; }
+button, input, select, textarea { font: inherit; }
 button, a { -webkit-tap-highlight-color: transparent; }
 button { cursor: pointer; }
 button:disabled { cursor: wait; opacity: .5; }
@@ -187,6 +187,12 @@ tbody tr:last-child td { border-bottom: 0; }
 .detail-grid strong { overflow-wrap: anywhere; color: #3a4553; font-size: 11px; line-height: 1.45; }
 .drawer-note { margin: 0; padding: 11px 12px; color: #6f5b3e; background: #fff8eb; border: 1px solid #f1dfbc; border-radius: 8px; font-size: 10px; line-height: 1.5; }
 .drawer-note.error { color: #8f4141; background: #fff1f1; border-color: #efcccc; }
+.lead-note-form label { display: block; margin-bottom: 9px; color: #76808e; font-size: 10px; line-height: 1.45; }
+.lead-note-form textarea { width: 100%; min-height: 112px; resize: vertical; padding: 11px 12px; color: #344052; background: #fbfbfd; border: 1px solid #d9dee7; border-radius: 8px; outline: none; font-size: 11px; line-height: 1.55; }
+.lead-note-form textarea:focus { background: #fff; border-color: #8067d2; box-shadow: 0 0 0 3px rgba(102, 72, 197, .1); }
+.lead-note-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 9px; }
+.lead-note-footer span { color: #7d8795; font-size: 9px; }
+.lead-note-footer span.is-error { color: #a84242; }
 
 .login-screen { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: #f4f5f7; }
 .login-panel { width: 100%; max-width: 390px; padding: 32px; background: #fff; border: 1px solid #dde1e7; border-radius: 12px; box-shadow: 0 18px 45px rgba(31, 38, 49, .08); }

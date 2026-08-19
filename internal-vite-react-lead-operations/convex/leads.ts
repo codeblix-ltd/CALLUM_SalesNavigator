@@ -65,6 +65,8 @@ const leadValidator = v.object({
   workEmail: optionalText,
   workEmailValidation: optionalText,
   workEmailStatus: v.string(),
+  leadNote: optionalText,
+  leadNoteUpdatedAt: optionalText,
 });
 
 const nicheValidator = v.object({
@@ -185,7 +187,9 @@ export const list = action({
         l.original_email,
         l.work_email,
         l.work_email_validation,
-        l.work_email_status
+        l.work_email_status,
+        l.lead_note,
+        l.lead_note_updated_at::STRING AS lead_note_updated_at
       ${fromSql}
       ${whereSql}
       ORDER BY l.id
@@ -242,6 +246,8 @@ export const exportCsv = action({
          l.work_email,
          l.work_email_validation,
          l.work_email_status,
+         l.lead_note,
+         l.lead_note_updated_at::STRING AS lead_note_updated_at,
          l.geographic_region,
          l.company_industry,
          l.company_size,
@@ -268,6 +274,8 @@ export const exportCsv = action({
       row.work_email,
       row.work_email_validation,
       row.work_email_status,
+      row.lead_note,
+      row.lead_note_updated_at,
       row.geographic_region,
       row.company_industry,
       row.company_size,
@@ -288,6 +296,8 @@ export const exportCsv = action({
       "Work Email",
       "Work Email Validation",
       "Work Email Status",
+      "Lead Note",
+      "Lead Note Updated At",
       "Region",
       "Industry",
       "Company Size",
@@ -329,6 +339,8 @@ function mapLead(row: Record<string, unknown>) {
     workEmail: nullableString(row.work_email),
     workEmailValidation: nullableString(row.work_email_validation),
     workEmailStatus: String(row.work_email_status ?? "pending"),
+    leadNote: nullableString(row.lead_note),
+    leadNoteUpdatedAt: nullableString(row.lead_note_updated_at),
   };
 }
 
@@ -385,6 +397,7 @@ function buildLeadFilter(args: LeadFilterArgs) {
       l.search_text ILIKE $${parameters.length}
       OR coalesce(l.original_email, '') ILIKE $${parameters.length}
       OR coalesce(l.work_email, '') ILIKE $${parameters.length}
+      OR coalesce(l.lead_note, '') ILIKE $${parameters.length}
     )`);
   }
   addEmailAvailabilityCondition(conditions, "l.original_email", originalEmailFilters);
