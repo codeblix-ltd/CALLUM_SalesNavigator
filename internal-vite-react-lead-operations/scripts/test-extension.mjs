@@ -252,6 +252,7 @@ assert.match(backgroundSource, /isolatedLeadRun/);
 assert.match(backgroundSource, /Manual mode: only the selected lead will be processed/);
 assert.match(backgroundSource, /leadId: specificLeadId/);
 assert.doesNotMatch(backgroundSource, /TEMPORARY_LEAD_TEST_KEY|temporaryTestOnly|claimTemporaryTestLead/);
+assert.match(backgroundSource, /remove\("temporaryLeadTest"\)/);
 assert.doesNotMatch(backgroundSource, /if \(!dashboard\.hasSentConnectionRequest\) return empty/);
 assert.match(backgroundSource, /CHECK_ACCEPTED_CONNECTIONS/);
 assert.match(backgroundSource, /forceReview: true/);

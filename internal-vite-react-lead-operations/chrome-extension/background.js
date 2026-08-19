@@ -163,6 +163,7 @@ async function initializeExtensionDefaults() {
   if (!current.invitationNote) defaults.invitationNote = DEFAULT_INVITATION_NOTE;
   if (current.linkedInPremium === undefined) defaults.linkedInPremium = false;
   if (Object.keys(defaults).length > 0) await chrome.storage.local.set(defaults);
+  await chrome.storage.local.remove("temporaryLeadTest");
 }
 
 async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
