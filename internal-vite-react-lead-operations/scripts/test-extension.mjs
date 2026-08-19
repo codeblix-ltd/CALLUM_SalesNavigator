@@ -201,6 +201,8 @@ for (const selectorContract of [
 assert.match(contentSource, /fillInvitationNote/);
 assert.match(contentSource, /options\.includeNote/);
 assert.match(contentSource, /SCAN_RECENT_CONNECTIONS/);
+assert.match(contentSource, /invitations: \[\.\.\.invitations\.values\(\)\]/);
+assert.match(contentSource, /Syncing sent connection requests/);
 assert.match(contentSource, /Connected on\\s\+/);
 assert.match(contentSource, /EXTRACT_CONTACT_INFO/);
 assert.match(contentSource, /INSPECT_CONNECTION_STATUS/);
@@ -249,6 +251,9 @@ assert.match(backgroundSource, /localSettings\.validateBeforeCommenting \?\? fal
 assert.match(backgroundSource, /settings\.includeNote && settings\.linkedinPremium/);
 assert.match(backgroundSource, /getConnectionReviewPlan/);
 assert.match(backgroundSource, /recordConnectionReview/);
+assert.match(backgroundSource, /recordSentInvitationReview/);
+assert.match(backgroundSource, /sentInvitationsScanned/);
+assert.match(backgroundSource, /phase: "syncing_sent_invitations"/);
 assert.match(backgroundSource, /recordKnownConnection/);
 assert.match(backgroundSource, /collectKnownConnectionContact/);
 assert.match(backgroundSource, /connectionInspection\.result\.connectAvailable/);
@@ -291,6 +296,8 @@ assert.match(
 );
 assert.match(backgroundSource, /recordContactInfo/);
 assert.match(scoutSource, /export const recordKnownConnection/);
+assert.match(scoutSource, /export const recordSentInvitationReview/);
+assert.match(scoutSource, /linkedin_sent_invitations_sync/);
 assert.match(scoutSource, /connection_detected/);
 assert.match(backgroundSource, /reserveConnectionRequest/);
 assert.match(backgroundSource, /completeConnectionRequest/);

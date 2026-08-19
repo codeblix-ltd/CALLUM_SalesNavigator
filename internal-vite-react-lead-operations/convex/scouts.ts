@@ -1344,6 +1344,128 @@ export const recordConnectionReview = action({
   },
 });
 
+export const recordSentInvitationReview = action({
+  args: {
+    invitations: v.array(
+      v.object({
+        profileUrl: v.string(),
+        name: v.string(),
+        sentText: v.string(),
+        ageDays: v.number(),
+      }),
+    ),
+  },
+  returns: v.object({ matched: v.number(), updated: v.number() }),
+  handler: async (ctx, args) => {
+    if (args.invitations.length > 1000) {
+      throw new Error("A sent-invitation sync can inspect at most 1000 profiles.");
+    }
+    const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
+    const database = getPool();
+    const client = await database.connect();
+    let matched = 0;
+    let updated = 0;
+    try {
+      await client.query("BEGIN");
+      const assigned = await client.query(
+        `SELECT
+           l.id::STRING AS id,
+           l.full_name,
+           l.original_email,
+           l.linkedin_url,
+           a.resolved_linkedin_url,
+           a.status
+         FROM lead_assignments AS a
+         INNER JOIN leads AS l ON l.id = a.lead_id
+         WHERE a.operator_id = $1
+           AND (
+             a.status IN ('assigned', 'viewed', 'engaged', 'connected', 'connection_requested')
+             OR (
+               a.status = 'failed'
+               AND (a.connection_request_reserved_on IS NOT NULL OR a.connection_requested_at IS NOT NULL)
+             )
+             OR (a.status = 'accepted' AND l.original_email IS NULL)
+           )
+         FOR UPDATE`,
+        [scout.operatorId],
+      );
+      const byProfile = new Map<string, Record<string, unknown>>();
+      const byName = new Map<string, Array<Record<string, unknown>>>();
+      for (const row of assigned.rows as Array<Record<string, unknown>>) {
+        for (const value of [row.resolved_linkedin_url, row.linkedin_url]) {
+          const normalized = tryNormalizeLinkedInProfileUrl(value);
+          if (normalized) byProfile.set(normalized, row);
+        }
+        const nameKey = normalizePersonName(row.full_name);
+        if (nameKey) {
+          const candidates = byName.get(nameKey) || [];
+          candidates.push(row);
+          byName.set(nameKey, candidates);
+        }
+      }
+
+      const seenLeadIds = new Set<string>();
+      for (const invitation of args.invitations) {
+        const profileUrl = tryNormalizeLinkedInProfileUrl(invitation.profileUrl);
+        if (!profileUrl) continue;
+        let row = byProfile.get(profileUrl);
+        if (!row) {
+          const candidates = byName.get(normalizePersonName(invitation.name)) || [];
+          row = candidates.length === 1 ? candidates[0] : undefined;
+        }
+        const leadId = String(row?.id || "");
+        if (!row || !leadId || seenLeadIds.has(leadId)) continue;
+        seenLeadIds.add(leadId);
+        const currentStatus = String(row.status || "");
+        const nextStatus = "connection_requested";
+        const statusChanged = currentStatus !== nextStatus;
+        const ageDays = Math.max(0, Math.min(3650, Number(invitation.ageDays) || 0));
+        await client.query(
+          `UPDATE lead_assignments
+              SET status = 'connection_requested',
+                  connection_requested_at = coalesce(
+                    connection_requested_at,
+                    now() - ($4::FLOAT8 * INTERVAL '1 day')
+                  ),
+                  accepted_at = CASE WHEN $3 = 'accepted' THEN NULL ELSE accepted_at END,
+                  email_collected_at = CASE WHEN $3 = 'accepted' THEN NULL ELSE email_collected_at END,
+                  resolved_linkedin_url = $5,
+                  connection_request_reserved_on = NULL,
+                  last_error = NULL,
+                  last_error_at = NULL,
+                  updated_at = now()
+            WHERE lead_id = $1::UUID AND operator_id = $2`,
+          [leadId, scout.operatorId, currentStatus, ageDays, profileUrl],
+        );
+        matched += 1;
+        if (statusChanged) {
+          updated += 1;
+          await insertEvent(
+            client,
+            leadId,
+            scout.operatorId,
+            "connection_requested",
+            {
+              profileUrl,
+              sentText: invitation.sentText,
+              ageDays,
+              source: "linkedin_sent_invitations_sync",
+              correctedAcceptedStatus: currentStatus === "accepted",
+            },
+          );
+        }
+      }
+      await client.query("COMMIT");
+      return { matched, updated };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+});
+
 export const recordContactInfo = action({
   args: {
     leadId: v.string(),
@@ -2363,6 +2485,13 @@ function mapReviewLead(row: Record<string, unknown>): ReviewLead {
 
 function nullableString(value: unknown) {
   return typeof value === "string" && value ? value : null;
+}
+
+function normalizePersonName(value: unknown) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "")
+    .trim();
 }
 
 function clampInteger(value: number, minimum: number, maximum: number) {

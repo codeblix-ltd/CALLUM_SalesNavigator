@@ -243,8 +243,7 @@ function renderLeads(progress) {
     });
     const outreachDone = hasOutreach(lead);
     const email = lead.workEmail || lead.originalEmail;
-    const emailUnavailable =
-      !email && lead.originalEmailStatus === "not_found";
+    const emailUnavailable = isEmailUnavailable(lead, email);
     row.innerHTML = `
       <td>${leadCell(lead)}</td>
       <td>${milestoneCell(qualificationLabel(lead), qualificationMeta(lead), lead.qualificationStatus !== "pending", lead.qualificationStatus === "not_qualified" ? "error" : "")}</td>
@@ -252,7 +251,7 @@ function renderLeads(progress) {
       <td>${milestoneCell(lead.engagedAt ? `${formatNumber(lead.postCount)} post${lead.postCount === 1 ? "" : "s"}` : "Not started", shortDate(lead.engagedAt), Boolean(lead.engagedAt))}</td>
       <td>${milestoneCell(outreachDone ? "Reached out" : "Not sent", shortDate(lead.connectionRequestedAt), outreachDone, lead.status === "withdrawn" ? "warning" : "")}</td>
       <td>${milestoneCell(lead.acceptedAt ? "Connected" : "Waiting", shortDate(lead.acceptedAt), Boolean(lead.acceptedAt))}</td>
-      <td>${milestoneCell(email ? escapeHtml(email) : emailUnavailable ? "No email available" : "Not checked", email ? emailType(lead) : emailUnavailable ? originalEmailMeta(lead) : workEmailMeta(lead), Boolean(email) || emailUnavailable, lead.workEmailStatus === "error" ? "error" : emailUnavailable ? "warning" : "")}</td>
+      <td>${milestoneCell(email ? escapeHtml(email) : emailUnavailable ? "No email available" : lead.status === "connection_requested" ? "Waiting for connection" : "Not checked", email ? emailType(lead) : emailUnavailable ? originalEmailMeta(lead) : lead.status === "connection_requested" ? "Available after acceptance" : workEmailMeta(lead), Boolean(email) || emailUnavailable, lead.workEmailStatus === "error" ? "error" : emailUnavailable ? "warning" : "")}</td>
       <td><span class="stage-pill ${lead.status === "failed" ? "is-error" : ""}">${escapeHtml(stageLabel(lead.status))}</span></td>
       <td><span class="updated-cell">${escapeHtml(formatRelativeTime(lead.updatedAt))}</span></td>`;
     elements.leadRows.append(row);
@@ -268,8 +267,7 @@ function handleLeadRowClick(event) {
 
 function openDrawer(lead) {
   const email = lead.workEmail || lead.originalEmail;
-  const emailUnavailable =
-    !email && lead.originalEmailStatus === "not_found";
+  const emailUnavailable = isEmailUnavailable(lead, email);
   const timeline = [
     timelineItem("Assigned", "Added to your lead list", lead.assignedAt, true),
     timelineItem("Fit check", qualificationDetail(lead), lead.recentPostCheckedAt, lead.qualificationStatus !== "pending", lead.qualificationStatus === "not_qualified"),
@@ -277,7 +275,7 @@ function openDrawer(lead) {
     timelineItem("Posts engaged", lead.postCount ? `${lead.postCount} post${lead.postCount === 1 ? "" : "s"} liked or commented` : "No post activity recorded", lead.engagedAt, Boolean(lead.engagedAt)),
     timelineItem("Connection request", hasOutreach(lead) ? "Reached out on LinkedIn" : "Not sent yet", lead.connectionRequestedAt, hasOutreach(lead), lead.status === "withdrawn"),
     timelineItem("Connected", lead.repliedAt ? "Connected and replied" : "Request accepted", lead.acceptedAt, Boolean(lead.acceptedAt)),
-    timelineItem(email ? "Email saved" : "Email checked", email || (emailUnavailable ? "No email available on LinkedIn" : "Not checked yet"), lead.emailCollectedAt || lead.workEmailCollectedAt || lead.originalEmailCheckedAt, Boolean(email) || emailUnavailable, lead.workEmailStatus === "error"),
+    timelineItem(email ? "Email saved" : lead.status === "connection_requested" ? "Email waiting" : "Email checked", email || (emailUnavailable ? "No email available on LinkedIn" : lead.status === "connection_requested" ? "Available after connection acceptance" : "Not checked yet"), lead.emailCollectedAt || lead.workEmailCollectedAt || lead.originalEmailCheckedAt, Boolean(email) || emailUnavailable, lead.workEmailStatus === "error"),
   ].join("");
   elements.drawerContent.innerHTML = `
     <header class="drawer-header">
@@ -314,7 +312,7 @@ function openDrawer(lead) {
     <section class="drawer-section">
       <h3>Contact details</h3>
       <div class="detail-grid">
-        ${detailItem("LinkedIn email", lead.originalEmail || (lead.originalEmailStatus === "not_found" ? "No email available" : null))}
+        ${detailItem("LinkedIn email", lead.originalEmail || (emailUnavailable ? "No email available" : lead.status === "connection_requested" ? "Waiting for connection" : null))}
         ${detailItem("LinkedIn email status", originalEmailMeta(lead))}
         ${detailItem("Work email", lead.workEmail)}
         ${detailItem("Work email status", workEmailMeta(lead))}
@@ -436,8 +434,17 @@ function emailType(lead) {
   return "LinkedIn email";
 }
 
+function isEmailUnavailable(lead, email = lead.workEmail || lead.originalEmail) {
+  return Boolean(
+    !email &&
+      lead.originalEmailStatus === "not_found" &&
+      ["accepted", "email_collected"].includes(lead.status),
+  );
+}
+
 function originalEmailMeta(lead) {
   if (lead.originalEmail) return "Found";
+  if (lead.status === "connection_requested") return "Available after acceptance";
   if (lead.originalEmailStatus === "not_found") {
     return lead.originalEmailCheckedAt
       ? `Checked ${shortDate(lead.originalEmailCheckedAt)}`

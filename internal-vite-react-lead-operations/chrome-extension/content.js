@@ -785,16 +785,12 @@
       throw new Error("LinkedIn’s Sent Invitations page did not open. Try again.");
     }
 
-    updateStatus("Checking sent invitations (30+ days old) to reject...");
+    updateStatus("Syncing sent connection requests...");
 
     const dbLeads = options.dbLeads || [];
-    if (!Array.from(dbLeads).length) {
-      addLog("Info", "No DB leads provided to check against.");
-      updateStatus("No matching DB leads to reject.");
-      return { withdrawn: [], withdrawnCount: 0 };
+    if (dbLeads.length > 0) {
+      addLog("DB Leads", `${dbLeads.length} pending lead(s) >=30 days in DB`);
     }
-
-    addLog("DB Leads", `${dbLeads.length} pending lead(s) >=30 days in DB`);
 
     // Wait for list items to render
     const loaded = await waitForMatch(
@@ -804,11 +800,12 @@
 
     if (!loaded) {
       addLog("Info", "No sent invitations found on page.");
-      updateStatus("Finished checking sent invitations.");
-      return { withdrawn: [], withdrawnCount: 0 };
+      updateStatus("No sent invitations found; sync complete.");
+      return { withdrawn: [], withdrawnCount: 0, invitations: [] };
     }
 
     const withdrawn = [];
+    const invitations = new Map();
     const processedUrls = new Set();
     let scanPasses = 0;
     let unchangedPasses = 0;
@@ -816,9 +813,16 @@
     while (scanPasses < 10) {
       scanPasses++;
       const cards = querySentInvitationCards();
-      let foundMatchesInPass = 0;
+      let newInvitationsInPass = 0;
 
       for (const card of cards) {
+        if (!invitations.has(card.profileUrl)) newInvitationsInPass++;
+        invitations.set(card.profileUrl, {
+          profileUrl: card.profileUrl,
+          name: card.name || "",
+          sentText: card.sentText || "",
+          ageDays: Number(card.ageDays || 0),
+        });
         if (processedUrls.has(card.profileUrl)) continue;
 
         // Check if card matches any DB lead
@@ -858,7 +862,6 @@
           continue;
         }
 
-        foundMatchesInPass++;
         processedUrls.add(card.profileUrl);
 
         updateStatus(`Rejecting request for ${matchingDbLead.fullName}...`);
@@ -901,7 +904,7 @@
         await sleep(1500);
       }
 
-      if (foundMatchesInPass === 0) {
+      if (newInvitationsInPass === 0) {
         unchangedPasses++;
         if (unchangedPasses >= 2) break;
       } else {
@@ -913,8 +916,14 @@
       await sleep(1500);
     }
 
-    updateStatus(`Finished rejection check: ${withdrawn.length} request(s) cleared.`);
-    return { withdrawn, withdrawnCount: withdrawn.length };
+    updateStatus(
+      `Sent request sync complete: ${invitations.size} found; ${withdrawn.length} old request(s) rejected.`,
+    );
+    return {
+      withdrawn,
+      withdrawnCount: withdrawn.length,
+      invitations: [...invitations.values()],
+    };
   }
 
   function parseSentAgeDays(text) {

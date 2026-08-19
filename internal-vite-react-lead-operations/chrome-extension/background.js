@@ -333,6 +333,28 @@ async function runDailyWorkflow(specificLeadId, runContext) {
     throw new Error("Finish setup before you start.");
   }
 
+  let autoWithdraw = progress.autoWithdraw;
+  if (!isolatedLeadRun && !progress.autoWithdrawComplete) {
+    await updateRunProgress(runContext, progress, {
+      phase: "syncing_sent_invitations",
+      message: "Syncing sent connection requests...",
+      currentLead: null,
+    });
+    try {
+      autoWithdraw = await autoWithdrawOldRequests(runContext);
+    } catch (error) {
+      if (isWorkflowControlError(error)) throw error;
+      throw new Error(`Sent invitation sync failed: ${cleanError(error)}`);
+    }
+    progress.autoWithdraw = autoWithdraw;
+    progress.autoWithdrawComplete = true;
+    await checkpointRun(runContext, progress, {
+      phase: "reviewing_connections",
+      message: "Syncing accepted connections...",
+      currentLead: null,
+    });
+  }
+
   let review = progress.review;
   if (isolatedLeadRun) {
     if (!progress.reviewComplete) {
@@ -352,9 +374,11 @@ async function runDailyWorkflow(specificLeadId, runContext) {
   } else if (!progress.reviewComplete) {
     await updateRunProgress(runContext, progress, {
       phase: "reviewing_connections",
-      message: "Checking new connections and contact details...",
+      message: "Syncing accepted connections and contact details...",
     });
-    review = await reviewAcceptedConnections(dashboard, runContext);
+    review = await reviewAcceptedConnections(dashboard, runContext, {
+      forceReview: true,
+    });
     progress.review = review;
     progress.reviewComplete = true;
     await chrome.storage.local.set({
@@ -365,22 +389,6 @@ async function runDailyWorkflow(specificLeadId, runContext) {
         connectionWindowKeptOpen: false,
       },
     });
-    await checkpointRun(runContext, progress, {
-      phase: "withdrawing_old_requests",
-      message: "Checking old sent requests...",
-      currentLead: null,
-    });
-  }
-
-  let autoWithdraw = progress.autoWithdraw;
-  if (!isolatedLeadRun && !progress.autoWithdrawComplete) {
-    autoWithdraw = await autoWithdrawOldRequests(runContext).catch((error) => {
-      if (isWorkflowControlError(error)) throw error;
-      console.warn("Auto withdraw old requests failed:", cleanError(error));
-      return { withdrawnCount: 0 };
-    });
-    progress.autoWithdraw = autoWithdraw;
-    progress.autoWithdrawComplete = true;
     await checkpointRun(runContext, progress, {
       phase: "working_leads",
       message: "Starting today’s leads...",
@@ -1420,14 +1428,6 @@ async function autoWithdrawOldRequests(runContext = null) {
   ).catch(() => null);
   const oldRequests = scoutOps?.oldRequests || [];
 
-  if (!oldRequests || oldRequests.length === 0) {
-    return {
-      withdrawnCount: 0,
-      withdrawnLeads: [],
-      message: "No requests >=30 days old found in DB.",
-    };
-  }
-
   const tab = runContext
     ? await createAutomationTab(runContext, SENT_INVITATIONS_URL)
     : await chrome.tabs.create({ url: SENT_INVITATIONS_URL, active: true });
@@ -1456,6 +1456,11 @@ async function autoWithdrawOldRequests(runContext = null) {
       );
     }
 
+    const sentInvitations = withdrawResponse.result?.invitations || [];
+    const sentSync = await ScoutApi.authenticatedAction(
+      "scouts:recordSentInvitationReview",
+      { invitations: sentInvitations },
+    );
     const withdrawnList = withdrawResponse.result?.withdrawn || [];
     for (const item of withdrawnList) {
       if (item.leadId) {
@@ -1472,6 +1477,9 @@ async function autoWithdrawOldRequests(runContext = null) {
     return {
       withdrawnCount: withdrawnList.length,
       withdrawnLeads: withdrawnList,
+      sentInvitationsScanned: sentInvitations.length,
+      sentLeadsMatched: Number(sentSync?.matched || 0),
+      sentLeadsUpdated: Number(sentSync?.updated || 0),
     };
   } finally {
     if (runContext) clearActiveWorkflowTab(tab.id);
