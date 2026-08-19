@@ -86,76 +86,17 @@
   function inspectPremiumAccount() {
     const premiumRoute =
       window.location.pathname.replace(/\/+$/, "") === "/premium/my-premium";
-    if (!premiumRoute) {
-      return {
-        premium: false,
-        evidence: "LinkedIn did not open the Premium page. Try again.",
-      };
-    }
-
-    const root = document.querySelector("main") || document.body;
-    const visibleSignals = Array.from(
-      root.querySelectorAll(
-        "h1, h2, h3, [role='group'], [role='progressbar'], a, button",
-      ),
-    )
-      .filter(
-        (element) =>
-          isElementVisible(element) &&
-          !element.closest("#callum-scout-overlay"),
-      )
-      .slice(0, 120)
-      .map((element) => element.textContent?.replace(/\s+/g, " ").trim())
-      .filter(Boolean);
-    const pageSignals = `${document.title} ${visibleSignals.join(" ")}`;
-    const purchaseSignals = [
-      /plan recommendation/i,
-      /personalizing your plan/i,
-      /get noticed by the right people with premium/i,
-      /what could you use support with today/i,
-      /reactivate premium/i,
-      /try premium/i,
-      /start (?:a )?free trial/i,
-      /choose (?:a|your) premium plan/i,
-    ];
-    if (purchaseSignals.some((pattern) => pattern.test(pageSignals))) {
-      return {
-        premium: false,
-        evidence:
-          "Premium is not active on this LinkedIn account.",
-      };
-    }
-
-    const hasManagementLink = Array.from(
-      root.querySelectorAll(
-        "a[href*='manage-premium-account'], a[href*='manage-subscription'], a[href*='subscription-management']",
-      ),
-    ).some(isElementVisible);
-    const subscriberSignals = [
-      /manage premium account/i,
-      /manage (?:your )?subscription/i,
-      /subscription details/i,
-      /your premium subscription/i,
-      /premium subscription is active/i,
-      /billing (?:details|information)/i,
-      /renewal date/i,
-      /(^|\s)my premium($|\s)/i,
-    ];
-    if (
-      hasManagementLink ||
-      subscriberSignals.some((pattern) => pattern.test(pageSignals))
-    ) {
+    if (premiumRoute) {
       return {
         premium: true,
         evidence:
-          "Premium is active on this LinkedIn account.",
+          "LinkedIn kept the Premium page open; Premium is active on this account.",
       };
     }
 
     return {
       premium: false,
-      evidence:
-        "We couldn’t find an active Premium plan. Check the LinkedIn account and try again.",
+      evidence: "LinkedIn did not open the Premium page. Try again.",
     };
   }
 

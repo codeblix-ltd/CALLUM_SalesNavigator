@@ -48,7 +48,7 @@ const [
   ]);
 const manifest = JSON.parse(manifestSource);
 
-assert.equal(manifest.version, "0.10.4");
+assert.equal(manifest.version, "0.10.5");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -179,8 +179,7 @@ assert.match(contentSource, /reposted this/);
 assert.match(contentSource, /predicate: \(post\) => !isRepostPost\(post\)/);
 assert.match(contentSource, /no like or comment was added/i);
 assert.match(contentSource, /INSPECT_PREMIUM_ACCOUNT/);
-assert.match(contentSource, /plan recommendation/i);
-assert.match(contentSource, /manage-premium-account/);
+assert.match(contentSource, /LinkedIn kept the Premium page open/);
 assert.match(contentSource, /SET_AUTOMATION_CONTEXT/);
 assert.match(contentSource, /markAutomationContext/);
 assert.match(contentStyles, /callum-automation-marker/);
@@ -203,7 +202,8 @@ assert.match(backgroundSource, /assertAutomationTab/);
 assert.match(backgroundSource, /SET_AUTOMATION_CONTEXT/);
 assert.match(backgroundSource, /outside the protected window/);
 assert.match(backgroundSource, /premium\/my-premium/);
-assert.match(backgroundSource, /INSPECT_PREMIUM_ACCOUNT/);
+assert.match(backgroundSource, /isLinkedInPremiumUrl\(finalUrl\)/);
+assert.match(backgroundSource, /premium: true/);
 assert.match(backgroundSource, /localSettings\.validateBeforeCommenting \?\? false/);
 assert.match(backgroundSource, /settings\.includeNote && settings\.linkedinPremium/);
 assert.match(backgroundSource, /getConnectionReviewPlan/);
