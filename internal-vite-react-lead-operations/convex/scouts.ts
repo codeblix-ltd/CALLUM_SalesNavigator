@@ -91,6 +91,8 @@ type ScoutProgressLead = {
   recentPostCheckedAt: string | null;
   postCount: number;
   originalEmail: string | null;
+  originalEmailStatus: string;
+  originalEmailCheckedAt: string | null;
   workEmail: string | null;
   workEmailStatus: string;
   assignedAt: string;
@@ -225,6 +227,8 @@ const scoutProgressLeadValidator = v.object({
   recentPostCheckedAt: optionalText,
   postCount: v.number(),
   originalEmail: optionalText,
+  originalEmailStatus: v.string(),
+  originalEmailCheckedAt: optionalText,
   workEmail: optionalText,
   workEmailStatus: v.string(),
   assignedAt: v.string(),
@@ -494,6 +498,8 @@ export const getLeadProgress = action({
             FROM lead_post_activities AS p
            WHERE p.operator_id = a.operator_id AND p.lead_id = a.lead_id) AS post_count,
          coalesce(l.original_email, a.email) AS original_email,
+         l.original_email_status,
+         l.original_email_checked_at::STRING AS original_email_checked_at,
          l.work_email,
          l.work_email_status,
          a.assigned_at::STRING AS assigned_at,
@@ -1003,7 +1009,9 @@ export const getConnectionReviewPlan = action({
            a.connection_requested_at::STRING AS requested_at
          FROM lead_assignments AS a
          INNER JOIN leads AS l ON l.id = a.lead_id
-         WHERE a.operator_id = $1 AND a.status = 'accepted'
+         WHERE a.operator_id = $1
+           AND a.status = 'accepted'
+           AND coalesce(l.original_email_status, 'pending') = 'pending'
          ORDER BY a.accepted_at, a.lead_id
          LIMIT 1000`,
         [scout.operatorId],
@@ -1211,16 +1219,23 @@ export const recordContactInfo = action({
       const existingEmail = nullableString(row.original_email) || nullableString(row.legacy_email);
       const finalEmail = email || existingEmail;
       const nextStatus = finalEmail ? "email_collected" : "accepted";
-      if (finalEmail) {
-        await client.query(
-          `UPDATE leads
-              SET original_email = coalesce(original_email, $2),
-                  original_email_collected_at = coalesce(original_email_collected_at, now()),
-                  updated_at = now()
-            WHERE id = $1::UUID`,
-          [args.leadId, finalEmail],
-        );
-      }
+      await client.query(
+        `UPDATE leads
+            SET original_email = coalesce(original_email, $2),
+                original_email_status = CASE
+                  WHEN coalesce(original_email, $2) IS NOT NULL THEN 'found'
+                  ELSE 'not_found'
+                END,
+                original_email_checked_at = now(),
+                original_email_collected_at = CASE
+                  WHEN coalesce(original_email, $2) IS NOT NULL
+                    THEN coalesce(original_email_collected_at, now())
+                  ELSE original_email_collected_at
+                END,
+                updated_at = now()
+          WHERE id = $1::UUID`,
+        [args.leadId, finalEmail],
+      );
       await client.query(
         `UPDATE lead_assignments
             SET status = $3,
@@ -2154,6 +2169,8 @@ function mapProgressLead(row: Record<string, unknown>): ScoutProgressLead {
     recentPostCheckedAt: nullableString(row.recent_post_checked_at),
     postCount: Number(row.post_count ?? 0),
     originalEmail: nullableString(row.original_email),
+    originalEmailStatus: String(row.original_email_status ?? "pending"),
+    originalEmailCheckedAt: nullableString(row.original_email_checked_at),
     workEmail: nullableString(row.work_email),
     workEmailStatus: String(row.work_email_status ?? "pending"),
     assignedAt: String(row.assigned_at),

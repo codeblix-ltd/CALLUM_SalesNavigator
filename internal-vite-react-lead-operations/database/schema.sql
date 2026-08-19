@@ -71,6 +71,8 @@ CREATE TABLE IF NOT EXISTS leads (
   -- LinkedIn account. Mailmeteor's company-domain result is stored separately.
   original_email STRING NULL,
   original_email_collected_at TIMESTAMPTZ NULL,
+  original_email_status STRING NOT NULL DEFAULT 'pending',
+  original_email_checked_at TIMESTAMPTZ NULL,
   work_email STRING NULL,
   work_email_collected_at TIMESTAMPTZ NULL,
   work_email_status STRING NOT NULL DEFAULT 'pending',
@@ -92,6 +94,8 @@ CREATE TABLE IF NOT EXISTS leads (
 ALTER TABLE leads
   ADD COLUMN IF NOT EXISTS original_email STRING NULL,
   ADD COLUMN IF NOT EXISTS original_email_collected_at TIMESTAMPTZ NULL,
+  ADD COLUMN IF NOT EXISTS original_email_status STRING NULL,
+  ADD COLUMN IF NOT EXISTS original_email_checked_at TIMESTAMPTZ NULL,
   ADD COLUMN IF NOT EXISTS work_email STRING NULL,
   ADD COLUMN IF NOT EXISTS work_email_collected_at TIMESTAMPTZ NULL,
   ADD COLUMN IF NOT EXISTS work_email_status STRING NOT NULL DEFAULT 'pending',
@@ -103,6 +107,29 @@ ALTER TABLE leads
   ADD COLUMN IF NOT EXISTS work_email_http_status INT4 NULL,
   ADD COLUMN IF NOT EXISTS lead_note STRING NULL,
   ADD COLUMN IF NOT EXISTS lead_note_updated_at TIMESTAMPTZ NULL;
+
+ALTER TABLE leads
+  ALTER COLUMN original_email_status SET DEFAULT 'pending';
+
+UPDATE leads
+   SET original_email_status = 'found',
+       original_email_checked_at = coalesce(
+         original_email_checked_at,
+         original_email_collected_at,
+         updated_at
+       )
+ WHERE original_email IS NOT NULL
+   AND original_email_status IS DISTINCT FROM 'found';
+
+ALTER TABLE leads
+  DROP CONSTRAINT IF EXISTS leads_original_email_status_check;
+
+ALTER TABLE leads
+  ADD CONSTRAINT leads_original_email_status_check
+  CHECK (
+    original_email_status IS NULL
+    OR original_email_status IN ('pending', 'found', 'not_found')
+  );
 
 ALTER TABLE leads
   DROP CONSTRAINT IF EXISTS leads_work_email_status_check;
@@ -396,6 +423,20 @@ CREATE INDEX IF NOT EXISTS lead_assignment_events_by_operator_id_and_created_at
 
 CREATE INDEX IF NOT EXISTS lead_assignment_events_by_lead_id_and_created_at
   ON lead_assignment_events (lead_id, created_at DESC);
+
+UPDATE leads AS l
+   SET original_email_status = 'not_found',
+       original_email_checked_at = checks.checked_at
+  FROM (
+    SELECT lead_id, max(created_at) AS checked_at
+      FROM lead_assignment_events
+     WHERE event_type = 'contact_info_checked'
+       AND coalesce(details->>'emailFound', 'false') = 'false'
+     GROUP BY lead_id
+  ) AS checks
+ WHERE l.id = checks.lead_id
+   AND l.original_email IS NULL
+   AND coalesce(l.original_email_status, 'pending') = 'pending';
 
 -- Each accepted lead gets three small, manual follow-up tasks. The extension
 -- only helps the scout copy the message and record the outcome; it does not

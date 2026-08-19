@@ -148,6 +148,8 @@ type Lead = {
   connectionDegree: string | null;
   premium: boolean | null;
   originalEmail: string | null;
+  originalEmailStatus: string;
+  originalEmailCheckedAt: string | null;
   workEmail: string | null;
   workEmailValidation: string | null;
   workEmailStatus: string;
@@ -1354,7 +1356,7 @@ function LeadTable({ leads, loading }: { leads: Lead[]; loading: boolean }) {
           <tr key={lead.id}>
             <td><div className="lead-cell"><span className="avatar">{initials(lead.fullName)}</span><div><strong>{lead.fullName || "Unnamed lead"}</strong><span>{lead.currentTitle || "Title unavailable"}</span></div></div></td>
             <td><strong className="company-name">{lead.companyName || "—"}</strong><span className="subtle">{lead.domain || lead.companySize || ""}</span></td>
-            <td><span className="lead-email">{lead.originalEmail || "—"}</span><span className="subtle">LinkedIn account</span></td>
+            <td><span className="lead-email">{lead.originalEmail || (lead.originalEmailStatus === "not_found" ? "No email available" : "—")}</span><span className="subtle">{originalEmailMeta(lead)}</span></td>
             <td><span className="lead-email">{lead.workEmail || "—"}</span><span className="subtle">{lead.workEmail ? lead.workEmailValidation || "Not validated" : lead.workEmailStatus.replaceAll("_", " ")}</span></td>
             <td><span className="lead-note-cell">{lead.leadNote || "—"}</span>{lead.leadNoteUpdatedAt && <span className="subtle">Updated {formatRelativeTime(lead.leadNoteUpdatedAt)}</span>}</td>
             <td><span className="location"><MapPin size={14} />{lead.geographicRegion || lead.companyLocation || "—"}</span></td>
@@ -1366,6 +1368,16 @@ function LeadTable({ leads, loading }: { leads: Lead[]; loading: boolean }) {
       </table>
     </div>
   );
+}
+
+function originalEmailMeta(lead: Lead) {
+  if (lead.originalEmail) return "LinkedIn account";
+  if (lead.originalEmailStatus === "not_found") {
+    return lead.originalEmailCheckedAt
+      ? `Checked ${formatRelativeTime(lead.originalEmailCheckedAt)}`
+      : "Checked on LinkedIn";
+  }
+  return "Not checked";
 }
 
 function SettingsModal({ codexStatus, codexError, codexBusy, deviceLogin, close, connectCodex, disconnectCodex, lockWorkspace }: {

@@ -243,6 +243,8 @@ function renderLeads(progress) {
     });
     const outreachDone = hasOutreach(lead);
     const email = lead.workEmail || lead.originalEmail;
+    const emailUnavailable =
+      !email && lead.originalEmailStatus === "not_found";
     row.innerHTML = `
       <td>${leadCell(lead)}</td>
       <td>${milestoneCell(qualificationLabel(lead), qualificationMeta(lead), lead.qualificationStatus !== "pending", lead.qualificationStatus === "not_qualified" ? "error" : "")}</td>
@@ -250,7 +252,7 @@ function renderLeads(progress) {
       <td>${milestoneCell(lead.engagedAt ? `${formatNumber(lead.postCount)} post${lead.postCount === 1 ? "" : "s"}` : "Not started", shortDate(lead.engagedAt), Boolean(lead.engagedAt))}</td>
       <td>${milestoneCell(outreachDone ? "Reached out" : "Not sent", shortDate(lead.connectionRequestedAt), outreachDone, lead.status === "withdrawn" ? "warning" : "")}</td>
       <td>${milestoneCell(lead.acceptedAt ? "Connected" : "Waiting", shortDate(lead.acceptedAt), Boolean(lead.acceptedAt))}</td>
-      <td>${milestoneCell(email ? escapeHtml(email) : "Not found", email ? emailType(lead) : workEmailMeta(lead), Boolean(email), lead.workEmailStatus === "error" ? "error" : "")}</td>
+      <td>${milestoneCell(email ? escapeHtml(email) : emailUnavailable ? "No email available" : "Not checked", email ? emailType(lead) : emailUnavailable ? originalEmailMeta(lead) : workEmailMeta(lead), Boolean(email) || emailUnavailable, lead.workEmailStatus === "error" ? "error" : emailUnavailable ? "warning" : "")}</td>
       <td><span class="stage-pill ${lead.status === "failed" ? "is-error" : ""}">${escapeHtml(stageLabel(lead.status))}</span></td>
       <td><span class="updated-cell">${escapeHtml(formatRelativeTime(lead.updatedAt))}</span></td>`;
     elements.leadRows.append(row);
@@ -265,6 +267,9 @@ function handleLeadRowClick(event) {
 }
 
 function openDrawer(lead) {
+  const email = lead.workEmail || lead.originalEmail;
+  const emailUnavailable =
+    !email && lead.originalEmailStatus === "not_found";
   const timeline = [
     timelineItem("Assigned", "Added to your lead list", lead.assignedAt, true),
     timelineItem("Fit check", qualificationDetail(lead), lead.recentPostCheckedAt, lead.qualificationStatus !== "pending", lead.qualificationStatus === "not_qualified"),
@@ -272,7 +277,7 @@ function openDrawer(lead) {
     timelineItem("Posts engaged", lead.postCount ? `${lead.postCount} post${lead.postCount === 1 ? "" : "s"} liked or commented` : "No post activity recorded", lead.engagedAt, Boolean(lead.engagedAt)),
     timelineItem("Connection request", hasOutreach(lead) ? "Reached out on LinkedIn" : "Not sent yet", lead.connectionRequestedAt, hasOutreach(lead), lead.status === "withdrawn"),
     timelineItem("Connected", lead.repliedAt ? "Connected and replied" : "Request accepted", lead.acceptedAt, Boolean(lead.acceptedAt)),
-    timelineItem("Email saved", lead.workEmail || lead.originalEmail || "No email recorded", lead.emailCollectedAt || lead.workEmailCollectedAt, Boolean(lead.workEmail || lead.originalEmail), lead.workEmailStatus === "error"),
+    timelineItem(email ? "Email saved" : "Email checked", email || (emailUnavailable ? "No email available on LinkedIn" : "Not checked yet"), lead.emailCollectedAt || lead.workEmailCollectedAt || lead.originalEmailCheckedAt, Boolean(email) || emailUnavailable, lead.workEmailStatus === "error"),
   ].join("");
   elements.drawerContent.innerHTML = `
     <header class="drawer-header">
@@ -309,7 +314,8 @@ function openDrawer(lead) {
     <section class="drawer-section">
       <h3>Contact details</h3>
       <div class="detail-grid">
-        ${detailItem("LinkedIn email", lead.originalEmail)}
+        ${detailItem("LinkedIn email", lead.originalEmail || (lead.originalEmailStatus === "not_found" ? "No email available" : null))}
+        ${detailItem("LinkedIn email status", originalEmailMeta(lead))}
         ${detailItem("Work email", lead.workEmail)}
         ${detailItem("Work email status", workEmailMeta(lead))}
         ${detailItem("Reply recorded", lead.repliedAt ? formatDateTime(lead.repliedAt) : null)}
@@ -428,6 +434,16 @@ function hasOutreach(lead) {
 function emailType(lead) {
   if (lead.workEmail) return "Work email";
   return "LinkedIn email";
+}
+
+function originalEmailMeta(lead) {
+  if (lead.originalEmail) return "Found";
+  if (lead.originalEmailStatus === "not_found") {
+    return lead.originalEmailCheckedAt
+      ? `Checked ${shortDate(lead.originalEmailCheckedAt)}`
+      : "Checked on LinkedIn";
+  }
+  return "Not checked";
 }
 
 function workEmailMeta(lead) {
