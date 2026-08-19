@@ -785,12 +785,12 @@
       throw new Error("LinkedIn’s Sent Invitations page did not open. Try again.");
     }
 
-    updateStatus("Checking sent invitations (30+ days old)...");
+    updateStatus("Checking sent invitations (30+ days old) to reject...");
 
     const dbLeads = options.dbLeads || [];
     if (!Array.from(dbLeads).length) {
       addLog("Info", "No DB leads provided to check against.");
-      updateStatus("No matching DB leads to withdraw.");
+      updateStatus("No matching DB leads to reject.");
       return { withdrawn: [], withdrawnCount: 0 };
     }
 
@@ -861,7 +861,7 @@
         foundMatchesInPass++;
         processedUrls.add(card.profileUrl);
 
-        updateStatus(`Withdrawing request for ${matchingDbLead.fullName}...`);
+        updateStatus(`Rejecting request for ${matchingDbLead.fullName}...`);
         addLog("Matching lead", `${matchingDbLead.fullName} (${card.sentText || ">=30 days"})`);
 
         // Click card's Withdraw button
@@ -891,7 +891,7 @@
           5_000,
         );
 
-        addLog("Withdrawn", `Withdrew invitation sent to ${matchingDbLead.fullName}`);
+        addLog("Rejected", `Withdrew the invitation sent to ${matchingDbLead.fullName}`);
         withdrawn.push({
           leadId: matchingDbLead.leadId || matchingDbLead.id,
           name: matchingDbLead.fullName,
@@ -913,7 +913,7 @@
       await sleep(1500);
     }
 
-    updateStatus(`Finished auto-withdraw: ${withdrawn.length} request(s) cleared.`);
+    updateStatus(`Finished rejection check: ${withdrawn.length} request(s) cleared.`);
     return { withdrawn, withdrawnCount: withdrawn.length };
   }
 

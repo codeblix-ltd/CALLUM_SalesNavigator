@@ -1336,6 +1336,10 @@ async function runManualAcceptedConnectionReview() {
       keepConnectionTab: true,
       collectContacts: true,
     });
+    // Keep the manual review button as the single daily LinkedIn check. Once
+    // accepted connections have been reviewed, inspect Sent Invitations and
+    // reject matching requests that have been pending for 30+ days.
+    const rejectedRequests = await autoWithdrawOldRequests(runContext);
     if (result.connectionTabId) {
       await chrome.tabs.update(result.connectionTabId, { active: true }).catch(
         () => {},
@@ -1353,6 +1357,8 @@ async function runManualAcceptedConnectionReview() {
       : false;
     const completedReview = {
       ...result,
+      rejectedCount: Number(rejectedRequests.withdrawnCount || 0),
+      rejectedLeads: rejectedRequests.withdrawnLeads || [],
       connectionTabId: reviewWindowClosed ? null : result.connectionTabId,
       checkedAt: Date.now(),
       connectionWindowKeptOpen: !reviewWindowClosed,

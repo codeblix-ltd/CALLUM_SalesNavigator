@@ -154,8 +154,10 @@ assert.ok(
 );
 assert.match(popupSource, /id="check-accepted-connections"/);
 assert.match(popupSource, /id="connection-review-status"/);
-assert.match(popupSource, /opens each accepted profile’s Contact info/);
+assert.match(popupSource, /rejects matching sent requests older than 30 days/);
 assert.match(popupScript, /CHECK_ACCEPTED_CONNECTIONS/);
+assert.match(popupScript, /rejectedCount/);
+assert.match(popupScript, /old requests rejected/);
 assert.match(popupScript, /lastAcceptedConnectionReview/);
 assert.match(popupScript, /renderConnectionReviewStatus/);
 assert.match(popupScript, /connectionWindowKeptOpen/);
@@ -169,6 +171,8 @@ assert.match(popupScript, /scouts:markOldRequestWithdrawn/);
 assert.match(popupScript, /scouts:createEscalation/);
 assert.match(backgroundSource, /markOldRequestWithdrawn/);
 assert.match(backgroundSource, /invitation-manager\/sent/);
+assert.match(backgroundSource, /const rejectedRequests = await autoWithdrawOldRequests\(runContext\)/);
+assert.match(backgroundSource, /rejectedCount: Number\(rejectedRequests\.withdrawnCount/);
 assert.match(popupScript, /It will not remove your leads or past work/);
 assert.doesNotMatch(
   popupSource,

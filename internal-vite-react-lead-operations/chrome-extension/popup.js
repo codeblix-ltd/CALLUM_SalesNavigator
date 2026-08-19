@@ -417,7 +417,7 @@ async function handleAutoWithdrawOldRequests() {
   }
   try {
     showSuccess(
-      "Checking sent invitations on LinkedIn and withdrawing 30+ day old requests matching DB leads...",
+      "Checking sent invitations on LinkedIn and rejecting matching requests older than 30 days...",
     );
     const response = await chrome.runtime.sendMessage({
       type: "AUTO_WITHDRAW_OLD_REQUESTS",
@@ -430,11 +430,11 @@ async function handleAutoWithdrawOldRequests() {
     const count = response.result?.withdrawnCount || 0;
     if (count > 0) {
       showSuccess(
-        `Successfully auto-withdrew ${count} connection request${count === 1 ? "" : "s"} (>30 days old). DB updated.`,
+        `Rejected ${count} old connection request${count === 1 ? "" : "s"} (withdrawn on LinkedIn). DB updated.`,
       );
     } else {
       showSuccess(
-        "No matching connection requests >30 days old found on LinkedIn to withdraw.",
+        "No matching connection requests older than 30 days were found on LinkedIn.",
       );
     }
     await refreshDashboard();
@@ -686,7 +686,7 @@ async function checkAcceptedConnections() {
   clearMessages();
   elements.checkAcceptedConnections.disabled = true;
   elements.connectionReviewStatus.textContent =
-    "Opening LinkedIn Connections in the protected window...";
+    "Checking accepted connections, then reviewing 30+ day old sent requests...";
   try {
     const response = await chrome.runtime.sendMessage({
       type: "CHECK_ACCEPTED_CONNECTIONS",
@@ -705,8 +705,13 @@ async function checkAcceptedConnections() {
       "email address",
       "email addresses",
     );
+    const rejected = formatCount(
+      result.rejectedCount,
+      "old request rejected",
+      "old requests rejected",
+    );
     showSuccess(
-      `Accepted connection check complete: ${matched} newly accepted; ${emails} saved.`,
+      `Accepted connection check complete: ${matched} newly accepted; ${rejected}; ${emails} saved.`,
     );
   } catch (error) {
     elements.connectionReviewStatus.textContent =
@@ -731,11 +736,16 @@ function renderConnectionReviewStatus(review) {
     "email address",
     "email addresses",
   );
+  const rejected = formatCount(
+    review.rejectedCount,
+    "old request rejected",
+    "old requests rejected",
+  );
   const windowNote = review.connectionWindowKeptOpen
     ? " The protected LinkedIn window is still open for review."
     : "";
   elements.connectionReviewStatus.textContent =
-    `Last checked ${relativeTime(review.checkedAt)}: ${scanned} scanned; ${matched} marked accepted; ${emails} saved.${windowNote}`;
+    `Last checked ${relativeTime(review.checkedAt)}: ${scanned} scanned; ${matched} marked accepted; ${rejected}; ${emails} saved.${windowNote}`;
 }
 
 async function handleAutoLeadOutcome(response) {
@@ -1036,18 +1046,18 @@ function renderOldRequests(requests) {
     const item = toolItem(
       request.fullName || "Unnamed lead",
       `${request.ageDays} days old`,
-      "Connection request sent >30 days ago.",
+      "Connection request sent more than 30 days ago.",
     );
     item.querySelector(".tool-actions").append(
       toolButton("Open profile", {
         oldRequestAction: "open",
         profileUrl: request.profileUrl,
       }),
-      toolButton("Auto-withdraw", {
+      toolButton("Auto-reject", {
         oldRequestAction: "auto",
         leadId: request.leadId,
       }),
-      toolButton("Mark withdrawn", {
+      toolButton("Mark rejected", {
         oldRequestAction: "mark",
         leadId: request.leadId,
       }, "warn"),

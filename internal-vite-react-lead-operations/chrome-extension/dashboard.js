@@ -417,7 +417,7 @@ function stageLabel(status) {
     connection_requested: "Request sent",
     accepted: "Connected",
     email_collected: "Email saved",
-    withdrawn: "Request withdrawn",
+    withdrawn: "Request rejected",
     skipped: "Skipped",
     failed: "Needs attention",
   };
