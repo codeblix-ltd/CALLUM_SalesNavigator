@@ -12,6 +12,11 @@ const DEFAULT_INVITATION_NOTE =
 const AUTO_LEAD_RUN_STATE_KEY = "autoLeadRunState";
 const AUTOMATION_HOME_URL = chrome.runtime.getURL("automation.html");
 const AUTOMATION_GROUP_TITLE = "CALLUM AUTOMATION";
+const TEMPORARY_LEAD_TEST_KEY = "temporaryLeadTest";
+const TEMPORARY_LEAD_TEST = Object.freeze({
+  scoutUsername: "antish",
+  leadId: "000f8511-0a04-4138-a9d8-93546e40e28e",
+});
 const ACTIVE_RUN_STATUSES = new Set(["running", "pausing"]);
 const CONNECTION_COMPLETION_RETRY_DELAYS_MS = [0, 750, 2_000];
 
@@ -155,6 +160,7 @@ async function initializeExtensionDefaults() {
     "validateBeforeCommenting",
     "invitationNote",
     "linkedInPremium",
+    TEMPORARY_LEAD_TEST_KEY,
   ]);
   const defaults = {};
   if (current.validateBeforeCommenting === undefined) {
@@ -162,6 +168,12 @@ async function initializeExtensionDefaults() {
   }
   if (!current.invitationNote) defaults.invitationNote = DEFAULT_INVITATION_NOTE;
   if (current.linkedInPremium === undefined) defaults.linkedInPremium = false;
+  if (current[TEMPORARY_LEAD_TEST_KEY] === undefined) {
+    defaults[TEMPORARY_LEAD_TEST_KEY] = {
+      ...TEMPORARY_LEAD_TEST,
+      usedAt: null,
+    };
+  }
   if (Object.keys(defaults).length > 0) await chrome.storage.local.set(defaults);
 }
 
@@ -185,6 +197,19 @@ async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
     throw new Error("This run is paused. Resume it or stop it before starting again.");
   }
 
+  let temporaryTestOnly = resume && previousState.temporaryTestOnly === true;
+  let resolvedSpecificLeadId = specificLeadId || null;
+  if (!resume) {
+    const temporaryLeadId = await claimTemporaryTestLead();
+    if (temporaryLeadId) {
+      if (resolvedSpecificLeadId && resolvedSpecificLeadId !== temporaryLeadId) {
+        throw new Error("The temporary test is locked to its selected lead.");
+      }
+      resolvedSpecificLeadId = temporaryLeadId;
+      temporaryTestOnly = true;
+    }
+  }
+
   const runId = resume ? previousState.runId : createRunId();
   const inheritedPendingRequests = collectLocallyConfirmedConnectionRequests(
     previousState,
@@ -198,6 +223,7 @@ async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
   const runContext = {
     runId,
     resume,
+    temporaryTestOnly,
     progress,
     automationWindowId: null,
     automationHomeTabId: null,
@@ -220,7 +246,10 @@ async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
       ...(resume ? previousState : defaultAutoLeadRunState()),
       status: "running",
       runId,
-      specificLeadId: resume ? previousState.specificLeadId || null : specificLeadId || null,
+      specificLeadId: resume
+        ? previousState.specificLeadId || null
+        : resolvedSpecificLeadId,
+      temporaryTestOnly,
       startedAt,
       resumedAt: resume ? Date.now() : null,
       pausedAt: null,
@@ -249,7 +278,7 @@ async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
   }
 
   workflowPromise = runDailyWorkflow(
-    resume ? previousState.specificLeadId || null : specificLeadId,
+    resume ? previousState.specificLeadId || null : resolvedSpecificLeadId,
     runContext,
   )
     .then(async (result) => {
@@ -291,6 +320,34 @@ async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
   return workflowPromise;
 }
 
+async function claimTemporaryTestLead() {
+  const stored = await chrome.storage.local.get(TEMPORARY_LEAD_TEST_KEY);
+  const test =
+    stored[TEMPORARY_LEAD_TEST_KEY] === undefined
+      ? { ...TEMPORARY_LEAD_TEST, usedAt: null }
+      : stored[TEMPORARY_LEAD_TEST_KEY];
+  if (
+    !test ||
+    test.usedAt ||
+    test.scoutUsername !== TEMPORARY_LEAD_TEST.scoutUsername ||
+    test.leadId !== TEMPORARY_LEAD_TEST.leadId
+  ) {
+    return null;
+  }
+
+  const dashboard = await ScoutApi.authenticatedAction("scouts:getDashboard");
+  if (dashboard.scout?.username !== TEMPORARY_LEAD_TEST.scoutUsername) {
+    return null;
+  }
+  await chrome.storage.local.set({
+    [TEMPORARY_LEAD_TEST_KEY]: {
+      ...test,
+      usedAt: Date.now(),
+    },
+  });
+  return test.leadId;
+}
+
 async function resumeDailyWorkflow() {
   if (workflowPromise) await workflowPromise.catch(() => {});
   const state = await getAutoLeadRunState();
@@ -299,6 +356,7 @@ async function resumeDailyWorkflow() {
 
 async function runDailyWorkflow(specificLeadId, runContext) {
   const progress = runContext.progress;
+  const temporaryTestOnly = runContext.temporaryTestOnly === true;
   throwIfWorkflowControlled(runContext);
   await updateRunProgress(runContext, progress, {
     phase: "preparing",
@@ -312,7 +370,22 @@ async function runDailyWorkflow(specificLeadId, runContext) {
   }
 
   let review = progress.review;
-  if (!progress.reviewComplete) {
+  if (temporaryTestOnly) {
+    if (!progress.reviewComplete) {
+      review = emptyConnectionReview();
+      progress.review = review;
+      progress.reviewComplete = true;
+    }
+    if (!progress.autoWithdrawComplete) {
+      progress.autoWithdraw = { withdrawnCount: 0 };
+      progress.autoWithdrawComplete = true;
+    }
+    await checkpointRun(runContext, progress, {
+      phase: "working_leads",
+      message: "Temporary test mode: only the selected lead will be processed.",
+      currentLead: null,
+    });
+  } else if (!progress.reviewComplete) {
     await updateRunProgress(runContext, progress, {
       phase: "reviewing_connections",
       message: "Checking new connections and contact details...",
@@ -336,7 +409,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
   }
 
   let autoWithdraw = progress.autoWithdraw;
-  if (!progress.autoWithdrawComplete) {
+  if (!temporaryTestOnly && !progress.autoWithdrawComplete) {
     autoWithdraw = await autoWithdrawOldRequests(runContext).catch((error) => {
       if (isWorkflowControlError(error)) throw error;
       console.warn("Auto withdraw old requests failed:", cleanError(error));
