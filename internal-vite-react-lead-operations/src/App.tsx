@@ -12,6 +12,7 @@ import {
   Clock3,
   Copy,
   Database,
+  ChevronDown,
   Download,
   ExternalLink,
   KeyRound,
@@ -36,7 +37,8 @@ import "./App.css";
 type Range = "7d" | "30d" | "90d" | "all";
 type View = "overview" | "operations" | "leads";
 type ScoutSort = "activity" | "emails" | "accepted" | "assigned" | "name";
-type EmailAvailability = "all" | "present" | "missing";
+type EmailAvailability = "present" | "missing";
+type EmailValidation = "validated" | "not_validated";
 
 type Stats = {
   total: number;
@@ -147,6 +149,7 @@ type Lead = {
   premium: boolean | null;
   originalEmail: string | null;
   workEmail: string | null;
+  workEmailValidation: string | null;
   workEmailStatus: string;
 };
 
@@ -340,11 +343,12 @@ function Dashboard({ adminName }: { adminName: string }) {
   const [operationsNotice, setOperationsNotice] = useState("");
   const [operationsBusy, setOperationsBusy] = useState(false);
   const [stats, setStats] = useState<Stats | null>(null);
-  const [niche, setNiche] = useState("");
+  const [niches, setNiches] = useState<string[]>([]);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [originalEmailFilter, setOriginalEmailFilter] = useState<EmailAvailability>("all");
-  const [workEmailFilter, setWorkEmailFilter] = useState<EmailAvailability>("all");
+  const [originalEmailFilters, setOriginalEmailFilters] = useState<EmailAvailability[]>([]);
+  const [workEmailFilters, setWorkEmailFilters] = useState<EmailAvailability[]>([]);
+  const [workEmailValidationFilters, setWorkEmailValidationFilters] = useState<EmailValidation[]>([]);
   const [leads, setLeads] = useState<Lead[]>([]);
   const [filteredLeadCount, setFilteredLeadCount] = useState<number | null>(null);
   const [leadsLoading, setLeadsLoading] = useState(false);
@@ -399,10 +403,11 @@ function Dashboard({ adminName }: { adminName: string }) {
     setLeadError("");
     try {
       const page = await listLeads({
-        niche: niche || null,
+        niches,
         search: debouncedSearch || null,
-        originalEmailFilter,
-        workEmailFilter,
+        originalEmailFilters,
+        workEmailFilters,
+        workEmailValidationFilters,
         cursor,
         limit: 50,
       });
@@ -417,7 +422,7 @@ function Dashboard({ adminName }: { adminName: string }) {
     } finally {
       setLeadsLoading(false);
     }
-  }, [cursor, debouncedSearch, listLeads, niche, originalEmailFilter, workEmailFilter]);
+  }, [cursor, debouncedSearch, listLeads, niches, originalEmailFilters, workEmailFilters, workEmailValidationFilters]);
 
   const refreshCodexStatus = useCallback(async () => {
     try {
@@ -451,7 +456,7 @@ function Dashboard({ adminName }: { adminName: string }) {
     setCursor(null);
     setCursorHistory([]);
     setFilteredLeadCount(null);
-  }, [niche, originalEmailFilter, workEmailFilter]);
+  }, [niches, originalEmailFilters, workEmailFilters, workEmailValidationFilters]);
 
   useEffect(() => {
     if (view === "leads") void loadLeads();
@@ -514,8 +519,10 @@ function Dashboard({ adminName }: { adminName: string }) {
   ) ?? [];
   const currentPage = cursorHistory.length + 1;
   const activeNicheCount = useMemo(
-    () => stats?.niches.find((item) => item.name === niche)?.count ?? stats?.total ?? 0,
-    [niche, stats],
+    () => niches.length === 1
+      ? stats?.niches.find((item) => item.name === niches[0])?.count ?? stats?.total ?? 0
+      : stats?.total ?? 0,
+    [niches, stats],
   );
 
   async function connectCodex() {
@@ -706,14 +713,16 @@ function Dashboard({ adminName }: { adminName: string }) {
         ) : (
           <LeadDirectory
             stats={stats}
-            niche={niche}
-            setNiche={setNiche}
+            niches={niches}
+            setNiches={setNiches}
             search={search}
             setSearch={setSearch}
-            originalEmailFilter={originalEmailFilter}
-            setOriginalEmailFilter={setOriginalEmailFilter}
-            workEmailFilter={workEmailFilter}
-            setWorkEmailFilter={setWorkEmailFilter}
+            originalEmailFilters={originalEmailFilters}
+            setOriginalEmailFilters={setOriginalEmailFilters}
+            workEmailFilters={workEmailFilters}
+            setWorkEmailFilters={setWorkEmailFilters}
+            workEmailValidationFilters={workEmailValidationFilters}
+            setWorkEmailValidationFilters={setWorkEmailValidationFilters}
             viewCount={filteredLeadCount ?? activeNicheCount}
             leads={leads}
             loading={leadsLoading}
@@ -1211,16 +1220,18 @@ function Inventory({ summary }: { summary: Summary }) {
   );
 }
 
-function LeadDirectory({ stats, niche, setNiche, search, setSearch, originalEmailFilter, setOriginalEmailFilter, workEmailFilter, setWorkEmailFilter, viewCount, leads, loading, error, onRefresh, currentPage, canGoPrevious, canGoNext, previousPage, nextPage }: {
+function LeadDirectory({ stats, niches, setNiches, search, setSearch, originalEmailFilters, setOriginalEmailFilters, workEmailFilters, setWorkEmailFilters, workEmailValidationFilters, setWorkEmailValidationFilters, viewCount, leads, loading, error, onRefresh, currentPage, canGoPrevious, canGoNext, previousPage, nextPage }: {
   stats: Stats | null;
-  niche: string;
-  setNiche: (value: string) => void;
+  niches: string[];
+  setNiches: (value: string[]) => void;
   search: string;
   setSearch: (value: string) => void;
-  originalEmailFilter: EmailAvailability;
-  setOriginalEmailFilter: (value: EmailAvailability) => void;
-  workEmailFilter: EmailAvailability;
-  setWorkEmailFilter: (value: EmailAvailability) => void;
+  originalEmailFilters: EmailAvailability[];
+  setOriginalEmailFilters: (value: EmailAvailability[]) => void;
+  workEmailFilters: EmailAvailability[];
+  setWorkEmailFilters: (value: EmailAvailability[]) => void;
+  workEmailValidationFilters: EmailValidation[];
+  setWorkEmailValidationFilters: (value: EmailValidation[]) => void;
   viewCount: number;
   leads: Lead[];
   loading: boolean;
@@ -1232,13 +1243,62 @@ function LeadDirectory({ stats, niche, setNiche, search, setSearch, originalEmai
   previousPage: () => void;
   nextPage: () => void;
 }) {
+  const directoryTitle = niches.length === 0
+    ? "All leads"
+    : niches.length === 1
+      ? niches[0]
+      : `${niches.length} niches selected`;
+
   return (
     <section className="workspace">
-      <div className="workspace-heading"><div><p className="eyebrow">Lead directory</p><h2>{niche || "All leads"}</h2><p>{formatNumber(viewCount)} profiles in this view</p></div><button className="secondary-button" onClick={() => void onRefresh()} disabled={loading}><RefreshCw size={16} className={loading ? "spin" : ""} />Refresh</button></div>
-      <div className="filters"><label className="search-field"><Search size={18} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search name, company, title, industry, or email…" />{search && <button onClick={() => setSearch("")} aria-label="Clear search"><X size={16} /></button>}</label><select value={niche} onChange={(event) => setNiche(event.target.value)} aria-label="Niche"><option value="">All niches</option>{stats?.niches.map((item) => <option key={item.name} value={item.name}>{item.name} ({formatNumber(item.count)})</option>)}</select><select value={originalEmailFilter} onChange={(event) => setOriginalEmailFilter(event.target.value as EmailAvailability)} aria-label="Original email availability"><option value="all">All original emails</option><option value="present">Has original email</option><option value="missing">Missing original email</option></select><select value={workEmailFilter} onChange={(event) => setWorkEmailFilter(event.target.value as EmailAvailability)} aria-label="Work email availability"><option value="all">All work emails</option><option value="present">Has work email</option><option value="missing">Missing work email</option></select></div>
+      <div className="workspace-heading"><div><p className="eyebrow">Lead directory</p><h2>{directoryTitle}</h2><p>{formatNumber(viewCount)} profiles in this view</p></div><button className="secondary-button" onClick={() => void onRefresh()} disabled={loading}><RefreshCw size={16} className={loading ? "spin" : ""} />Refresh</button></div>
+      <div className="filters">
+        <label className="search-field"><Search size={18} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search name, company, title, industry, or email…" />{search && <button onClick={() => setSearch("")} aria-label="Clear search"><X size={16} /></button>}</label>
+        <MultiSelect label="Niches" allLabel="All niches" options={stats?.niches.map((item) => ({ value: item.name, label: item.name, count: item.count })) ?? []} selected={niches} onChange={setNiches} />
+        <MultiSelect label="Original email availability" allLabel="All original emails" options={[{ value: "present" as const, label: "Has original email" }, { value: "missing" as const, label: "Missing original email" }]} selected={originalEmailFilters} onChange={setOriginalEmailFilters} allWhenAllSelected />
+        <MultiSelect label="Work email availability" allLabel="All work emails" options={[{ value: "present" as const, label: "Has work email" }, { value: "missing" as const, label: "Missing work email" }]} selected={workEmailFilters} onChange={setWorkEmailFilters} allWhenAllSelected />
+        <MultiSelect label="Work email validation" allLabel="All validation states" options={[{ value: "validated" as const, label: "Validated" }, { value: "not_validated" as const, label: "Not validated" }]} selected={workEmailValidationFilters} onChange={setWorkEmailValidationFilters} allWhenAllSelected />
+      </div>
       {error ? <div className="directory-notice"><Notice message={error} onRetry={onRefresh} /></div> : <LeadTable leads={leads} loading={loading} />}
       {!error && <div className="pagination"><p>Page {currentPage} · Up to 50 leads per page</p><div><button onClick={previousPage} disabled={!canGoPrevious || loading}><ArrowLeft size={16} /> Previous</button><button onClick={nextPage} disabled={!canGoNext || loading}>Next <ArrowRight size={16} /></button></div></div>}
     </section>
+  );
+}
+
+function MultiSelect<T extends string>({ label, allLabel, options, selected, onChange, allWhenAllSelected = false }: {
+  label: string;
+  allLabel: string;
+  options: Array<{ value: T; label: string; count?: number }>;
+  selected: T[];
+  onChange: (value: T[]) => void;
+  allWhenAllSelected?: boolean;
+}) {
+  const selectedLabels = options.filter((option) => selected.includes(option.value)).map((option) => option.label);
+  const isAllSelected = selected.length === 0 || (allWhenAllSelected && options.length > 0 && selected.length === options.length);
+  const summary = isAllSelected
+    ? allLabel
+    : selected.length === 1
+      ? selectedLabels[0]
+      : `${selected.length} selected`;
+
+  const toggle = (value: T) => {
+    onChange(selected.includes(value) ? selected.filter((item) => item !== value) : [...selected, value]);
+  };
+
+  return (
+    <details className="multi-select">
+      <summary aria-label={label}><span>{summary}</span><ChevronDown size={16} /></summary>
+      <div className="multi-select-menu" role="group" aria-label={label}>
+        {options.map((option) => (
+          <label className="multi-select-option" key={option.value}>
+            <input type="checkbox" checked={selected.includes(option.value)} onChange={() => toggle(option.value)} />
+            <span>{option.label}</span>
+            {option.count !== undefined && <small>{formatNumber(option.count)}</small>}
+          </label>
+        ))}
+        {selected.length > 0 && <button className="multi-select-clear" type="button" onClick={() => onChange([])}>Clear selection</button>}
+      </div>
+    </details>
   );
 }
 
@@ -1246,7 +1306,7 @@ function LeadTable({ leads, loading }: { leads: Lead[]; loading: boolean }) {
   if (loading) return <div className="table-loading"><RefreshCw className="spin" size={22} />Loading leads from CockroachDB…</div>;
   if (leads.length === 0) return <div className="empty-state"><Search size={24} /><h3>No leads found</h3><p>Try another niche or a broader search phrase.</p></div>;
   return (
-    <div className="table-scroll"><table><thead><tr><th>Lead</th><th>Company</th><th>Original email</th><th>Work email</th><th>Location</th><th>Industry</th><th>Size</th><th><span className="sr-only">Profile</span></th></tr></thead><tbody>{leads.map((lead) => <tr key={lead.id}><td><div className="lead-cell"><span className="avatar">{initials(lead.fullName)}</span><div><strong>{lead.fullName || "Unnamed lead"}</strong><span>{lead.currentTitle || "Title unavailable"}</span></div></div></td><td><strong className="company-name">{lead.companyName || "—"}</strong><span className="subtle">{lead.domain || lead.companySize || ""}</span></td><td><span className="lead-email">{lead.originalEmail || "—"}</span><span className="subtle">LinkedIn account</span></td><td><span className="lead-email">{lead.workEmail || "—"}</span><span className="subtle">{lead.workEmail ? "Company address" : lead.workEmailStatus.replaceAll("_", " ")}</span></td><td><span className="location"><MapPin size={14} />{lead.geographicRegion || lead.companyLocation || "—"}</span></td><td><span className="industry-pill">{lead.companyIndustry || "Uncategorized"}</span></td><td>{lead.employeeCount ? formatNumber(lead.employeeCount) : lead.companySize || "—"}</td><td>{lead.linkedinUrl ? <a className="profile-link" href={lead.linkedinUrl} target="_blank" rel="noreferrer" title="Open LinkedIn profile"><ExternalLink size={16} /></a> : "—"}</td></tr>)}</tbody></table></div>
+     <div className="table-scroll"><table><thead><tr><th>Lead</th><th>Company</th><th>Original email</th><th>Work email</th><th>Location</th><th>Industry</th><th>Size</th><th><span className="sr-only">Profile</span></th></tr></thead><tbody>{leads.map((lead) => <tr key={lead.id}><td><div className="lead-cell"><span className="avatar">{initials(lead.fullName)}</span><div><strong>{lead.fullName || "Unnamed lead"}</strong><span>{lead.currentTitle || "Title unavailable"}</span></div></div></td><td><strong className="company-name">{lead.companyName || "—"}</strong><span className="subtle">{lead.domain || lead.companySize || ""}</span></td><td><span className="lead-email">{lead.originalEmail || "—"}</span><span className="subtle">LinkedIn account</span></td><td><span className="lead-email">{lead.workEmail || "—"}</span><span className="subtle">{lead.workEmail ? lead.workEmailValidation || "Not validated" : lead.workEmailStatus.replaceAll("_", " ")}</span></td><td><span className="location"><MapPin size={14} />{lead.geographicRegion || lead.companyLocation || "—"}</span></td><td><span className="industry-pill">{lead.companyIndustry || "Uncategorized"}</span></td><td>{lead.employeeCount ? formatNumber(lead.employeeCount) : lead.companySize || "—"}</td><td>{lead.linkedinUrl ? <a className="profile-link" href={lead.linkedinUrl} target="_blank" rel="noreferrer" title="Open LinkedIn profile"><ExternalLink size={16} /></a> : "—"}</td></tr>)}</tbody></table></div>
   );
 }
 

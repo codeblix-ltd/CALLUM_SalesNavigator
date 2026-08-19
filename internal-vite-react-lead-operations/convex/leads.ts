@@ -7,9 +7,12 @@ import { action } from "./_generated/server";
 
 const optionalText = v.union(v.string(), v.null());
 const emailAvailabilityValidator = v.union(
-  v.literal("all"),
   v.literal("present"),
   v.literal("missing"),
+);
+const emailValidationValidator = v.union(
+  v.literal("validated"),
+  v.literal("not_validated"),
 );
 
 const leadValidator = v.object({
@@ -32,6 +35,7 @@ const leadValidator = v.object({
   premium: v.union(v.boolean(), v.null()),
   originalEmail: optionalText,
   workEmail: optionalText,
+  workEmailValidation: optionalText,
   workEmailStatus: v.string(),
 });
 
@@ -100,10 +104,11 @@ export const getStats = action({
 
 export const list = action({
   args: {
-    niche: v.union(v.string(), v.null()),
+    niches: v.array(v.string()),
     search: v.union(v.string(), v.null()),
-    originalEmailFilter: emailAvailabilityValidator,
-    workEmailFilter: emailAvailabilityValidator,
+    originalEmailFilters: v.array(emailAvailabilityValidator),
+    workEmailFilters: v.array(emailAvailabilityValidator),
+    workEmailValidationFilters: v.array(emailValidationValidator),
     cursor: v.union(v.string(), v.null()),
     limit: v.number(),
   },
@@ -117,18 +122,27 @@ export const list = action({
     await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
     const database = getPool();
     const limit = Math.max(1, Math.min(100, Math.trunc(args.limit)));
-    const niche = args.niche?.trim().slice(0, 120) || null;
+    const niches = normalizeList(args.niches, 100);
+    const originalEmailFilters = normalizeList(args.originalEmailFilters);
+    const workEmailFilters = normalizeList(args.workEmailFilters);
+    const workEmailValidationFilters = normalizeList(args.workEmailValidationFilters);
     const rawSearch = args.search?.trim().toLowerCase().slice(0, 120) || "";
     const search = rawSearch.length >= 3 ? rawSearch : "";
     const cursor = validateCursor(args.cursor);
     const parameters = [];
     const conditions = [];
-    let fromSql = "FROM leads AS l";
 
-    if (niche) {
-      parameters.push(niche);
-      fromSql += ` INNER JOIN lead_niches AS ln
-        ON ln.lead_id = l.id AND ln.niche = $${parameters.length}`;
+    if (niches.length) {
+      const nicheParameters = niches.map((selectedNiche) => {
+        parameters.push(selectedNiche);
+        return `$${parameters.length}`;
+      });
+      conditions.push(`EXISTS (
+        SELECT 1
+          FROM lead_niches AS ln
+         WHERE ln.lead_id = l.id
+           AND ln.niche IN (${nicheParameters.join(", ")})
+      )`);
     }
     if (search) {
       parameters.push(`%${search}%`);
@@ -138,8 +152,9 @@ export const list = action({
         OR coalesce(l.work_email, '') ILIKE $${parameters.length}
       )`);
     }
-    addEmailAvailabilityCondition(conditions, "l.original_email", args.originalEmailFilter);
-    addEmailAvailabilityCondition(conditions, "l.work_email", args.workEmailFilter);
+    addEmailAvailabilityCondition(conditions, "l.original_email", originalEmailFilters);
+    addEmailAvailabilityCondition(conditions, "l.work_email", workEmailFilters);
+    addEmailValidationCondition(conditions, "l.work_email_validation", workEmailValidationFilters);
 
     const countParameters = [...parameters];
     const countConditions = [...conditions];
@@ -152,6 +167,7 @@ export const list = action({
     const whereSql = conditions.length > 0
       ? `WHERE ${conditions.join(" AND ")}`
       : "";
+    const fromSql = "FROM leads AS l";
     const query = `
       SELECT
         l.id::STRING AS id,
@@ -173,6 +189,7 @@ export const list = action({
         l.premium,
         l.original_email,
         l.work_email,
+        l.work_email_validation,
         l.work_email_status
       ${fromSql}
       ${whereSql}
@@ -222,6 +239,7 @@ function mapLead(row: Record<string, unknown>) {
     premium: typeof row.premium === "boolean" ? row.premium : null,
     originalEmail: nullableString(row.original_email),
     workEmail: nullableString(row.work_email),
+    workEmailValidation: nullableString(row.work_email_validation),
     workEmailStatus: String(row.work_email_status ?? "pending"),
   };
 }
@@ -229,10 +247,30 @@ function mapLead(row: Record<string, unknown>) {
 function addEmailAvailabilityCondition(
   conditions: string[],
   column: string,
-  filter: "all" | "present" | "missing",
+  filters: string[],
 ) {
-  if (filter === "present") conditions.push(`${column} IS NOT NULL AND ${column} <> ''`);
-  if (filter === "missing") conditions.push(`(${column} IS NULL OR ${column} = '')`);
+  const selected = new Set(filters);
+  if (!selected.size || (selected.has("present") && selected.has("missing"))) return;
+  if (selected.has("present")) conditions.push(`${column} IS NOT NULL AND ${column} <> ''`);
+  if (selected.has("missing")) conditions.push(`(${column} IS NULL OR ${column} = '')`);
+}
+
+function addEmailValidationCondition(
+  conditions: string[],
+  column: string,
+  filters: string[],
+) {
+  const selected = new Set(filters);
+  if (!selected.size || (selected.has("validated") && selected.has("not_validated"))) return;
+  const hasWorkEmail = `l.work_email IS NOT NULL AND l.work_email <> ''`;
+  const hasValidation = `coalesce(btrim(${column}), '') <> ''`;
+  const hasNoValidation = `coalesce(btrim(${column}), '') = ''`;
+  if (selected.has("validated")) conditions.push(`(${hasWorkEmail} AND ${hasValidation})`);
+  if (selected.has("not_validated")) conditions.push(`(${hasWorkEmail} AND ${hasNoValidation})`);
+}
+
+function normalizeList(values: string[], maximum = 2) {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))].slice(0, maximum);
 }
 
 function nullableString(value: unknown) {

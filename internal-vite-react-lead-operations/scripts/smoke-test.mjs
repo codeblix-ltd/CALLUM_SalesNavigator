@@ -37,18 +37,29 @@ if (!authResult?.tokens?.token) {
 client.setAuth(authResult.tokens.token);
 const stats = await client.action(getStats, {});
 const page = await client.action(listLeads, {
-  niche: null,
+  niches: [],
   search: null,
-  originalEmailFilter: "all",
-  workEmailFilter: "all",
+  originalEmailFilters: [],
+  workEmailFilters: [],
+  workEmailValidationFilters: [],
   cursor: null,
   limit: 1,
 });
 const workEmailPage = await client.action(listLeads, {
-  niche: null,
+  niches: [],
   search: null,
-  originalEmailFilter: "all",
-  workEmailFilter: "present",
+  originalEmailFilters: [],
+  workEmailFilters: ["present"],
+  workEmailValidationFilters: [],
+  cursor: null,
+  limit: 5,
+});
+const validatedWorkEmailPage = await client.action(listLeads, {
+  niches: [],
+  search: null,
+  originalEmailFilters: [],
+  workEmailFilters: ["present"],
+  workEmailValidationFilters: ["validated"],
   cursor: null,
   limit: 5,
 });
@@ -69,11 +80,13 @@ if (
   page.leads.length !== 1 ||
   page.filteredCount !== stats.total ||
   workEmailPage.leads.some((lead) => !lead.workEmail) ||
+  validatedWorkEmailPage.leads.some((lead) => !lead.workEmail || !lead.workEmailValidation) ||
   overview.summary.totalLeads !== stats.total ||
   !Array.isArray(workEmailQueue.leads) ||
   typeof workEmailQueue.remaining !== "number" ||
   !("originalEmail" in page.leads[0]) ||
   !("workEmail" in page.leads[0]) ||
+  !("workEmailValidation" in page.leads[0]) ||
   unmatchedWorkEmail.saved !== false
 ) {
   throw new Error("Smoke-test invariants failed.");
