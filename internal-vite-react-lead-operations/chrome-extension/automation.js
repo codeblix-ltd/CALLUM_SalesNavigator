@@ -77,10 +77,10 @@ function renderRunState(state) {
 
   const running = status === "running";
   const pausing = status === "pausing";
-  const paused = status === "paused";
+  const resumable = status === "paused" || status === "failed";
   elements.pause.hidden = !running;
-  elements.resume.hidden = !paused;
-  elements.stop.hidden = !(running || pausing || paused);
+  elements.resume.hidden = !resumable;
+  elements.stop.hidden = !(running || pausing || resumable);
   elements.message.hidden = true;
 }
 

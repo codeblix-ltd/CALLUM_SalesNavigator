@@ -126,7 +126,7 @@ elements.refresh.addEventListener("click", refreshDashboard);
 elements.openDashboard.addEventListener("click", () =>
   chrome.tabs.create({ url: chrome.runtime.getURL("dashboard.html"), active: true }),
 );
-elements.startAutoLead.addEventListener("click", startAutoLead);
+elements.startAutoLead.addEventListener("click", () => startAutoLead());
 elements.pauseAutoLead.addEventListener("click", pauseAutoLead);
 elements.resumeAutoLead.addEventListener("click", resumeAutoLead);
 elements.stopAutoLead.addEventListener("click", stopAutoLead);
@@ -807,12 +807,12 @@ function renderAutoLeadRunState(state) {
 
   const isRunning = status === "running";
   const isPausing = status === "pausing";
-  const isPaused = status === "paused";
-  elements.startAutoLead.hidden = isRunning || isPausing || isPaused;
-  elements.manualLead.disabled = isRunning || isPausing || isPaused;
+  const isResumable = status === "paused" || status === "failed";
+  elements.startAutoLead.hidden = isRunning || isPausing || isResumable;
+  elements.manualLead.disabled = isRunning || isPausing || isResumable;
   elements.pauseAutoLead.hidden = !isRunning;
-  elements.resumeAutoLead.hidden = !isPaused;
-  elements.stopAutoLead.hidden = !(isRunning || isPausing || isPaused);
+  elements.resumeAutoLead.hidden = !isResumable;
+  elements.stopAutoLead.hidden = !(isRunning || isPausing || isResumable);
   elements.startAutoLead.textContent =
     status === "stopped"
       ? "Start a new run"

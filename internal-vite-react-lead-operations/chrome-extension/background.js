@@ -179,8 +179,8 @@ async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
   previousState = await reconcileLocallyConfirmedConnectionRequests(
     previousState,
   );
-  if (resume && previousState.status !== "paused") {
-    throw new Error("This run is not paused, so there is nothing to resume.");
+  if (resume && !["paused", "failed"].includes(previousState.status)) {
+    throw new Error("This run is not paused or failed, so there is nothing to resume.");
   }
   if (!resume && previousState.status === "paused") {
     throw new Error("This run is paused. Resume it or stop it before starting again.");
@@ -299,7 +299,23 @@ async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
 async function resumeDailyWorkflow() {
   if (workflowPromise) await workflowPromise.catch(() => {});
   const state = await getAutoLeadRunState();
-  return startDailyWorkflow(state.specificLeadId, { resume: true });
+  if (!['paused', 'failed'].includes(state.status)) {
+    throw new Error("This run is not paused or failed, so there is nothing to resume.");
+  }
+  const storedLeadId = String(state.specificLeadId || "").trim();
+  const specificLeadId = isLeadId(storedLeadId) ? storedLeadId : null;
+  if (state.specificLeadId && !specificLeadId) {
+    await writeAutoLeadRunState({
+      ...state,
+      specificLeadId: null,
+      progress: defaultRunProgress(),
+      currentLead: null,
+      phase: "preparing",
+      message: "The previous lead selection was invalid. Retrying as a normal run.",
+      error: null,
+    });
+  }
+  return startDailyWorkflow(specificLeadId, { resume: true });
 }
 
 async function runDailyWorkflow(specificLeadId, runContext) {
@@ -574,6 +590,15 @@ async function recoverAutoLeadRunState() {
       pausedAt: Date.now(),
       message:
         "The extension paused this run safely. Resume to continue from the last completed step.",
+    });
+  }
+  if (state.status === "failed" && !workflowPromise) {
+    return writeAutoLeadRunState({
+      ...state,
+      status: "paused",
+      phase: "paused",
+      pausedAt: Date.now(),
+      message: "The previous run failed before completion. Resume to retry it.",
     });
   }
   return state;
@@ -1177,6 +1202,12 @@ async function pauseRunAfterAutomationWindowClosed() {
 function createRunId() {
   return globalThis.crypto?.randomUUID?.() ||
     `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function isLeadId(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    String(value || "").trim(),
+  );
 }
 
 function setActiveWorkflowTab(runContext, tabId) {
