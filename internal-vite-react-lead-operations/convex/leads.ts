@@ -19,6 +19,29 @@ const emailValidationValidator = v.union(
   v.literal("validated"),
   v.literal("not_validated"),
 );
+const leadFilterArgs = {
+  // Keep the new array fields optional while cached production clients roll
+  // forward from the previous single-select request shape.
+  niches: v.optional(v.array(v.string())),
+  niche: v.optional(v.union(v.string(), v.null())),
+  search: v.union(v.string(), v.null()),
+  originalEmailFilters: v.optional(v.array(emailAvailabilityValidator)),
+  originalEmailFilter: v.optional(legacyEmailAvailabilityValidator),
+  workEmailFilters: v.optional(v.array(emailAvailabilityValidator)),
+  workEmailFilter: v.optional(legacyEmailAvailabilityValidator),
+  workEmailValidationFilters: v.optional(v.array(emailValidationValidator)),
+};
+
+type LeadFilterArgs = {
+  niches?: string[];
+  niche?: string | null;
+  search: string | null;
+  originalEmailFilters?: string[];
+  originalEmailFilter?: "all" | "present" | "missing";
+  workEmailFilters?: string[];
+  workEmailFilter?: "all" | "present" | "missing";
+  workEmailValidationFilters?: string[];
+};
 
 const leadValidator = v.object({
   id: v.string(),
@@ -109,16 +132,7 @@ export const getStats = action({
 
 export const list = action({
   args: {
-    // Keep the new array fields optional while cached production clients roll
-    // forward from the previous single-select request shape.
-    niches: v.optional(v.array(v.string())),
-    niche: v.optional(v.union(v.string(), v.null())),
-    search: v.union(v.string(), v.null()),
-    originalEmailFilters: v.optional(v.array(emailAvailabilityValidator)),
-    originalEmailFilter: v.optional(legacyEmailAvailabilityValidator),
-    workEmailFilters: v.optional(v.array(emailAvailabilityValidator)),
-    workEmailFilter: v.optional(legacyEmailAvailabilityValidator),
-    workEmailValidationFilters: v.optional(v.array(emailValidationValidator)),
+    ...leadFilterArgs,
     cursor: v.union(v.string(), v.null()),
     limit: v.number(),
   },
@@ -132,39 +146,10 @@ export const list = action({
     await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
     const database = getPool();
     const limit = Math.max(1, Math.min(100, Math.trunc(args.limit)));
-    const niches = normalizeList(args.niches ?? (args.niche ? [args.niche] : []), 100);
-    const originalEmailFilters = resolveEmailAvailabilityFilters(args.originalEmailFilters, args.originalEmailFilter);
-    const workEmailFilters = resolveEmailAvailabilityFilters(args.workEmailFilters, args.workEmailFilter);
-    const workEmailValidationFilters = normalizeList(args.workEmailValidationFilters ?? []);
-    const rawSearch = args.search?.trim().toLowerCase().slice(0, 120) || "";
-    const search = rawSearch.length >= 3 ? rawSearch : "";
+    const leadFilter = buildLeadFilter(args);
     const cursor = validateCursor(args.cursor);
-    const parameters = [];
-    const conditions = [];
-
-    if (niches.length) {
-      const nicheParameters = niches.map((selectedNiche) => {
-        parameters.push(selectedNiche);
-        return `$${parameters.length}`;
-      });
-      conditions.push(`EXISTS (
-        SELECT 1
-          FROM lead_niches AS ln
-         WHERE ln.lead_id = l.id
-           AND ln.niche IN (${nicheParameters.join(", ")})
-      )`);
-    }
-    if (search) {
-      parameters.push(`%${search}%`);
-      conditions.push(`(
-        l.search_text ILIKE $${parameters.length}
-        OR coalesce(l.original_email, '') ILIKE $${parameters.length}
-        OR coalesce(l.work_email, '') ILIKE $${parameters.length}
-      )`);
-    }
-    addEmailAvailabilityCondition(conditions, "l.original_email", originalEmailFilters);
-    addEmailAvailabilityCondition(conditions, "l.work_email", workEmailFilters);
-    addEmailValidationCondition(conditions, "l.work_email_validation", workEmailValidationFilters);
+    const parameters = [...leadFilter.parameters];
+    const conditions = [...leadFilter.conditions];
 
     const countParameters = [...parameters];
     const countConditions = [...conditions];
@@ -228,6 +213,99 @@ export const list = action({
   },
 });
 
+export const exportCsv = action({
+  args: leadFilterArgs,
+  returns: v.object({
+    fileName: v.string(),
+    csv: v.string(),
+    rowCount: v.number(),
+    truncated: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
+    const database = getPool();
+    const exportLimit = 25_000;
+    const leadFilter = buildLeadFilter(args);
+    const parameters = [...leadFilter.parameters, exportLimit + 1];
+    const whereSql = leadFilter.conditions.length > 0
+      ? `WHERE ${leadFilter.conditions.join(" AND ")}`
+      : "";
+    const result = await database.query(
+      `SELECT
+         l.linkedin_url,
+         l.full_name,
+         l.first_name,
+         l.last_name,
+         l.current_title,
+         l.company_name,
+         l.original_email,
+         l.work_email,
+         l.work_email_validation,
+         l.work_email_status,
+         l.geographic_region,
+         l.company_industry,
+         l.company_size,
+         l.employee_count::STRING AS employee_count,
+         l.company_location,
+         l.company_linkedin,
+         l.connection_degree,
+         l.premium::STRING AS premium
+       FROM leads AS l
+       ${whereSql}
+       ORDER BY l.id
+       LIMIT $${parameters.length}`,
+      parameters,
+    );
+    const truncated = result.rows.length > exportLimit;
+    const rows = result.rows.slice(0, exportLimit).map((row) => [
+      row.linkedin_url,
+      row.full_name,
+      row.first_name,
+      row.last_name,
+      row.current_title,
+      row.company_name,
+      row.original_email,
+      row.work_email,
+      row.work_email_validation,
+      row.work_email_status,
+      row.geographic_region,
+      row.company_industry,
+      row.company_size,
+      row.employee_count,
+      row.company_location,
+      row.company_linkedin,
+      row.connection_degree,
+      row.premium,
+    ]);
+    const header = [
+      "LinkedIn URL",
+      "Full Name",
+      "First Name",
+      "Last Name",
+      "Current Title",
+      "Company",
+      "Original Email",
+      "Work Email",
+      "Work Email Validation",
+      "Work Email Status",
+      "Region",
+      "Industry",
+      "Company Size",
+      "Employee Count",
+      "Company Location",
+      "Company LinkedIn",
+      "Connection Degree",
+      "Premium",
+    ];
+    return {
+      fileName: `filtered-leads-${new Date().toISOString().slice(0, 10)}.csv`,
+      csv: [header, ...rows].map(csvLine).join("\r\n"),
+      rowCount: rows.length,
+      truncated,
+    };
+  },
+});
+
 function mapLead(row: Record<string, unknown>) {
   return {
     id: String(row.id),
@@ -273,10 +351,53 @@ function addEmailValidationCondition(
   const selected = new Set(filters);
   if (!selected.size || (selected.has("validated") && selected.has("not_validated"))) return;
   const hasWorkEmail = `l.work_email IS NOT NULL AND l.work_email <> ''`;
-  const hasValidation = `coalesce(btrim(${column}), '') <> ''`;
-  const hasNoValidation = `coalesce(btrim(${column}), '') = ''`;
-  if (selected.has("validated")) conditions.push(`(${hasWorkEmail} AND ${hasValidation})`);
-  if (selected.has("not_validated")) conditions.push(`(${hasWorkEmail} AND ${hasNoValidation})`);
+  const isValidated = `lower(btrim(coalesce(${column}, ''))) = 'valid'`;
+  const isNotValidated = `lower(btrim(coalesce(${column}, ''))) <> 'valid'`;
+  if (selected.has("validated")) conditions.push(`(${hasWorkEmail} AND ${isValidated})`);
+  if (selected.has("not_validated")) conditions.push(`(${hasWorkEmail} AND ${isNotValidated})`);
+}
+
+function buildLeadFilter(args: LeadFilterArgs) {
+  const niches = normalizeList(args.niches ?? (args.niche ? [args.niche] : []), 100);
+  const originalEmailFilters = resolveEmailAvailabilityFilters(args.originalEmailFilters, args.originalEmailFilter);
+  const workEmailFilters = resolveEmailAvailabilityFilters(args.workEmailFilters, args.workEmailFilter);
+  const workEmailValidationFilters = normalizeList(args.workEmailValidationFilters ?? []);
+  const rawSearch = args.search?.trim().toLowerCase().slice(0, 120) || "";
+  const search = rawSearch.length >= 3 ? rawSearch : "";
+  const parameters: Array<string | number> = [];
+  const conditions: string[] = [];
+
+  if (niches.length) {
+    const nicheParameters = niches.map((selectedNiche) => {
+      parameters.push(selectedNiche);
+      return `$${parameters.length}`;
+    });
+    conditions.push(`EXISTS (
+      SELECT 1
+        FROM lead_niches AS ln
+       WHERE ln.lead_id = l.id
+         AND ln.niche IN (${nicheParameters.join(", ")})
+    )`);
+  }
+  if (search) {
+    parameters.push(`%${search}%`);
+    conditions.push(`(
+      l.search_text ILIKE $${parameters.length}
+      OR coalesce(l.original_email, '') ILIKE $${parameters.length}
+      OR coalesce(l.work_email, '') ILIKE $${parameters.length}
+    )`);
+  }
+  addEmailAvailabilityCondition(conditions, "l.original_email", originalEmailFilters);
+  addEmailAvailabilityCondition(conditions, "l.work_email", workEmailFilters);
+  addEmailValidationCondition(conditions, "l.work_email_validation", workEmailValidationFilters);
+
+  return { parameters, conditions };
+}
+
+function csvLine(values: unknown[]) {
+  return values
+    .map((value) => `"${String(value ?? "").replaceAll('"', '""')}"`)
+    .join(",");
 }
 
 function normalizeList(values: string[], maximum = 2) {

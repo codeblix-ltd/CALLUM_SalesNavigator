@@ -328,6 +328,7 @@ function Dashboard({ adminName }: { adminName: string }) {
   const retryCrmDelivery = useAction(api.adminAnalytics.retryCrmDelivery);
   const getStats = useAction(api.leads.getStats);
   const listLeads = useAction(api.leads.list);
+  const exportFilteredLeads = useAction(api.leads.exportCsv);
   const getCodexStatus = useAction(api.codexGateway.getStatus);
   const startCodexLogin = useAction(api.codexGateway.startDeviceLogin);
   const getCodexLoginStatus = useAction(api.codexGateway.getDeviceLoginStatus);
@@ -352,6 +353,8 @@ function Dashboard({ adminName }: { adminName: string }) {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [filteredLeadCount, setFilteredLeadCount] = useState<number | null>(null);
   const [leadsLoading, setLeadsLoading] = useState(false);
+  const [leadExporting, setLeadExporting] = useState(false);
+  const [leadNotice, setLeadNotice] = useState("");
   const [leadError, setLeadError] = useState("");
   const [cursor, setCursor] = useState<string | null>(null);
   const [cursorHistory, setCursorHistory] = useState<Array<string | null>>([]);
@@ -456,6 +459,7 @@ function Dashboard({ adminName }: { adminName: string }) {
     setCursor(null);
     setCursorHistory([]);
     setFilteredLeadCount(null);
+    setLeadNotice("");
   }, [niches, originalEmailFilters, workEmailFilters, workEmailValidationFilters]);
 
   useEffect(() => {
@@ -602,6 +606,34 @@ function Dashboard({ adminName }: { adminName: string }) {
     }
   }
 
+  async function downloadFilteredLeads() {
+    setLeadExporting(true);
+    setLeadError("");
+    setLeadNotice("");
+    try {
+      const result = await exportFilteredLeads({
+        niches,
+        search: debouncedSearch || null,
+        originalEmailFilters,
+        workEmailFilters,
+        workEmailValidationFilters,
+      });
+      const url = URL.createObjectURL(new Blob([result.csv], { type: "text/csv;charset=utf-8" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = result.fileName;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+      setLeadNotice(`Downloaded ${formatNumber(result.rowCount)} filtered leads${result.truncated ? " (export capped at 25,000 rows)" : ""}.`);
+    } catch (error) {
+      setLeadError(readError(error));
+    } finally {
+      setLeadExporting(false);
+    }
+  }
+
   async function sendWaitingCrmRows() {
     setOperationsBusy(true);
     setOperationsError("");
@@ -723,6 +755,9 @@ function Dashboard({ adminName }: { adminName: string }) {
             setWorkEmailFilters={setWorkEmailFilters}
             workEmailValidationFilters={workEmailValidationFilters}
             setWorkEmailValidationFilters={setWorkEmailValidationFilters}
+            onExport={downloadFilteredLeads}
+            exporting={leadExporting}
+            notice={leadNotice}
             viewCount={filteredLeadCount ?? activeNicheCount}
             leads={leads}
             loading={leadsLoading}
@@ -1220,7 +1255,7 @@ function Inventory({ summary }: { summary: Summary }) {
   );
 }
 
-function LeadDirectory({ stats, niches, setNiches, search, setSearch, originalEmailFilters, setOriginalEmailFilters, workEmailFilters, setWorkEmailFilters, workEmailValidationFilters, setWorkEmailValidationFilters, viewCount, leads, loading, error, onRefresh, currentPage, canGoPrevious, canGoNext, previousPage, nextPage }: {
+function LeadDirectory({ stats, niches, setNiches, search, setSearch, originalEmailFilters, setOriginalEmailFilters, workEmailFilters, setWorkEmailFilters, workEmailValidationFilters, setWorkEmailValidationFilters, onExport, exporting, notice, viewCount, leads, loading, error, onRefresh, currentPage, canGoPrevious, canGoNext, previousPage, nextPage }: {
   stats: Stats | null;
   niches: string[];
   setNiches: (value: string[]) => void;
@@ -1232,6 +1267,9 @@ function LeadDirectory({ stats, niches, setNiches, search, setSearch, originalEm
   setWorkEmailFilters: (value: EmailAvailability[]) => void;
   workEmailValidationFilters: EmailValidation[];
   setWorkEmailValidationFilters: (value: EmailValidation[]) => void;
+  onExport: () => Promise<void>;
+  exporting: boolean;
+  notice: string;
   viewCount: number;
   leads: Lead[];
   loading: boolean;
@@ -1251,7 +1289,7 @@ function LeadDirectory({ stats, niches, setNiches, search, setSearch, originalEm
 
   return (
     <section className="workspace">
-      <div className="workspace-heading"><div><p className="eyebrow">Lead directory</p><h2>{directoryTitle}</h2><p>{formatNumber(viewCount)} profiles in this view</p></div><button className="secondary-button" onClick={() => void onRefresh()} disabled={loading}><RefreshCw size={16} className={loading ? "spin" : ""} />Refresh</button></div>
+      <div className="workspace-heading"><div><p className="eyebrow">Lead directory</p><h2>{directoryTitle}</h2><p>{formatNumber(viewCount)} profiles in this view</p></div><div className="workspace-actions"><button className="secondary-button" onClick={() => void onExport()} disabled={loading || exporting}><Download size={16} className={exporting ? "spin" : ""} />{exporting ? "Exporting…" : "Export CSV"}</button><button className="secondary-button" onClick={() => void onRefresh()} disabled={loading || exporting}><RefreshCw size={16} className={loading ? "spin" : ""} />Refresh</button></div></div>
       <div className="filters">
         <label className="search-field"><Search size={18} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search name, company, title, industry, or email…" />{search && <button onClick={() => setSearch("")} aria-label="Clear search"><X size={16} /></button>}</label>
         <MultiSelect label="Niches" allLabel="All niches" options={stats?.niches.map((item) => ({ value: item.name, label: item.name, count: item.count })) ?? []} selected={niches} onChange={setNiches} />
@@ -1259,6 +1297,7 @@ function LeadDirectory({ stats, niches, setNiches, search, setSearch, originalEm
         <MultiSelect label="Work email availability" allLabel="All work emails" options={[{ value: "present" as const, label: "Has work email" }, { value: "missing" as const, label: "Missing work email" }]} selected={workEmailFilters} onChange={setWorkEmailFilters} allWhenAllSelected />
         <MultiSelect label="Work email validation" allLabel="All validation states" options={[{ value: "validated" as const, label: "Validated" }, { value: "not_validated" as const, label: "Not validated" }]} selected={workEmailValidationFilters} onChange={setWorkEmailValidationFilters} allWhenAllSelected />
       </div>
+      {notice && <div className="directory-notice directory-success">{notice}</div>}
       {error ? <div className="directory-notice"><Notice message={error} onRetry={onRefresh} /></div> : <LeadTable leads={leads} loading={loading} />}
       {!error && <div className="pagination"><p>Page {currentPage} · Up to 50 leads per page</p><div><button onClick={previousPage} disabled={!canGoPrevious || loading}><ArrowLeft size={16} /> Previous</button><button onClick={nextPage} disabled={!canGoNext || loading}>Next <ArrowRight size={16} /></button></div></div>}
     </section>

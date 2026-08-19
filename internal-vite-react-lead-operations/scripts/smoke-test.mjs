@@ -12,6 +12,7 @@ const signIn = makeFunctionReference("auth:signIn");
 const signOut = makeFunctionReference("auth:signOut");
 const getStats = makeFunctionReference("leads:getStats");
 const listLeads = makeFunctionReference("leads:list");
+const exportLeads = makeFunctionReference("leads:exportCsv");
 const getOverview = makeFunctionReference("adminAnalytics:getOverview");
 const listWorkEmailQueue = makeFunctionReference("workEmails:listQueue");
 const saveWorkEmailResult = makeFunctionReference("workEmails:saveResult");
@@ -63,6 +64,13 @@ const validatedWorkEmailPage = await client.action(listLeads, {
   cursor: null,
   limit: 5,
 });
+const filteredExport = await client.action(exportLeads, {
+  niches: [],
+  search: null,
+  originalEmailFilters: [],
+  workEmailFilters: ["present"],
+  workEmailValidationFilters: ["validated"],
+});
 const overview = await client.action(getOverview, { range: "all" });
 const workEmailQueue = await client.action(listWorkEmailQueue, { limit: 1 });
 const unmatchedWorkEmail = await client.action(saveWorkEmailResult, {
@@ -80,7 +88,11 @@ if (
   page.leads.length !== 1 ||
   page.filteredCount !== stats.total ||
   workEmailPage.leads.some((lead) => !lead.workEmail) ||
-  validatedWorkEmailPage.leads.some((lead) => !lead.workEmail || !lead.workEmailValidation) ||
+  validatedWorkEmailPage.leads.some((lead) => lead.workEmailValidation?.trim().toLowerCase() !== "valid") ||
+  typeof filteredExport.csv !== "string" ||
+  !filteredExport.csv.startsWith('"LinkedIn URL"') ||
+  filteredExport.rowCount > 25000 ||
+  typeof filteredExport.truncated !== "boolean" ||
   overview.summary.totalLeads !== stats.total ||
   !Array.isArray(workEmailQueue.leads) ||
   typeof workEmailQueue.remaining !== "number" ||
