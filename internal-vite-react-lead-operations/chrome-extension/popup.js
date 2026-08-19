@@ -473,8 +473,11 @@ async function startAutoLead() {
       throw new Error(response?.error || "We couldn’t finish today’s work. Try again.");
     }
     const result = response.result;
+    const failedMessage = result.failedLeads?.length
+      ? ` ${formatCount(result.failedLeads.length, "lead")} need attention; the run continued automatically.`
+      : "";
     showSuccess(
-      `Done: ${formatCount(result.requestsSent, "connection request")} sent, ${formatCount(result.acceptedMatched, "new connection")}, and ${formatCount(result.emailsCollected, "original email address")} saved.`,
+      `Done: ${formatCount(result.requestsSent, "connection request")} sent, ${formatCount(result.acceptedMatched, "new connection")}, and ${formatCount(result.emailsCollected, "original email address")} saved.${failedMessage}`,
     );
     await refreshDashboard();
   } catch (error) {

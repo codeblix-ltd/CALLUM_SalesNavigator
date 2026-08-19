@@ -100,6 +100,8 @@ async function runDailyWorkflow(specificLeadId) {
     ? Math.min(1, dashboard.usage.requestRemaining)
     : dashboard.usage.requestRemaining;
   const results = [];
+  const failedLeads = [];
+  let requestsSent = 0;
 
   for (let index = 0; index < availableRequestSlots; index++) {
     if (dashboard.usage.engagementRemaining <= 0) break;
@@ -120,22 +122,41 @@ async function runDailyWorkflow(specificLeadId) {
       results.push(
         await runLeadWorkflow(lead, dashboard.settings, dashboard.usage),
       );
+      requestsSent += 1;
     } catch (error) {
       const message = cleanError(error);
-      if (/no recent posts|no supported post permalink/i.test(message)) {
+      const requestSent = error?.requestSubmitted === true;
+      if (requestSent) requestsSent += 1;
+      const status = /no recent posts|no supported post permalink/i.test(message)
+        ? "skipped"
+        : "failed";
+      try {
         await ScoutApi.authenticatedAction("scouts:updateLeadStatus", {
           leadId: lead.id,
-          status: "skipped",
+          status,
           email: null,
           error: message,
-        }).catch(() => {});
-      } else {
+        });
+      } catch (statusError) {
+        // If the request confirmation committed before the response failed,
+        // the lead may already be in connection_requested. Keep the error
+        // visible without allowing that lead to be claimed again.
         await ScoutApi.authenticatedAction("scouts:reportError", {
           leadId: lead.id,
           message,
         }).catch(() => {});
+        console.warn(
+          "Could not record the failed lead status:",
+          cleanError(statusError),
+        );
       }
-      throw new Error(message);
+      failedLeads.push({
+        leadId: lead.id,
+        leadName: lead.fullName,
+        message,
+        requestSent,
+      });
+      if (specificLeadId) throw new Error(message);
     }
     dashboard = await ScoutApi.authenticatedAction("scouts:getDashboard");
     if (specificLeadId) break;
@@ -147,9 +168,10 @@ async function runDailyWorkflow(specificLeadId) {
     acceptedMatched: review.acceptedMatched,
     contactsChecked: review.contactsChecked,
     emailsCollected: review.emailsCollected,
-    requestsSent: results.length,
+    requestsSent,
+    failedLeads,
     leads: results,
-    requestLimitReached: results.length >= availableRequestSlots,
+    requestLimitReached: dashboard.usage.requestRemaining <= 0,
   };
 }
 
@@ -429,7 +451,9 @@ async function runLeadWorkflow(lead, settings, usage) {
         error: message,
       }).catch(() => {});
     }
-    throw new Error(message);
+    const workflowError = new Error(message);
+    workflowError.requestSubmitted = requestSubmitted;
+    throw workflowError;
   } finally {
     if (workflowCompleted && workflowTabId) {
       await chrome.tabs.remove(workflowTabId).catch(() => {});
