@@ -45,6 +45,8 @@ type EmailAvailability = "present" | "missing";
 type EmailValidation = "validated" | "not_validated";
 
 const SCOUT_PAGE_SIZE = 5;
+const ACTIVITY_PAGE_SIZE = 8;
+const POST_ACTIVITY_PAGE_SIZE = 5;
 
 type Stats = {
   total: number;
@@ -889,21 +891,44 @@ function Overview({
   scoutPosts: PostActivity[];
 }) {
   const [scoutPage, setScoutPage] = useState(1);
+  const [activityPage, setActivityPage] = useState(1);
+  const [postActivityPage, setPostActivityPage] = useState(1);
   const liveHistoryRef = useRef<HTMLElement | null>(null);
 
   const scoutPageCount = Math.max(1, Math.ceil(scouts.length / SCOUT_PAGE_SIZE));
   const visibleScoutPage = Math.min(scoutPage, scoutPageCount);
   const scoutPageStart = (visibleScoutPage - 1) * SCOUT_PAGE_SIZE;
   const visibleScouts = scouts.slice(scoutPageStart, scoutPageStart + SCOUT_PAGE_SIZE);
+  const activityPageCount = Math.max(1, Math.ceil(scoutActivity.length / ACTIVITY_PAGE_SIZE));
+  const visibleActivityPage = Math.min(activityPage, activityPageCount);
+  const activityPageStart = (visibleActivityPage - 1) * ACTIVITY_PAGE_SIZE;
+  const postActivityPageCount = Math.max(1, Math.ceil(scoutPosts.length / POST_ACTIVITY_PAGE_SIZE));
+  const visiblePostActivityPage = Math.min(postActivityPage, postActivityPageCount);
+  const postActivityPageStart = (visiblePostActivityPage - 1) * POST_ACTIVITY_PAGE_SIZE;
 
   useEffect(() => {
     setScoutPage(1);
   }, [scoutSearch, scoutSort]);
 
   useEffect(() => {
+    setActivityPage(1);
+    setPostActivityPage(1);
+  }, [selectedScout, analytics?.range]);
+
+  useEffect(() => {
     if (scoutPage <= scoutPageCount) return;
     setScoutPage(scoutPageCount);
   }, [scoutPage, scoutPageCount]);
+
+  useEffect(() => {
+    if (activityPage <= activityPageCount) return;
+    setActivityPage(activityPageCount);
+  }, [activityPage, activityPageCount]);
+
+  useEffect(() => {
+    if (postActivityPage <= postActivityPageCount) return;
+    setPostActivityPage(postActivityPageCount);
+  }, [postActivityPage, postActivityPageCount]);
 
   useEffect(() => {
     if (!selectedScout) return;
@@ -1053,12 +1078,58 @@ function Overview({
             description="Latest recorded lead milestones"
             icon={<Activity size={18} />}
           />
-          <ActivityFeed items={scoutActivity.slice(0, 12)} />
+          <ActivityFeed items={scoutActivity.slice(activityPageStart, activityPageStart + ACTIVITY_PAGE_SIZE)} />
+          {scoutActivity.length > ACTIVITY_PAGE_SIZE && (
+            <div className="pagination history-pagination" aria-label="Recent team activity pagination">
+              <p>
+                Showing {activityPageStart + 1}–{Math.min(activityPageStart + ACTIVITY_PAGE_SIZE, scoutActivity.length)} of {scoutActivity.length} activities · Page {visibleActivityPage} of {activityPageCount}
+              </p>
+              <div>
+                <button
+                  onClick={() => setActivityPage((page) => Math.max(1, page - 1))}
+                  disabled={visibleActivityPage === 1}
+                  aria-label="Previous activity page"
+                >
+                  <ArrowLeft size={16} /> Previous
+                </button>
+                <button
+                  onClick={() => setActivityPage((page) => Math.min(activityPageCount, page + 1))}
+                  disabled={visibleActivityPage === activityPageCount}
+                  aria-label="Next activity page"
+                >
+                  Next <ArrowRight size={16} />
+                </button>
+              </div>
+            </div>
+          )}
           <div className="post-history-heading">
             <strong>Saved LinkedIn posts & comments</strong>
-            <span>{scoutPosts.length} shown in this period</span>
+            <span>{scoutPosts.length} total in this period</span>
           </div>
-          <PostActivityFeed items={scoutPosts} />
+          <PostActivityFeed items={scoutPosts.slice(postActivityPageStart, postActivityPageStart + POST_ACTIVITY_PAGE_SIZE)} />
+          {scoutPosts.length > POST_ACTIVITY_PAGE_SIZE && (
+            <div className="pagination history-pagination" aria-label="Saved LinkedIn posts pagination">
+              <p>
+                Showing {postActivityPageStart + 1}–{Math.min(postActivityPageStart + POST_ACTIVITY_PAGE_SIZE, scoutPosts.length)} of {scoutPosts.length} posts · Page {visiblePostActivityPage} of {postActivityPageCount}
+              </p>
+              <div>
+                <button
+                  onClick={() => setPostActivityPage((page) => Math.max(1, page - 1))}
+                  disabled={visiblePostActivityPage === 1}
+                  aria-label="Previous saved posts page"
+                >
+                  <ArrowLeft size={16} /> Previous
+                </button>
+                <button
+                  onClick={() => setPostActivityPage((page) => Math.min(postActivityPageCount, page + 1))}
+                  disabled={visiblePostActivityPage === postActivityPageCount}
+                  aria-label="Next saved posts page"
+                >
+                  Next <ArrowRight size={16} />
+                </button>
+              </div>
+            </div>
+          )}
         </article>
         <article className="panel inventory-panel">
           <PanelHeading

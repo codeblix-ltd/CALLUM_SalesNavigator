@@ -229,6 +229,8 @@ main { max-width: 1320px; margin: 0 auto; padding: 40px 24px 76px; }
 .activity-link { display: inline-flex; align-items: center; gap: 3px; margin-top: 5px; color: #5d47c5; font-size: 9px; font-weight: 800; text-decoration: none; }
 .activity-item time { color: #9aa2b1; font-size: 8px; }
 .activity-empty { min-height: 180px; display: flex; align-items: center; justify-content: center; gap: 9px; color: #969faf; font-size: 10px; }
+.history-pagination { margin-top: 10px; padding: 10px 12px; min-height: 52px; border: 1px solid #e0e5ef; border-radius: 10px; }
+.history-pagination p { margin: 0; color: #7f899e; font-size: 10px; }
 .post-history-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-top: 20px; padding-top: 16px; border-top: 1px solid #e5e8f0; }
 .post-history-heading strong { color: #303950; font-size: 11px; }
 .post-history-heading span { color: #929aab; font-size: 8px; }
