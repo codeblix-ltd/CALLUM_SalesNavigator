@@ -224,6 +224,7 @@ async function handleLogin(event) {
     await chrome.storage.local.remove([
       "scoutDashboard",
       "scoutDashboardUpdatedAt",
+      "lastAcceptedConnectionReview",
     ]);
     elements.password.value = "";
     await refreshDashboard();
@@ -247,6 +248,7 @@ async function handleSignOut() {
     await chrome.storage.local.remove([
       "scoutDashboard",
       "scoutDashboardUpdatedAt",
+      "lastAcceptedConnectionReview",
     ]);
     await chrome.action.setBadgeText({ text: "" });
     showLogin();
