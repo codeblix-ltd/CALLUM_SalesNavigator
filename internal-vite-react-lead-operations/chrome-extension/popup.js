@@ -19,6 +19,12 @@ const elements = {
   engagementUsage: document.querySelector("#engagement-usage"),
   openDashboard: document.querySelector("#open-dashboard"),
   startAutoLead: document.querySelector("#start-auto-lead"),
+  pauseAutoLead: document.querySelector("#pause-auto-lead"),
+  resumeAutoLead: document.querySelector("#resume-auto-lead"),
+  stopAutoLead: document.querySelector("#stop-auto-lead"),
+  automationRunStatus: document.querySelector("#automation-run-status"),
+  automationRunLabel: document.querySelector("#automation-run-label"),
+  automationRunDetail: document.querySelector("#automation-run-detail"),
   resetOnboarding: document.querySelector("#reset-onboarding"),
   toggleSettings: document.querySelector("#toggle-settings"),
   settingsForm: document.querySelector("#settings-form"),
@@ -111,6 +117,9 @@ elements.openDashboard.addEventListener("click", () =>
   chrome.tabs.create({ url: chrome.runtime.getURL("dashboard.html"), active: true }),
 );
 elements.startAutoLead.addEventListener("click", startAutoLead);
+elements.pauseAutoLead.addEventListener("click", pauseAutoLead);
+elements.resumeAutoLead.addEventListener("click", resumeAutoLead);
+elements.stopAutoLead.addEventListener("click", stopAutoLead);
 elements.resetOnboarding.addEventListener("click", restartOnboarding);
 elements.toggleSettings.addEventListener("click", () => {
   elements.settingsForm.hidden = !elements.settingsForm.hidden;
@@ -161,10 +170,15 @@ elements.linkedinPlan.addEventListener("change", () => {
   syncPremiumNoteGate();
 });
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName !== "local" || !changes.linkedInPremium) return;
-  premiumVerified = changes.linkedInPremium.newValue === true;
-  syncPremiumNoteGate();
-  syncOnboardingPlanGate();
+  if (areaName !== "local") return;
+  if (changes.linkedInPremium) {
+    premiumVerified = changes.linkedInPremium.newValue === true;
+    syncPremiumNoteGate();
+    syncOnboardingPlanGate();
+  }
+  if (changes.autoLeadRunState?.newValue) {
+    renderAutoLeadRunState(changes.autoLeadRunState.newValue);
+  }
 });
 
 void hydrate().catch((error) => {
@@ -186,6 +200,7 @@ async function hydrate() {
   if (cached.scoutDashboard) {
     renderDashboard(cached.scoutDashboard, cached.scoutDashboardUpdatedAt);
   }
+  await refreshAutoLeadRunState();
   await refreshDashboard();
 }
 
@@ -211,6 +226,7 @@ async function handleLogin(event) {
 async function handleSignOut() {
   clearMessages();
   try {
+    await chrome.runtime.sendMessage({ type: "STOP_AUTO_LEAD" }).catch(() => {});
     await ScoutApi.signOut();
   } catch (error) {
     showError(error);
@@ -465,26 +481,142 @@ async function saveOnboarding(event) {
 
 async function startAutoLead() {
   clearMessages();
-  setBusy(elements.startAutoLead, true);
+  elements.startAutoLead.disabled = true;
   try {
-    showSuccess("Checking new connections. Then we’ll work through today’s leads...");
+    showSuccess("Starting today’s work...");
     const response = await chrome.runtime.sendMessage({ type: "START_AUTO_LEAD" });
-    if (!response?.ok) {
-      throw new Error(response?.error || "We couldn’t finish today’s work. Try again.");
-    }
-    const result = response.result;
-    const failedMessage = result.failedLeads?.length
-      ? ` ${formatCount(result.failedLeads.length, "lead")} need attention; the run continued automatically.`
-      : "";
-    showSuccess(
-      `Done: ${formatCount(result.requestsSent, "connection request")} sent, ${formatCount(result.acceptedMatched, "new connection")}, and ${formatCount(result.emailsCollected, "original email address")} saved.${failedMessage}`,
-    );
-    await refreshDashboard();
+    await handleAutoLeadOutcome(response);
   } catch (error) {
     showError(error, true);
   } finally {
-    setBusy(elements.startAutoLead, false);
+    elements.startAutoLead.disabled = false;
+    await refreshAutoLeadRunState().catch(() => {});
   }
+}
+
+async function pauseAutoLead() {
+  clearMessages();
+  elements.pauseAutoLead.disabled = true;
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "PAUSE_AUTO_LEAD" });
+    if (!response?.ok) {
+      throw new Error(response?.error || "We couldn’t pause this run.");
+    }
+    renderAutoLeadRunState(response.state);
+    showSuccess(
+      response.state?.status === "paused"
+        ? "Paused. Resume will continue from the last completed step."
+        : "Pause requested. The current safe step will finish first.",
+    );
+  } catch (error) {
+    showError(error);
+  } finally {
+    elements.pauseAutoLead.disabled = false;
+  }
+}
+
+async function resumeAutoLead() {
+  clearMessages();
+  elements.resumeAutoLead.disabled = true;
+  try {
+    showSuccess("Resuming from the last completed step...");
+    const response = await chrome.runtime.sendMessage({ type: "RESUME_AUTO_LEAD" });
+    await handleAutoLeadOutcome(response);
+  } catch (error) {
+    showError(error, true);
+  } finally {
+    elements.resumeAutoLead.disabled = false;
+    await refreshAutoLeadRunState().catch(() => {});
+  }
+}
+
+async function stopAutoLead() {
+  clearMessages();
+  elements.stopAutoLead.disabled = true;
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "STOP_AUTO_LEAD" });
+    if (!response?.ok) {
+      throw new Error(response?.error || "We couldn’t stop this run.");
+    }
+    renderAutoLeadRunState(response.state);
+    showSuccess("Stopped completely. The saved resume point was cleared.");
+  } catch (error) {
+    showError(error);
+  } finally {
+    elements.stopAutoLead.disabled = false;
+  }
+}
+
+async function handleAutoLeadOutcome(response) {
+  if (!response?.ok) {
+    throw new Error(response?.error || "We couldn’t finish today’s work. Try again.");
+  }
+  const outcome = response.result || {};
+  if (outcome.state) renderAutoLeadRunState(outcome.state);
+  if (outcome.status === "paused") {
+    showSuccess("Paused. Resume will continue from the last completed step.");
+    return;
+  }
+  if (outcome.status === "stopped") {
+    showSuccess("Stopped completely. The saved resume point was cleared.");
+    return;
+  }
+
+  const result = outcome.result || {};
+  await refreshDashboard();
+  const failedMessage = result.failedLeads?.length
+    ? ` ${formatCount(result.failedLeads.length, "lead")} need attention; the run continued automatically.`
+    : "";
+  showSuccess(
+    `Done: ${formatCount(result.requestsSent, "connection request")} sent, ${formatCount(result.acceptedMatched, "new connection")}, and ${formatCount(result.emailsCollected, "original email address")} saved.${failedMessage}`,
+  );
+}
+
+async function refreshAutoLeadRunState() {
+  const response = await chrome.runtime.sendMessage({
+    type: "GET_AUTO_LEAD_RUN_STATE",
+  });
+  if (!response?.ok || !response.state) {
+    throw new Error(response?.error || "We couldn’t read the current run status.");
+  }
+  renderAutoLeadRunState(response.state);
+  return response.state;
+}
+
+function renderAutoLeadRunState(state) {
+  if (!state || typeof state !== "object") return;
+  const status = String(state.status || "idle");
+  const progress = state.progress || {};
+  const processed = Number(progress.processedLeads || 0);
+  const target = Number(progress.targetRequests || 0);
+  const progressText = target > 0 ? ` ${processed} of ${target} leads finished.` : "";
+  const labels = {
+    idle: "Ready",
+    running: "In progress",
+    pausing: "Pausing safely",
+    paused: "Paused",
+    stopped: "Stopped",
+    completed: "Completed",
+    failed: "Needs attention",
+  };
+
+  elements.automationRunStatus.dataset.status = status;
+  elements.automationRunLabel.textContent = labels[status] || "Ready";
+  elements.automationRunDetail.textContent = `${state.message || "Ready to start today’s work."}${progressText}`;
+
+  const isRunning = status === "running";
+  const isPausing = status === "pausing";
+  const isPaused = status === "paused";
+  elements.startAutoLead.hidden = isRunning || isPausing || isPaused;
+  elements.pauseAutoLead.hidden = !isRunning;
+  elements.resumeAutoLead.hidden = !isPaused;
+  elements.stopAutoLead.hidden = !(isRunning || isPausing || isPaused);
+  elements.startAutoLead.textContent =
+    status === "stopped"
+      ? "Start a new run"
+      : status === "completed"
+        ? "Start again"
+        : "Start today’s work";
 }
 
 async function restartOnboarding() {

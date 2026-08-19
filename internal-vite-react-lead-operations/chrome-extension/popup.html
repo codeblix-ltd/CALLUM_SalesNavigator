@@ -197,7 +197,25 @@
           <p class="muted">
             First, we check new connections and save their LinkedIn account (original) email addresses. Then we like and comment on posts, and send connection requests until you reach today’s limits.
           </p>
-          <button id="start-auto-lead" class="primary" type="button">⚡ Start today’s work</button>
+          <div
+            id="automation-run-status"
+            class="automation-run-status"
+            data-status="idle"
+            role="status"
+            aria-live="polite"
+          >
+            <span class="run-status-dot" aria-hidden="true"></span>
+            <span>
+              <strong id="automation-run-label">Ready</strong>
+              <small id="automation-run-detail">Start today’s work when you are ready.</small>
+            </span>
+          </div>
+          <div class="automation-controls">
+            <button id="start-auto-lead" class="primary" type="button">Start today’s work</button>
+            <button id="pause-auto-lead" class="secondary" type="button" hidden>Pause</button>
+            <button id="resume-auto-lead" class="primary" type="button" hidden>Resume</button>
+            <button id="stop-auto-lead" class="run-stop" type="button" hidden>Stop</button>
+          </div>
         </section>
 
         <div class="utility-row">

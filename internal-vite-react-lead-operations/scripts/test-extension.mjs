@@ -28,7 +28,7 @@ const [manifestSource, popupSource, popupScript, dashboardSource, dashboardScrip
   ]);
 const manifest = JSON.parse(manifestSource);
 
-assert.equal(manifest.version, "0.8.0");
+assert.equal(manifest.version, "0.9.0");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -49,6 +49,15 @@ assert.doesNotMatch(
   /claimNextLead|updateLeadStatus|generateDraft|copyDraft|contactInfoUrl/,
 );
 assert.match(popupSource, /id="start-auto-lead"/);
+assert.match(popupSource, /id="automation-run-status"/);
+assert.match(popupSource, /id="pause-auto-lead"/);
+assert.match(popupSource, /id="resume-auto-lead"/);
+assert.match(popupSource, /id="stop-auto-lead"/);
+assert.match(popupScript, /In progress/);
+assert.match(popupScript, /PAUSE_AUTO_LEAD/);
+assert.match(popupScript, /RESUME_AUTO_LEAD/);
+assert.match(popupScript, /STOP_AUTO_LEAD/);
+assert.match(popupScript, /saved resume point was cleared/i);
 assert.match(popupSource, /id="open-dashboard"/);
 assert.match(popupScript, /dashboard\.html/);
 assert.match(dashboardSource, /All leads and steps/);
@@ -137,6 +146,14 @@ assert.match(contentSource, /INSPECT_PREMIUM_ACCOUNT/);
 assert.match(contentSource, /plan recommendation/i);
 assert.match(contentSource, /manage-premium-account/);
 assert.match(backgroundSource, /CHECK_LINKEDIN_PREMIUM/);
+assert.match(backgroundSource, /GET_AUTO_LEAD_RUN_STATE/);
+assert.match(backgroundSource, /PAUSE_AUTO_LEAD/);
+assert.match(backgroundSource, /RESUME_AUTO_LEAD/);
+assert.match(backgroundSource, /STOP_AUTO_LEAD/);
+assert.match(backgroundSource, /autoLeadRunState/);
+assert.match(backgroundSource, /Pausing after the current safe step/);
+assert.match(backgroundSource, /lead\.status !== "engaged"/);
+assert.match(backgroundSource, /progress: null/);
 assert.match(backgroundSource, /premium\/my-premium/);
 assert.match(backgroundSource, /INSPECT_PREMIUM_ACCOUNT/);
 assert.match(backgroundSource, /localSettings\.validateBeforeCommenting \?\? false/);
@@ -247,6 +264,7 @@ assert.deepEqual(
 );
 
 const listenerStub = () => ({ addListener() {}, removeListener() {} });
+const backgroundStorage = {};
 const backgroundContext = {
   URL,
   clearTimeout,
@@ -260,6 +278,16 @@ const backgroundContext = {
       onInstalled: listenerStub(),
       onMessage: listenerStub(),
       onStartup: listenerStub(),
+    },
+    storage: {
+      local: {
+        async get(key) {
+          return { [key]: backgroundStorage[key] };
+        },
+        async set(values) {
+          Object.assign(backgroundStorage, values);
+        },
+      },
     },
     tabs: { onUpdated: listenerStub() },
   },
@@ -283,7 +311,48 @@ assert.equal(
   ),
   "https://www.linkedin.com/in/taylor-example",
 );
+assert.equal(backgroundContext.defaultAutoLeadRunState().status, "idle");
+assert.deepEqual(
+  JSON.parse(JSON.stringify(backgroundContext.normalizeRunProgress({
+    processedLeads: 3,
+    requestsSent: 2,
+    targetRequests: 10,
+  }))),
+  {
+    reviewComplete: false,
+    review: {
+      reviewed: false,
+      acceptedMatched: 0,
+      contactsChecked: 0,
+      emailsCollected: 0,
+    },
+    autoWithdrawComplete: false,
+    autoWithdraw: { withdrawnCount: 0 },
+    targetRequests: 10,
+    processedLeads: 3,
+    requestsSent: 2,
+    results: [],
+    failedLeads: [],
+  },
+);
+await backgroundContext.writeAutoLeadRunState({
+  ...backgroundContext.defaultAutoLeadRunState(),
+  status: "running",
+  runId: "run-1",
+  progress: backgroundContext.normalizeRunProgress({
+    processedLeads: 3,
+    requestsSent: 2,
+    targetRequests: 10,
+  }),
+});
+const recoveredRun = await backgroundContext.getAutoLeadRunState();
+assert.equal(recoveredRun.status, "paused");
+assert.equal(recoveredRun.progress.processedLeads, 3);
+const stoppedRun = await backgroundContext.requestWorkflowControl("stop");
+assert.equal(stoppedRun.status, "stopped");
+assert.equal(stoppedRun.progress, null);
+assert.equal(stoppedRun.specificLeadId, null);
 
 console.log(
-  "Extension checks passed: production UI, invitation notes, Premium detection, and auth recovery are wired correctly.",
+  "Extension checks passed: production UI, resumable run controls, Premium detection, and auth recovery are wired correctly.",
 );

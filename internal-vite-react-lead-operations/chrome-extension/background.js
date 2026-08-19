@@ -9,18 +9,25 @@ const SENT_INVITATIONS_URL =
   "https://www.linkedin.com/mynetwork/invitation-manager/sent/";
 const DEFAULT_INVITATION_NOTE =
   "Hi, I saw your profile and would like to connect.";
+const AUTO_LEAD_RUN_STATE_KEY = "autoLeadRunState";
+const ACTIVE_RUN_STATUSES = new Set(["running", "pausing"]);
 
 let premiumCheckPromise = null;
 let workflowPromise = null;
+let workflowControlRequest = null;
+let activeWorkflowTabId = null;
+let runStateInitializationPromise = null;
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create(REFRESH_ALARM, { periodInMinutes: 30 });
   void initializeExtensionDefaults();
+  void ensureAutoLeadRunState();
   refreshBadgeInBackground();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   void initializeExtensionDefaults();
+  void ensureAutoLeadRunState();
   refreshBadgeInBackground();
 });
 
@@ -37,8 +44,36 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "START_AUTO_LEAD") {
-    startDailyWorkflow(message.leadId)
+    startDailyWorkflow(message.leadId, { resume: false })
       .then((result) => sendResponse({ ok: true, result }))
+      .catch((error) => sendResponse({ ok: false, error: cleanError(error) }));
+    return true;
+  }
+
+  if (message?.type === "GET_AUTO_LEAD_RUN_STATE") {
+    getAutoLeadRunState()
+      .then((state) => sendResponse({ ok: true, state }))
+      .catch((error) => sendResponse({ ok: false, error: cleanError(error) }));
+    return true;
+  }
+
+  if (message?.type === "PAUSE_AUTO_LEAD") {
+    requestWorkflowControl("pause")
+      .then((state) => sendResponse({ ok: true, state }))
+      .catch((error) => sendResponse({ ok: false, error: cleanError(error) }));
+    return true;
+  }
+
+  if (message?.type === "RESUME_AUTO_LEAD") {
+    resumeDailyWorkflow()
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((error) => sendResponse({ ok: false, error: cleanError(error) }));
+    return true;
+  }
+
+  if (message?.type === "STOP_AUTO_LEAD") {
+    requestWorkflowControl("stop")
+      .then((state) => sendResponse({ ok: true, state }))
       .catch((error) => sendResponse({ ok: false, error: cleanError(error) }));
     return true;
   }
@@ -75,36 +110,159 @@ async function initializeExtensionDefaults() {
   if (Object.keys(defaults).length > 0) await chrome.storage.local.set(defaults);
 }
 
-function startDailyWorkflow(specificLeadId) {
+async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
+  await ensureAutoLeadRunState();
   if (workflowPromise) return workflowPromise;
-  workflowPromise = runDailyWorkflow(specificLeadId).finally(() => {
-    workflowPromise = null;
+
+  const previousState = await readAutoLeadRunState();
+  if (resume && previousState.status !== "paused") {
+    throw new Error("This run is not paused, so there is nothing to resume.");
+  }
+  if (!resume && previousState.status === "paused") {
+    throw new Error("This run is paused. Resume it or stop it before starting again.");
+  }
+
+  const runId = resume ? previousState.runId : createRunId();
+  const runContext = {
+    runId,
+    resume,
+    progress: resume ? normalizeRunProgress(previousState.progress) : defaultRunProgress(),
+  };
+  const startedAt = resume
+    ? Number(previousState.startedAt || Date.now())
+    : Date.now();
+  workflowControlRequest = null;
+  await writeAutoLeadRunState({
+    ...(resume ? previousState : defaultAutoLeadRunState()),
+    status: "running",
+    runId,
+    specificLeadId: resume ? previousState.specificLeadId || null : specificLeadId || null,
+    startedAt,
+    resumedAt: resume ? Date.now() : null,
+    pausedAt: null,
+    stoppedAt: null,
+    completedAt: null,
+    phase: resume ? previousState.phase || "preparing" : "preparing",
+    message: resume
+      ? "Resuming from the last completed step..."
+      : "Preparing today’s work...",
+    currentLead: resume ? previousState.currentLead || null : null,
+    progress: runContext.progress,
+    result: null,
+    error: null,
   });
+
+  workflowPromise = runDailyWorkflow(
+    resume ? previousState.specificLeadId || null : specificLeadId,
+    runContext,
+  )
+    .then(async (result) => {
+      const state = await updateActiveRunState(runContext, {
+        status: "completed",
+        phase: "completed",
+        message: "Today’s work is complete.",
+        currentLead: null,
+        completedAt: Date.now(),
+        progress: result.progress,
+        result: result.summary,
+      });
+      return { status: "completed", result: result.summary, state };
+    })
+    .catch(async (error) => {
+      const requestedControl = getRequestedWorkflowControl(runContext);
+      if (isWorkflowControlError(error) || requestedControl) {
+        const control = error.control || requestedControl;
+        const state = await finalizeControlledRun(runContext, control);
+        return { status: control === "pause" ? "paused" : "stopped", state };
+      }
+      await updateActiveRunState(runContext, {
+        status: "failed",
+        phase: "failed",
+        message: cleanError(error),
+        currentLead: null,
+        completedAt: Date.now(),
+        error: cleanError(error),
+      });
+      throw error;
+    })
+    .finally(() => {
+      workflowPromise = null;
+      workflowControlRequest = null;
+      activeWorkflowTabId = null;
+    });
   return workflowPromise;
 }
 
-async function runDailyWorkflow(specificLeadId) {
+async function resumeDailyWorkflow() {
+  if (workflowPromise) await workflowPromise.catch(() => {});
+  const state = await getAutoLeadRunState();
+  return startDailyWorkflow(state.specificLeadId, { resume: true });
+}
+
+async function runDailyWorkflow(specificLeadId, runContext) {
+  const progress = runContext.progress;
+  throwIfWorkflowControlled(runContext);
+  await updateRunProgress(runContext, progress, {
+    phase: "preparing",
+    message: runContext.resume
+      ? "Checking the saved run before continuing..."
+      : "Checking today’s limits...",
+  });
   let dashboard = await ScoutApi.authenticatedAction("scouts:getDashboard");
   if (!dashboard.settings?.onboardingCompleted) {
     throw new Error("Finish setup before you start.");
   }
 
-  const review = await reviewAcceptedConnections(dashboard);
-  const autoWithdraw = await autoWithdrawOldRequests().catch((error) => {
-    console.warn("Auto withdraw old requests failed:", cleanError(error));
-    return { withdrawnCount: 0 };
-  });
+  let review = progress.review;
+  if (!progress.reviewComplete) {
+    await updateRunProgress(runContext, progress, {
+      phase: "reviewing_connections",
+      message: "Checking new connections and contact details...",
+    });
+    review = await reviewAcceptedConnections(dashboard, runContext);
+    progress.review = review;
+    progress.reviewComplete = true;
+    await checkpointRun(runContext, progress, {
+      phase: "withdrawing_old_requests",
+      message: "Checking old sent requests...",
+      currentLead: null,
+    });
+  }
+
+  let autoWithdraw = progress.autoWithdraw;
+  if (!progress.autoWithdrawComplete) {
+    autoWithdraw = await autoWithdrawOldRequests(runContext).catch((error) => {
+      if (isWorkflowControlError(error)) throw error;
+      console.warn("Auto withdraw old requests failed:", cleanError(error));
+      return { withdrawnCount: 0 };
+    });
+    progress.autoWithdraw = autoWithdraw;
+    progress.autoWithdrawComplete = true;
+    await checkpointRun(runContext, progress, {
+      phase: "working_leads",
+      message: "Starting today’s leads...",
+      currentLead: null,
+    });
+  }
 
   dashboard = await ScoutApi.authenticatedAction("scouts:getDashboard");
-  const availableRequestSlots = specificLeadId
-    ? Math.min(1, dashboard.usage.requestRemaining)
-    : dashboard.usage.requestRemaining;
-  const results = [];
-  const failedLeads = [];
-  let requestsSent = 0;
+  if (progress.targetRequests === null) {
+    progress.targetRequests = specificLeadId
+      ? Math.min(1, dashboard.usage.requestRemaining)
+      : dashboard.usage.requestRemaining;
+  }
+  const availableRequestSlots = progress.targetRequests;
+  const results = progress.results;
+  const failedLeads = progress.failedLeads;
 
-  for (let index = 0; index < availableRequestSlots; index++) {
-    if (dashboard.usage.engagementRemaining <= 0) break;
+  for (let index = progress.processedLeads; index < availableRequestSlots; index++) {
+    throwIfWorkflowControlled(runContext);
+    if (
+      dashboard.usage.engagementRemaining <= 0 &&
+      dashboard.activeLead?.status !== "engaged"
+    ) {
+      break;
+    }
     let lead;
     if (specificLeadId && index === 0) {
       lead = dashboard.activeLead;
@@ -118,15 +276,35 @@ async function runDailyWorkflow(specificLeadId) {
     }
     if (!lead?.linkedinUrl) break;
 
+    await checkpointRun(runContext, progress, {
+      phase: lead.status === "engaged" ? "connecting" : "engaging",
+      message:
+        lead.status === "engaged"
+          ? `Resuming ${lead.fullName} at the connection step...`
+          : `Working on ${lead.fullName}...`,
+      currentLead: {
+        id: lead.id,
+        fullName: lead.fullName,
+        status: lead.status || "viewed",
+      },
+    });
+
     try {
       results.push(
-        await runLeadWorkflow(lead, dashboard.settings, dashboard.usage),
+        await runLeadWorkflow(
+          lead,
+          dashboard.settings,
+          dashboard.usage,
+          runContext,
+          progress,
+        ),
       );
-      requestsSent += 1;
+      progress.requestsSent += 1;
     } catch (error) {
+      if (isWorkflowControlError(error)) throw error;
       const message = cleanError(error);
       const requestSent = error?.requestSubmitted === true;
-      if (requestSent) requestsSent += 1;
+      if (requestSent) progress.requestsSent += 1;
       const status = /no recent posts|no supported post permalink/i.test(message)
         ? "skipped"
         : "failed";
@@ -158,32 +336,313 @@ async function runDailyWorkflow(specificLeadId) {
       });
       if (specificLeadId) throw new Error(message);
     }
+    progress.processedLeads += 1;
+    await checkpointRun(runContext, progress, {
+      phase: "working_leads",
+      message: `${progress.processedLeads} of ${availableRequestSlots} leads finished in this run.`,
+      currentLead: null,
+    });
     dashboard = await ScoutApi.authenticatedAction("scouts:getDashboard");
     if (specificLeadId) break;
   }
 
   await updateBadge();
-  return {
+  const summary = {
     reviewedConnections: review.reviewed,
     acceptedMatched: review.acceptedMatched,
     contactsChecked: review.contactsChecked,
     emailsCollected: review.emailsCollected,
-    requestsSent,
+    withdrawnCount: Number(autoWithdraw?.withdrawnCount || 0),
+    requestsSent: progress.requestsSent,
     failedLeads,
     leads: results,
     requestLimitReached: dashboard.usage.requestRemaining <= 0,
   };
+  return { summary, progress };
 }
 
-async function reviewAcceptedConnections(dashboard) {
-  const empty = {
+function ensureAutoLeadRunState() {
+  if (!runStateInitializationPromise) {
+    runStateInitializationPromise = recoverAutoLeadRunState();
+  }
+  return runStateInitializationPromise;
+}
+
+async function recoverAutoLeadRunState() {
+  const state = await readAutoLeadRunState();
+  if (!state.runId) {
+    return writeAutoLeadRunState(defaultAutoLeadRunState());
+  }
+  if (ACTIVE_RUN_STATUSES.has(state.status) && !workflowPromise) {
+    return writeAutoLeadRunState({
+      ...state,
+      status: "paused",
+      phase: "paused",
+      pausedAt: Date.now(),
+      message:
+        "The extension paused this run safely. Resume to continue from the last completed step.",
+    });
+  }
+  return state;
+}
+
+async function getAutoLeadRunState() {
+  await ensureAutoLeadRunState();
+  return readAutoLeadRunState();
+}
+
+async function readAutoLeadRunState() {
+  const stored = await chrome.storage.local.get(AUTO_LEAD_RUN_STATE_KEY);
+  return normalizeAutoLeadRunState(stored[AUTO_LEAD_RUN_STATE_KEY]);
+}
+
+async function writeAutoLeadRunState(state) {
+  const next = normalizeAutoLeadRunState({
+    ...state,
+    updatedAt: Date.now(),
+  });
+  await chrome.storage.local.set({ [AUTO_LEAD_RUN_STATE_KEY]: next });
+  return next;
+}
+
+async function updateActiveRunState(runContext, patch) {
+  const current = await readAutoLeadRunState();
+  if (current.runId !== runContext.runId) return current;
+  if (current.status === "stopped" && patch.status !== "stopped") return current;
+  return writeAutoLeadRunState({ ...current, ...patch });
+}
+
+async function updateRunProgress(runContext, progress, patch = {}) {
+  return updateActiveRunState(runContext, {
+    ...patch,
+    progress: normalizeRunProgress(progress),
+  });
+}
+
+async function checkpointRun(runContext, progress, patch = {}) {
+  await updateRunProgress(runContext, progress, patch);
+  throwIfWorkflowControlled(runContext);
+}
+
+function throwIfWorkflowControlled(runContext) {
+  const control = getRequestedWorkflowControl(runContext);
+  if (control) throw new WorkflowControlError(control);
+}
+
+function getRequestedWorkflowControl(runContext) {
+  return workflowControlRequest?.runId === runContext.runId &&
+    ["pause", "stop"].includes(workflowControlRequest.action)
+    ? workflowControlRequest.action
+    : null;
+}
+
+function isWorkflowControlError(error) {
+  return (
+    error instanceof WorkflowControlError ||
+    error?.name === "WorkflowControlError"
+  );
+}
+
+class WorkflowControlError extends Error {
+  constructor(control) {
+    super(control === "pause" ? "Run paused." : "Run stopped.");
+    this.name = "WorkflowControlError";
+    this.control = control;
+  }
+}
+
+async function requestWorkflowControl(action) {
+  await ensureAutoLeadRunState();
+  const state = await readAutoLeadRunState();
+  if (action === "pause") {
+    if (state.status === "paused" || state.status === "pausing") return state;
+    if (state.status !== "running") return state;
+
+    workflowControlRequest = { runId: state.runId, action: "pause" };
+    const next = await writeAutoLeadRunState({
+      ...state,
+      status: workflowPromise ? "pausing" : "paused",
+      phase: workflowPromise ? state.phase : "paused",
+      pausedAt: workflowPromise ? null : Date.now(),
+      message: workflowPromise
+        ? "Pausing after the current safe step..."
+        : "Paused. Resume to continue from the last completed step.",
+    });
+    if (activeWorkflowTabId) {
+      await sendMessageToTab(activeWorkflowTabId, {
+        type: "SHOW_AUTOMATION_STATUS",
+        status: "Pausing after the current safe step...",
+      }).catch(() => {});
+    }
+    return next;
+  }
+
+  if (action !== "stop") throw new Error("Unknown run control.");
+  if (["idle", "completed", "stopped"].includes(state.status)) return state;
+
+  workflowControlRequest = { runId: state.runId, action: "stop" };
+  const next = await writeAutoLeadRunState({
+    ...state,
+    status: "stopped",
+    phase: "stopped",
+    message: "Run stopped completely. Start again whenever you are ready.",
+    specificLeadId: null,
+    currentLead: null,
+    progress: null,
+    result: null,
+    stoppedAt: Date.now(),
+    completedAt: Date.now(),
+  });
+  if (activeWorkflowTabId) {
+    const tabId = activeWorkflowTabId;
+    await sendMessageToTab(tabId, {
+      type: "SHOW_AUTOMATION_STATUS",
+      status: "Stopped.",
+    }).catch(() => {});
+    await chrome.tabs.remove(tabId).catch(() => {});
+  }
+  return next;
+}
+
+async function finalizeControlledRun(runContext, control) {
+  const state = await readAutoLeadRunState();
+  if (state.runId !== runContext.runId || state.status === "stopped") {
+    return state;
+  }
+  if (control === "stop") {
+    return writeAutoLeadRunState({
+      ...state,
+      status: "stopped",
+      phase: "stopped",
+      message: "Run stopped completely. Start again whenever you are ready.",
+      specificLeadId: null,
+      currentLead: null,
+      progress: null,
+      result: null,
+      stoppedAt: Date.now(),
+      completedAt: Date.now(),
+    });
+  }
+  return writeAutoLeadRunState({
+    ...state,
+    status: "paused",
+    phase: "paused",
+    message: "Paused. Resume to continue from the last completed step.",
+    pausedAt: Date.now(),
+  });
+}
+
+function defaultAutoLeadRunState() {
+  return {
+    status: "idle",
+    runId: null,
+    specificLeadId: null,
+    startedAt: null,
+    resumedAt: null,
+    pausedAt: null,
+    stoppedAt: null,
+    completedAt: null,
+    updatedAt: Date.now(),
+    phase: "idle",
+    message: "Ready to start today’s work.",
+    currentLead: null,
+    progress: null,
+    result: null,
+    error: null,
+  };
+}
+
+function defaultRunProgress() {
+  return {
+    reviewComplete: false,
+    review: emptyConnectionReview(),
+    autoWithdrawComplete: false,
+    autoWithdraw: { withdrawnCount: 0 },
+    targetRequests: null,
+    processedLeads: 0,
+    requestsSent: 0,
+    results: [],
+    failedLeads: [],
+  };
+}
+
+function normalizeRunProgress(value) {
+  const fallback = defaultRunProgress();
+  if (!value || typeof value !== "object") return fallback;
+  return {
+    reviewComplete: value.reviewComplete === true,
+    review: {
+      ...fallback.review,
+      ...(value.review && typeof value.review === "object" ? value.review : {}),
+    },
+    autoWithdrawComplete: value.autoWithdrawComplete === true,
+    autoWithdraw:
+      value.autoWithdraw && typeof value.autoWithdraw === "object"
+        ? value.autoWithdraw
+        : fallback.autoWithdraw,
+    targetRequests:
+      value.targetRequests === null || value.targetRequests === undefined
+        ? null
+        : Math.max(0, Math.trunc(Number(value.targetRequests) || 0)),
+    processedLeads: Math.max(0, Math.trunc(Number(value.processedLeads) || 0)),
+    requestsSent: Math.max(0, Math.trunc(Number(value.requestsSent) || 0)),
+    results: Array.isArray(value.results) ? value.results : [],
+    failedLeads: Array.isArray(value.failedLeads) ? value.failedLeads : [],
+  };
+}
+
+function normalizeAutoLeadRunState(value) {
+  const fallback = defaultAutoLeadRunState();
+  if (!value || typeof value !== "object") return fallback;
+  const allowedStatuses = new Set([
+    "idle",
+    "running",
+    "pausing",
+    "paused",
+    "stopped",
+    "completed",
+    "failed",
+  ]);
+  return {
+    ...fallback,
+    ...value,
+    status: allowedStatuses.has(value.status) ? value.status : "idle",
+    progress: value.progress ? normalizeRunProgress(value.progress) : null,
+    currentLead:
+      value.currentLead && typeof value.currentLead === "object"
+        ? value.currentLead
+        : null,
+  };
+}
+
+function emptyConnectionReview() {
+  return {
     reviewed: false,
     acceptedMatched: 0,
     contactsChecked: 0,
     emailsCollected: 0,
   };
+}
+
+function createRunId() {
+  return globalThis.crypto?.randomUUID?.() ||
+    `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function setActiveWorkflowTab(runContext, tabId) {
+  throwIfWorkflowControlled(runContext);
+  activeWorkflowTabId = tabId;
+}
+
+function clearActiveWorkflowTab(tabId) {
+  if (activeWorkflowTabId === tabId) activeWorkflowTabId = null;
+}
+
+async function reviewAcceptedConnections(dashboard, runContext) {
+  const empty = emptyConnectionReview();
   if (!dashboard.hasSentConnectionRequest) return empty;
 
+  throwIfWorkflowControlled(runContext);
   const plan = await ScoutApi.authenticatedAction(
     "scouts:getConnectionReviewPlan",
   );
@@ -191,9 +650,11 @@ async function reviewAcceptedConnections(dashboard) {
 
   const tab = await chrome.tabs.create({ url: CONNECTIONS_URL, active: true });
   if (!tab?.id) throw new Error("We couldn’t open your LinkedIn connections.");
+  setActiveWorkflowTab(runContext, tab.id);
   let reviewResult;
   try {
     await waitForTabComplete(tab.id);
+    throwIfWorkflowControlled(runContext);
     await waitForContentScript(tab.id);
     const scan = await sendMessageToTab(tab.id, {
       type: "SCAN_RECENT_CONNECTIONS",
@@ -203,6 +664,7 @@ async function reviewAcceptedConnections(dashboard) {
         maxProfiles: 250,
       },
     });
+    throwIfWorkflowControlled(runContext);
     if (!scan?.ok) {
       throw new Error(scan?.error || "We couldn’t check new connections.");
     }
@@ -213,7 +675,9 @@ async function reviewAcceptedConnections(dashboard) {
         top: scan.result.top,
       },
     );
+    throwIfWorkflowControlled(runContext);
   } finally {
+    clearActiveWorkflowTab(tab.id);
     await chrome.tabs.remove(tab.id).catch(() => {});
   }
 
@@ -224,7 +688,18 @@ async function reviewAcceptedConnections(dashboard) {
   let contactsChecked = 0;
   let emailsCollected = 0;
   for (const lead of contactLeads) {
-    const result = await collectAcceptedContact(lead).catch(async (error) => {
+    throwIfWorkflowControlled(runContext);
+    await updateActiveRunState(runContext, {
+      phase: "reviewing_contacts",
+      message: `Checking contact details for ${lead.fullName}...`,
+      currentLead: {
+        id: lead.id,
+        fullName: lead.fullName,
+        status: "accepted",
+      },
+    });
+    const result = await collectAcceptedContact(lead, runContext).catch(async (error) => {
+      if (isWorkflowControlError(error)) throw error;
       await ScoutApi.authenticatedAction("scouts:reportError", {
         leadId: lead.id,
         message: cleanError(error),
@@ -234,6 +709,7 @@ async function reviewAcceptedConnections(dashboard) {
     if (!result) continue;
     contactsChecked += 1;
     if (result.email) emailsCollected += 1;
+    throwIfWorkflowControlled(runContext);
   }
   return {
     reviewed: true,
@@ -243,7 +719,8 @@ async function reviewAcceptedConnections(dashboard) {
   };
 }
 
-async function autoWithdrawOldRequests() {
+async function autoWithdrawOldRequests(runContext = null) {
+  if (runContext) throwIfWorkflowControlled(runContext);
   const scoutOps = await ScoutApi.authenticatedAction(
     "scouts:getScoutOperations",
     {},
@@ -262,9 +739,11 @@ async function autoWithdrawOldRequests() {
   if (!tab?.id) {
     throw new Error("We couldn’t open your LinkedIn sent invitations.");
   }
+  if (runContext) setActiveWorkflowTab(runContext, tab.id);
 
   try {
     await waitForTabComplete(tab.id);
+    if (runContext) throwIfWorkflowControlled(runContext);
     await waitForContentScript(tab.id);
 
     const withdrawResponse = await sendMessageToTab(tab.id, {
@@ -273,6 +752,7 @@ async function autoWithdrawOldRequests() {
     });
 
     if (!withdrawResponse?.ok) {
+      if (runContext) throwIfWorkflowControlled(runContext);
       throw new Error(
         withdrawResponse?.error || "Failed to withdraw old invitations.",
       );
@@ -288,6 +768,7 @@ async function autoWithdrawOldRequests() {
         });
       }
     }
+    if (runContext) throwIfWorkflowControlled(runContext);
 
     await updateBadge();
     return {
@@ -295,16 +776,19 @@ async function autoWithdrawOldRequests() {
       withdrawnLeads: withdrawnList,
     };
   } finally {
+    if (runContext) clearActiveWorkflowTab(tab.id);
     await chrome.tabs.remove(tab.id).catch(() => {});
   }
 }
 
-async function collectAcceptedContact(lead) {
+async function collectAcceptedContact(lead, runContext) {
   const requestedProfileUrl = normalizeLinkedInProfileUrl(lead.profileUrl);
   const tab = await chrome.tabs.create({ url: requestedProfileUrl, active: true });
   if (!tab?.id) throw new Error("We couldn’t open this LinkedIn profile.");
+  setActiveWorkflowTab(runContext, tab.id);
   try {
     await waitForTabComplete(tab.id);
+    throwIfWorkflowControlled(runContext);
     const profileUrl = await waitForResolvedLinkedInProfileUrl(
       tab.id,
       requestedProfileUrl,
@@ -314,6 +798,7 @@ async function collectAcceptedContact(lead) {
       type: "EXTRACT_CONTACT_INFO",
       options: { expectedProfileUrl: profileUrl },
     });
+    throwIfWorkflowControlled(runContext);
     if (!contact?.ok) {
       throw new Error(contact?.error || "We couldn’t read the contact info.");
     }
@@ -323,16 +808,19 @@ async function collectAcceptedContact(lead) {
       email: contact.result.email || null,
     });
   } finally {
+    clearActiveWorkflowTab(tab.id);
     await chrome.tabs.remove(tab.id).catch(() => {});
   }
 }
 
-async function runLeadWorkflow(lead, settings, usage) {
+async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
   let workflowTabId = null;
   let connectionReserved = false;
   let requestSubmitted = false;
   let workflowCompleted = false;
+  let controlledExit = false;
   try {
+    throwIfWorkflowControlled(runContext);
     let includeNote = Boolean(settings.includeNote && settings.linkedinPremium);
     let noteDisabledForEligibility = false;
     if (includeNote) {
@@ -343,6 +831,7 @@ async function runLeadWorkflow(lead, settings, usage) {
         await disableInvitationNoteSetting(settings).catch(() => {});
       }
     }
+    throwIfWorkflowControlled(runContext);
 
     const requestedProfileUrl = normalizeLinkedInProfileUrl(lead.linkedinUrl);
     const localSettings = await chrome.storage.local.get([
@@ -353,7 +842,8 @@ async function runLeadWorkflow(lead, settings, usage) {
       clampInteger(settings.postEngagements ?? 3, 1, 10),
       clampInteger(usage.engagementRemaining ?? 0, 0, 250),
     );
-    if (postEngagements < 1) {
+    const needsEngagement = lead.status !== "engaged";
+    if (needsEngagement && postEngagements < 1) {
       throw new Error("You’ve used all your likes for today.");
     }
     const automationOptions = {
@@ -371,7 +861,9 @@ async function runLeadWorkflow(lead, settings, usage) {
 
     const tab = await chrome.tabs.create({ url: requestedProfileUrl, active: true });
     workflowTabId = tab.id;
+    setActiveWorkflowTab(runContext, tab.id);
     await waitForTabComplete(tab.id);
+    throwIfWorkflowControlled(runContext);
     const profileUrl = await waitForResolvedLinkedInProfileUrl(
       tab.id,
       requestedProfileUrl,
@@ -380,24 +872,44 @@ async function runLeadWorkflow(lead, settings, usage) {
       leadId: lead.id,
       resolvedLinkedinUrl: profileUrl,
     });
+    throwIfWorkflowControlled(runContext);
 
-    const recentActivityUrl = `${profileUrl}/recent-activity/all/`;
-    await chrome.tabs.update(tab.id, { url: recentActivityUrl });
-    await waitForTabComplete(tab.id);
-    await waitForContentScript(tab.id);
-    const engagementResponse = await sendMessageToTab(tab.id, {
-      type: "EXECUTE_POST_ENGAGEMENT",
-      options: { ...automationOptions, profileUrl },
-    });
-    if (!engagementResponse?.ok) {
-      throw new Error(
-        engagementResponse?.error ||
-          "We couldn’t finish this lead’s posts.",
-      );
+    let engagementResponse = {
+      ok: true,
+      result: { engagedCount: 0, resumedAfterEngagement: true },
+    };
+    if (needsEngagement) {
+      const recentActivityUrl = `${profileUrl}/recent-activity/all/`;
+      await chrome.tabs.update(tab.id, { url: recentActivityUrl });
+      await waitForTabComplete(tab.id);
+      throwIfWorkflowControlled(runContext);
+      await waitForContentScript(tab.id);
+      engagementResponse = await sendMessageToTab(tab.id, {
+        type: "EXECUTE_POST_ENGAGEMENT",
+        options: { ...automationOptions, profileUrl },
+      });
+      if (!engagementResponse?.ok) {
+        throwIfWorkflowControlled(runContext);
+        throw new Error(
+          engagementResponse?.error ||
+            "We couldn’t finish this lead’s posts.",
+        );
+      }
     }
+
+    await checkpointRun(runContext, progress, {
+      phase: "connecting",
+      message: `Posts finished for ${lead.fullName}. Preparing the connection request...`,
+      currentLead: {
+        id: lead.id,
+        fullName: lead.fullName,
+        status: "engaged",
+      },
+    });
 
     await chrome.tabs.update(tab.id, { url: profileUrl });
     await waitForTabComplete(tab.id);
+    throwIfWorkflowControlled(runContext);
     await waitForContentScript(tab.id);
     if (noteDisabledForEligibility) {
       await sendMessageToTab(tab.id, {
@@ -411,6 +923,7 @@ async function runLeadWorkflow(lead, settings, usage) {
       leadId: lead.id,
     });
     connectionReserved = true;
+    throwIfWorkflowControlled(runContext);
     const connectResponse = await sendMessageToTab(tab.id, {
       type: "EXECUTE_CONNECTION_REQUEST",
       options: {
@@ -421,6 +934,7 @@ async function runLeadWorkflow(lead, settings, usage) {
       },
     });
     if (!connectResponse?.ok) {
+      throwIfWorkflowControlled(runContext);
       throw new Error(
         connectResponse?.error || "We couldn’t send the connection request.",
       );
@@ -431,6 +945,15 @@ async function runLeadWorkflow(lead, settings, usage) {
       profileUrl,
     });
     workflowCompleted = true;
+    await updateRunProgress(runContext, progress, {
+      phase: "working_leads",
+      message: `Connection request sent to ${lead.fullName}.`,
+      currentLead: {
+        id: lead.id,
+        fullName: lead.fullName,
+        status: "connection_requested",
+      },
+    });
     return {
       leadId: lead.id,
       leadName: lead.fullName,
@@ -445,6 +968,13 @@ async function runLeadWorkflow(lead, settings, usage) {
         leadId: lead.id,
       }).catch(() => {});
     }
+    const requestedControl = getRequestedWorkflowControl(runContext);
+    if (isWorkflowControlError(error) || requestedControl) {
+      controlledExit = true;
+      throw isWorkflowControlError(error)
+        ? error
+        : new WorkflowControlError(requestedControl);
+    }
     if (workflowTabId) {
       await sendMessageToTab(workflowTabId, {
         type: "SHOW_AUTOMATION_ERROR",
@@ -455,7 +985,8 @@ async function runLeadWorkflow(lead, settings, usage) {
     workflowError.requestSubmitted = requestSubmitted;
     throw workflowError;
   } finally {
-    if (workflowCompleted && workflowTabId) {
+    if (workflowTabId) clearActiveWorkflowTab(workflowTabId);
+    if ((workflowCompleted || controlledExit) && workflowTabId) {
       await chrome.tabs.remove(workflowTabId).catch(() => {});
     }
   }
