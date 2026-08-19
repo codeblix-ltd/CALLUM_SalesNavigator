@@ -351,7 +351,7 @@ export const confirmAssignments = action({
         const rowSql = batch.map((leadId, rowIndex) => {
           const operatorId = scouts[(offset + rowIndex) % scouts.length].operatorId;
           values.push(leadId, operatorId);
-          return `($${rowIndex * 2 + 1}::UUID, $${rowIndex * 2 + 2})`;
+          return `($${rowIndex * 2 + 1}::UUID, $${rowIndex * 2 + 2}, 'assigned')`;
         });
         const inserted = await client.query(
           `INSERT INTO lead_assignments (lead_id, operator_id, status)

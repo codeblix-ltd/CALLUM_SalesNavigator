@@ -1599,10 +1599,16 @@ function UploadLeadsModal({ close, upload, confirm, onAssigned }: {
     () => result?.scouts.filter((scout) => selectedScoutSet.has(scout.operatorId)) ?? [],
     [result?.scouts, selectedScoutSet],
   );
-  const allocations = useMemo(
-    () => calculateHermesAllocations(selectedIds, selectedScouts),
-    [selectedIds, selectedScouts],
-  );
+  const allocations = useMemo(() => {
+    const selectedAllocations = new Map(
+      calculateHermesAllocations(selectedIds, selectedScouts)
+        .map((scout) => [scout.operatorId, scout.count]),
+    );
+    return result?.scouts.map((scout) => ({
+      ...scout,
+      count: selectedAllocations.get(scout.operatorId) ?? 0,
+    })) ?? [];
+  }, [result?.scouts, selectedIds, selectedScouts]);
 
   async function handleFile(file: File | undefined) {
     if (!file) return;
