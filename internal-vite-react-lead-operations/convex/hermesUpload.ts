@@ -304,7 +304,10 @@ export const uploadLeads = action({
 });
 
 export const confirmAssignments = action({
-  args: { leadIds: v.array(v.string()) },
+  args: {
+    leadIds: v.array(v.string()),
+    scoutIds: v.array(v.string()),
+  },
   returns: assignmentResultValidator,
   handler: async (ctx, args) => {
     await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
@@ -313,7 +316,15 @@ export const confirmAssignments = action({
     if (leadIds.length > MAX_ROWS) throw new Error(`You can assign at most ${MAX_ROWS.toLocaleString()} leads at once.`);
     if (leadIds.some((id) => !UUID_PATTERN.test(id))) throw new Error("The upload contains an invalid lead identifier.");
 
-    const scouts = await activeScouts(ctx);
+    const selectedScoutIds = [...new Set(args.scoutIds.map((id) => id.trim()).filter(Boolean))];
+    if (selectedScoutIds.length === 0) throw new Error("Select at least one scout for allocation.");
+    const availableScouts = await activeScouts(ctx);
+    const availableScoutIds = new Set(availableScouts.map((scout) => scout.operatorId));
+    if (selectedScoutIds.some((id) => !availableScoutIds.has(id))) {
+      throw new Error("One or more selected scouts are no longer active. Refresh and try again.");
+    }
+    const selectedScoutSet = new Set(selectedScoutIds);
+    const scouts = availableScouts.filter((scout) => selectedScoutSet.has(scout.operatorId));
     if (scouts.length === 0) throw new Error("There are no active scout accounts available for allocation.");
     const pool = getPool();
     const client = await pool.connect();

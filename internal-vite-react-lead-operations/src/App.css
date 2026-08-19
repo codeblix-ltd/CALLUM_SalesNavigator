@@ -377,7 +377,7 @@ footer span { display: flex; align-items: center; gap: 6px; }
 .upload-review-toolbar span { color: #9099aa; font-size: 9px; }
 .upload-review-toolbar .secondary-button { padding: 7px 10px; font-size: 9px; }
 .upload-lead-list { max-height: 265px; overflow-y: auto; padding: 4px; display: grid; gap: 5px; background: #f8f9fc; border: 1px solid #e1e5ee; border-radius: 12px; }
-.upload-lead-row { min-height: 58px; display: grid; grid-template-columns: 18px 22px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 8px 10px; background: white; border: 1px solid transparent; border-radius: 9px; cursor: pointer; }
+.upload-lead-row { min-height: 58px; display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 8px 10px; background: white; border: 1px solid transparent; border-radius: 9px; cursor: pointer; }
 .upload-lead-row:hover, .upload-lead-row.is-selected { background: #fff9fb; border-color: #f0d3dc; }
 .upload-lead-row > input { position: absolute; opacity: 0; pointer-events: none; }
 .upload-lead-check { width: 20px; height: 20px; display: grid; place-items: center; color: transparent; border: 1px solid #cbd2df; border-radius: 6px; }
@@ -391,10 +391,17 @@ footer span { display: flex; align-items: center; gap: 6px; }
 .allocation-heading { min-height: 32px; }
 .allocation-total { padding: 5px 8px; color: #5941b4 !important; background: #eeeafd; border-radius: 6px; font-weight: 800; }
 .allocation-grid { max-height: 170px; overflow-y: auto; margin-top: 10px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; }
+.allocation-heading-actions { display: flex !important; align-items: center; gap: 7px; }
+.allocation-heading-actions .secondary-button { white-space: nowrap; }
 .allocation-grid label { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 7px; padding: 7px 8px; background: white; border: 1px solid #e3dff0; border-radius: 8px; }
-.allocation-grid label > span { overflow: hidden; color: #5f647b; text-overflow: ellipsis; white-space: nowrap; font-size: 8px; font-weight: 700; }
+.allocation-grid label.is-selected { background: #fcfaff; border-color: #cbc0ee; }
+.allocation-scout-name { min-width: 0; display: flex !important; align-items: center; gap: 6px; overflow: hidden; color: #5f647b; font-size: 8px; font-weight: 700; }
+.allocation-scout-name input { width: 15px; height: 15px; flex: 0 0 auto; accent-color: #6749d8; }
+.allocation-scout-name > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .allocation-grid input { width: 35px; min-height: 26px; padding: 0 3px; color: #4e3a9b; background: #f4f1ff; border: 1px solid #ded6f5; border-radius: 6px; text-align: center; font-size: 10px; font-weight: 800; }
+.allocation-scout-name input { width: 15px; min-height: 15px; height: 15px; padding: 0; color: initial; background: transparent; border: 0; border-radius: 0; }
 .allocation-grid input:disabled { opacity: 1; }
+.allocation-empty-note { margin: 10px 0 0; color: #a04c65; font-size: 9px; }
 .upload-error { margin-top: 12px; display: flex; align-items: flex-start; gap: 7px; padding: 10px 11px; color: #a24755; background: #fff2f3; border: 1px solid #efc8ce; border-radius: 9px; font-size: 10px; line-height: 1.45; }
 .upload-error svg { flex: 0 0 auto; }
 .upload-assignment-success { margin-top: 18px; display: flex; align-items: flex-start; gap: 10px; padding: 16px; color: #2b7258; background: #eff9f4; border: 1px solid #c6e8d8; border-radius: 12px; }
@@ -485,7 +492,7 @@ footer span { display: flex; align-items: center; gap: 6px; }
   .pagination { align-items: flex-start; gap: 10px; flex-direction: column; }
   .login-card { padding: 27px 22px; }
   .upload-modal { padding: 21px 16px; }
-  .upload-lead-row { grid-template-columns: 18px 22px minmax(0, 1fr); }
+  .upload-lead-row { grid-template-columns: 22px minmax(0, 1fr); }
   .upload-lead-row > a { display: none; }
   .allocation-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .upload-modal-actions { flex-direction: column-reverse; }

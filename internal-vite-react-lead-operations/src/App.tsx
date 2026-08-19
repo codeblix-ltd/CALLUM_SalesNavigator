@@ -1577,7 +1577,7 @@ function SettingsModal({ codexStatus, codexError, codexBusy, deviceLogin, close,
 function UploadLeadsModal({ close, upload, confirm, onAssigned }: {
   close: () => void;
   upload: (args: { fileName: string; csvText: string }) => Promise<HermesUploadResult>;
-  confirm: (args: { leadIds: string[] }) => Promise<HermesAssignmentResult>;
+  confirm: (args: { leadIds: string[]; scoutIds: string[] }) => Promise<HermesAssignmentResult>;
   onAssigned: () => Promise<void>;
 }) {
   const fileInput = useRef<HTMLInputElement | null>(null);
@@ -1588,13 +1588,20 @@ function UploadLeadsModal({ close, upload, confirm, onAssigned }: {
   const [error, setError] = useState("");
   const [result, setResult] = useState<HermesUploadResult | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [selectedScoutIds, setSelectedScoutIds] = useState<string[]>([]);
   const [assignment, setAssignment] = useState<HermesAssignmentResult | null>(null);
 
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const selectedScoutSet = useMemo(() => new Set(selectedScoutIds), [selectedScoutIds]);
   const selectedCount = selectedIds.length;
+  const selectedScoutCount = selectedScoutIds.length;
+  const selectedScouts = useMemo(
+    () => result?.scouts.filter((scout) => selectedScoutSet.has(scout.operatorId)) ?? [],
+    [result?.scouts, selectedScoutSet],
+  );
   const allocations = useMemo(
-    () => calculateHermesAllocations(selectedIds, result?.scouts ?? []),
-    [result?.scouts, selectedIds],
+    () => calculateHermesAllocations(selectedIds, selectedScouts),
+    [selectedIds, selectedScouts],
   );
 
   async function handleFile(file: File | undefined) {
@@ -1603,6 +1610,7 @@ function UploadLeadsModal({ close, upload, confirm, onAssigned }: {
     setAssignment(null);
     setResult(null);
     setSelectedIds([]);
+    setSelectedScoutIds([]);
     setFileName(file.name);
     if (!file.name.toLowerCase().endsWith(".csv")) {
       setError("Please choose a .csv file.");
@@ -1617,6 +1625,7 @@ function UploadLeadsModal({ close, upload, confirm, onAssigned }: {
       const nextResult = await upload({ fileName: file.name, csvText: await file.text() });
       setResult(nextResult);
       setSelectedIds(nextResult.leads.map((lead) => lead.id));
+      setSelectedScoutIds(nextResult.scouts.map((scout) => scout.operatorId));
     } catch (uploadError) {
       setError(readError(uploadError));
     } finally {
@@ -1635,12 +1644,27 @@ function UploadLeadsModal({ close, upload, confirm, onAssigned }: {
     setSelectedIds(selectedCount === result.leads.length ? [] : result.leads.map((lead) => lead.id));
   }
 
+  function toggleAllScouts() {
+    if (!result) return;
+    setSelectedScoutIds(selectedScoutCount === result.scouts.length ? [] : result.scouts.map((scout) => scout.operatorId));
+  }
+
+  function toggleScout(operatorId: string) {
+    setSelectedScoutIds((current) => current.includes(operatorId)
+      ? current.filter((id) => id !== operatorId)
+      : [...current, operatorId]);
+  }
+
   async function confirmSelection() {
     if (selectedCount === 0) return;
+    if (selectedScoutCount === 0) {
+      setError("Select at least one scout before confirming the allocation.");
+      return;
+    }
     setError("");
     setConfirming(true);
     try {
-      const nextAssignment = await confirm({ leadIds: selectedIds });
+      const nextAssignment = await confirm({ leadIds: selectedIds, scoutIds: selectedScoutIds });
       setAssignment(nextAssignment);
       await onAssigned();
     } catch (confirmError) {
@@ -1703,12 +1727,19 @@ function UploadLeadsModal({ close, upload, confirm, onAssigned }: {
               ))}
             </div>
             <div className="upload-allocation">
-              <div className="upload-review-toolbar allocation-heading"><div><strong>Automatic scout allocation</strong><span>Round-robin across all {result.scouts.length} active scouts</span></div><span className="allocation-total">{selectedCount} total</span></div>
+              <div className="upload-review-toolbar allocation-heading">
+                <div><strong>Automatic scout allocation</strong><span>Round-robin across {selectedScoutCount} of {result.scouts.length} active scouts</span></div>
+                <div className="allocation-heading-actions"><span className="allocation-total">{selectedCount} total</span><button type="button" className="secondary-button" onClick={toggleAllScouts}>{selectedScoutCount === result.scouts.length ? "Uncheck all" : "Check all"}</button></div>
+              </div>
               <div className="allocation-grid">
                 {allocations.map((scout) => (
-                  <label key={scout.operatorId}><span>{scout.username}</span><input type="number" value={scout.count} disabled readOnly aria-label={`${scout.username} leads to assign`} /></label>
+                  <label className={`allocation-scout ${selectedScoutSet.has(scout.operatorId) ? "is-selected" : ""}`} key={scout.operatorId}>
+                    <span className="allocation-scout-name"><input type="checkbox" checked={selectedScoutSet.has(scout.operatorId)} onChange={() => toggleScout(scout.operatorId)} /><span>{scout.username}</span></span>
+                    <input type="number" value={scout.count} disabled readOnly aria-label={`${scout.username} leads to assign`} />
+                  </label>
                 ))}
               </div>
+              {selectedScoutCount === 0 && <p className="allocation-empty-note">Check at least one scout to distribute the selected leads.</p>}
             </div>
           </>
         )}
@@ -1719,7 +1750,7 @@ function UploadLeadsModal({ close, upload, confirm, onAssigned }: {
 
         {error && <div className="upload-error"><AlertTriangle size={16} /><span>{error}</span></div>}
         <div className="upload-modal-actions">
-          {assignment ? <button type="button" className="primary-button" onClick={close}>Done</button> : <><button type="button" className="secondary-button" onClick={close}>Cancel</button>{result && <button type="button" className="primary-button upload-confirm-button" onClick={() => void confirmSelection()} disabled={confirming || selectedCount === 0}>{confirming ? <RefreshCw size={15} className="spin" /> : <Check size={15} />}{confirming ? "Assigning…" : `Confirm and assign ${selectedCount} leads`}</button>}</>}
+          {assignment ? <button type="button" className="primary-button" onClick={close}>Done</button> : <><button type="button" className="secondary-button" onClick={close}>Cancel</button>{result && <button type="button" className="primary-button upload-confirm-button" onClick={() => void confirmSelection()} disabled={confirming || selectedCount === 0 || selectedScoutCount === 0}>{confirming ? <RefreshCw size={15} className="spin" /> : <Check size={15} />}{confirming ? "Assigning…" : `Confirm and assign ${selectedCount} leads`}</button>}</>}
         </div>
       </div>
     </div>
