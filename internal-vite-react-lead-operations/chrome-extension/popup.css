@@ -295,6 +295,8 @@ input:focus, select:focus, textarea:focus {
 .work-tools { margin-top: 10px; padding: 15px; }
 .work-tools-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
 .work-tools-heading h2 { margin: 0; }
+.work-tools > summary { margin: -15px; padding: 15px; border-radius: 16px; }
+.work-tools > summary:focus-visible { outline: 2px solid #7255e2; outline-offset: -3px; }
 .count-pill {
   padding: 4px 7px;
   color: #6b55bd;

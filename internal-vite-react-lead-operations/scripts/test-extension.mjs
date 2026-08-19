@@ -48,7 +48,7 @@ const [
   ]);
 const manifest = JSON.parse(manifestSource);
 
-assert.equal(manifest.version, "0.10.5");
+assert.equal(manifest.version, "0.10.6");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -132,6 +132,13 @@ assert.match(popupSource, /id="followup-list"/);
 assert.match(popupSource, /id="lead-check-list"/);
 assert.match(popupSource, /id="old-request-list"/);
 assert.match(popupSource, /id="question-form"/);
+assert.match(popupSource, /<details id="work-tools" class="card work-tools">/);
+assert.doesNotMatch(popupSource, /<details id="work-tools"[^>]*\bopen\b/);
+assert.ok(
+  popupSource.indexOf('<details id="work-tools"') >
+    popupSource.indexOf('</form>', popupSource.indexOf('<form id="settings-form"')),
+  "Your work should stay at the end of the popup",
+);
 assert.match(popupScript, /scouts:getScoutOperations/);
 assert.match(popupScript, /scouts:setDailyTask/);
 assert.match(popupScript, /scouts:completeFollowupTask/);

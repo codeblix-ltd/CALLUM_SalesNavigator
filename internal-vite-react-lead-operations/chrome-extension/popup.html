@@ -141,56 +141,6 @@
           <article class="metric"><span>Problems</span><strong id="failed-count">—</strong></article>
         </div>
 
-        <section class="card work-tools">
-          <div class="work-tools-heading">
-            <div>
-              <p class="eyebrow">Your work</p>
-              <h2>Small things to finish</h2>
-            </div>
-            <span id="open-question-count" class="count-pill">0 questions open</span>
-          </div>
-
-          <details open>
-            <summary>Today’s checklist <span id="checklist-count">0 / 0</span></summary>
-            <div id="daily-checklist" class="task-list"></div>
-          </details>
-
-          <details>
-            <summary>Follow-ups <span id="followup-count">0 due</span></summary>
-            <p class="tool-help">Copy the message, send it yourself, then mark it done.</p>
-            <div id="followup-list" class="tool-list"></div>
-          </details>
-
-          <details>
-            <summary>Check new leads <span id="lead-check-count">0 waiting</span></summary>
-            <p class="tool-help">Open the profile. Check the role and whether they posted in the last 7 days.</p>
-            <div id="lead-check-list" class="tool-list"></div>
-          </details>
-
-          <details>
-            <summary>Old requests <span id="old-request-count">0 waiting</span></summary>
-            <p class="tool-help">Automatically clears connection requests older than 30 days matching your DB leads.</p>
-            <button id="auto-withdraw-old-requests" class="primary full-button" type="button">⚡ Clear 30+ day old connections</button>
-            <button id="open-sent-requests" class="secondary full-button" type="button" style="margin-top: 6px;">Open sent requests on LinkedIn</button>
-            <div id="old-request-list" class="tool-list"></div>
-          </details>
-
-          <details>
-            <summary>Ask the team <span>Get help</span></summary>
-            <form id="question-form" class="question-form">
-              <label>
-                What is this about?
-                <input id="question-subject" maxlength="120" required placeholder="Example: I cannot find the right button" />
-              </label>
-              <label>
-                What do you need help with?
-                <textarea id="question-message" rows="3" maxlength="2000" required></textarea>
-              </label>
-              <button class="secondary" type="submit">Send question</button>
-            </form>
-          </details>
-        </section>
-
         <section class="card automation-launch">
           <p class="eyebrow">Today’s tasks</p>
           <h2>Work through today’s leads</h2>
@@ -281,7 +231,56 @@
           </section>
           <button id="save-settings" class="primary" type="submit">Save settings</button>
         </form>
-      </section>
+
+        <details id="work-tools" class="card work-tools">
+          <summary class="work-tools-heading">
+            <div>
+              <p class="eyebrow">Your work</p>
+              <h2>Small things to finish</h2>
+            </div>
+            <span id="open-question-count" class="count-pill">0 questions open</span>
+          </summary>
+
+          <details open>
+            <summary>Today’s checklist <span id="checklist-count">0 / 0</span></summary>
+            <div id="daily-checklist" class="task-list"></div>
+          </details>
+
+          <details>
+            <summary>Follow-ups <span id="followup-count">0 due</span></summary>
+            <p class="tool-help">Copy the message, send it yourself, then mark it done.</p>
+            <div id="followup-list" class="tool-list"></div>
+          </details>
+
+          <details>
+            <summary>Check new leads <span id="lead-check-count">0 waiting</span></summary>
+            <p class="tool-help">Open the profile. Check the role and whether they posted in the last 7 days.</p>
+            <div id="lead-check-list" class="tool-list"></div>
+          </details>
+
+          <details>
+            <summary>Old requests <span id="old-request-count">0 waiting</span></summary>
+            <p class="tool-help">Automatically clears connection requests older than 30 days matching your DB leads.</p>
+            <button id="auto-withdraw-old-requests" class="primary full-button" type="button">⚡ Clear 30+ day old connections</button>
+            <button id="open-sent-requests" class="secondary full-button" type="button" style="margin-top: 6px;">Open sent requests on LinkedIn</button>
+            <div id="old-request-list" class="tool-list"></div>
+          </details>
+
+          <details>
+            <summary>Ask the team <span>Get help</span></summary>
+            <form id="question-form" class="question-form">
+              <label>
+                What is this about?
+                <input id="question-subject" maxlength="120" required placeholder="Example: I cannot find the right button" />
+              </label>
+              <label>
+                What do you need help with?
+                <textarea id="question-message" rows="3" maxlength="2000" required></textarea>
+              </label>
+              <button class="secondary" type="submit">Send question</button>
+            </form>
+          </details>
+        </details>
 
       <p class="error" id="error" hidden></p>
       <p class="success" id="success" hidden></p>
