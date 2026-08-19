@@ -48,7 +48,7 @@ const [
   ]);
 const manifest = JSON.parse(manifestSource);
 
-assert.equal(manifest.version, "0.10.3");
+assert.equal(manifest.version, "0.10.4");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -217,8 +217,9 @@ assert.match(backgroundSource, /reconcileLocallyConfirmedConnectionRequests/);
 assert.match(backgroundSource, /pendingConnectionRequests/);
 assert.match(backgroundSource, /excludeLeadIds: \[\.\.\.pendingConnectionLeadIds\]/);
 assert.match(backgroundSource, /pendingConnectionLeadIds\.add\(lead\.id\)/);
-assert.match(backgroundSource, /shouldBlockForPendingConnectionRequests/);
 assert.match(backgroundSource, /Resume will continue with the next lead while it syncs/);
+assert.match(backgroundSource, /chrome\.tabs\.onRemoved/);
+assert.match(backgroundSource, /The automation tab was closed/);
 assert.match(backgroundSource, /dashboard\.usage\.requestRemaining/);
 assert.match(backgroundSource, /no recent posts\|no supported post permalink/);
 assert.match(backgroundSource, /failedLeads\.push/);
@@ -374,7 +375,7 @@ const backgroundContext = {
         },
       },
     },
-    tabs: { onUpdated: listenerStub() },
+    tabs: { onUpdated: listenerStub(), onRemoved: listenerStub() },
     windows: { onRemoved: listenerStub() },
   },
 };
@@ -477,22 +478,6 @@ const stateWithConfirmedRequest = await backgroundContext.writeAutoLeadRunState(
     ],
   },
 });
-assert.equal(
-  backgroundContext.shouldBlockForPendingConnectionRequests(
-    stateWithConfirmedRequest,
-    false,
-  ),
-  true,
-  "A new run must wait so it cannot resend a locally confirmed request.",
-);
-assert.equal(
-  backgroundContext.shouldBlockForPendingConnectionRequests(
-    stateWithConfirmedRequest,
-    true,
-  ),
-  false,
-  "Resume must continue from a paused checkpoint even while a sent request syncs.",
-);
 const reconciledState =
   await backgroundContext.reconcileLocallyConfirmedConnectionRequests(
     stateWithConfirmedRequest,

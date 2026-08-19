@@ -41,7 +41,11 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 chrome.windows.onRemoved.addListener((windowId) => {
-  if (windowId === activeAutomationWindowId && workflowPromise) {
+  if (
+    windowId === activeAutomationWindowId &&
+    workflowPromise &&
+    !workflowControlRequest
+  ) {
     workflowControlRequest = {
       runId: activeRunId,
       action: "pause",
@@ -50,6 +54,25 @@ chrome.windows.onRemoved.addListener((windowId) => {
     };
     void pauseRunAfterAutomationWindowClosed();
   }
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (
+    tabId !== activeWorkflowTabId ||
+    !workflowPromise ||
+    workflowControlRequest
+  ) {
+    return;
+  }
+  void requestWorkflowControl("pause", {
+    reason:
+      "The automation tab was closed. The run paused safely; Resume will open a protected tab and continue.",
+  }).catch((error) => {
+    console.warn(
+      "Could not pause after the automation tab closed:",
+      cleanError(error),
+    );
+  });
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -142,11 +165,6 @@ async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
   previousState = await reconcileLocallyConfirmedConnectionRequests(
     previousState,
   );
-  if (shouldBlockForPendingConnectionRequests(previousState, resume)) {
-    throw new Error(
-      "A sent connection request is still syncing. Refresh in a moment before starting more work.",
-    );
-  }
   if (resume && previousState.status !== "paused") {
     throw new Error("This run is not paused, so there is nothing to resume.");
   }
@@ -155,10 +173,19 @@ async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
   }
 
   const runId = resume ? previousState.runId : createRunId();
+  const inheritedPendingRequests = collectLocallyConfirmedConnectionRequests(
+    previousState,
+  );
+  const progress = resume
+    ? normalizeRunProgress(previousState.progress)
+    : defaultRunProgress();
+  if (!resume && inheritedPendingRequests.length > 0) {
+    progress.pendingConnectionRequests = inheritedPendingRequests;
+  }
   const runContext = {
     runId,
     resume,
-    progress: resume ? normalizeRunProgress(previousState.progress) : defaultRunProgress(),
+    progress,
     automationWindowId: null,
     automationHomeTabId: null,
     automationTabGroupId: null,
@@ -731,13 +758,6 @@ function collectLocallyConfirmedConnectionRequests(state) {
     unique.set(leadId, { ...candidate, leadId });
   }
   return [...unique.values()];
-}
-
-function shouldBlockForPendingConnectionRequests(state, resume) {
-  return (
-    resume !== true &&
-    collectLocallyConfirmedConnectionRequests(state).length > 0
-  );
 }
 
 async function reconcileLocallyConfirmedConnectionRequests(state = null) {
