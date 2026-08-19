@@ -849,25 +849,64 @@ export const releaseConnectionRequest = action({
 });
 
 export const completeConnectionRequest = action({
-  args: { leadId: v.string(), profileUrl: v.string() },
+  args: { leadId: v.string(), profileUrl: v.optional(v.string()) },
   returns: v.null(),
   handler: async (ctx, args) => {
     const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
-    const profileUrl = normalizeLinkedInProfileUrl(args.profileUrl);
     const database = getPool();
     const client = await database.connect();
     try {
       await client.query("BEGIN");
+      const assignment = await client.query(
+        `SELECT status,
+                connection_request_reserved_on::STRING AS reserved_on,
+                resolved_linkedin_url
+           FROM lead_assignments
+          WHERE lead_id = $1::UUID AND operator_id = $2
+          FOR UPDATE`,
+        [args.leadId, scout.operatorId],
+      );
+      const row = assignment.rows[0];
+      if (!row) throw new Error("This lead is not assigned to you.");
+
+      const currentStatus = String(row.status ?? "");
+      if (
+        [
+          "connection_requested",
+          "connected",
+          "accepted",
+          "email_collected",
+          "withdrawn",
+        ].includes(currentStatus)
+      ) {
+        await client.query("COMMIT");
+        return null;
+      }
+      if (
+        !["engaged", "failed"].includes(currentStatus) ||
+        !row.reserved_on
+      ) {
+        throw new Error("No reserved connection-request slot exists for this lead.");
+      }
+
+      const profileUrl = args.profileUrl
+        ? normalizeLinkedInProfileUrl(args.profileUrl)
+        : tryNormalizeLinkedInProfileUrl(row.resolved_linkedin_url);
+      if (!profileUrl) {
+        throw new Error("The confirmed connection request is missing its LinkedIn profile URL.");
+      }
       const result = await client.query(
         `UPDATE lead_assignments
             SET status = 'connection_requested',
                 connection_requested_at = coalesce(connection_requested_at, now()),
                 resolved_linkedin_url = $3,
+                last_error = NULL,
+                last_error_at = NULL,
                 updated_at = now()
           WHERE lead_id = $1::UUID
             AND operator_id = $2
-            AND status = 'engaged'
-            AND connection_request_reserved_on = current_date
+            AND status IN ('engaged', 'failed')
+            AND connection_request_reserved_on IS NOT NULL
         RETURNING lead_id`,
         [args.leadId, scout.operatorId, profileUrl],
       );
@@ -879,7 +918,7 @@ export const completeConnectionRequest = action({
         args.leadId,
         scout.operatorId,
         "connection_requested",
-        { profileUrl },
+        { profileUrl, recoveredFromFailed: currentStatus === "failed" },
       );
       await client.query("COMMIT");
       return null;

@@ -13,6 +13,7 @@ const AUTO_LEAD_RUN_STATE_KEY = "autoLeadRunState";
 const AUTOMATION_HOME_URL = chrome.runtime.getURL("automation.html");
 const AUTOMATION_GROUP_TITLE = "CALLUM AUTOMATION";
 const ACTIVE_RUN_STATUSES = new Set(["running", "pausing"]);
+const CONNECTION_COMPLETION_RETRY_DELAYS_MS = [0, 750, 2_000];
 
 let premiumCheckPromise = null;
 let workflowPromise = null;
@@ -53,7 +54,14 @@ chrome.windows.onRemoved.addListener((windowId) => {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "REFRESH_SCOUT_DASHBOARD") {
-    updateBadge()
+    reconcileLocallyConfirmedConnectionRequests()
+      .catch((error) => {
+        console.warn(
+          "Could not reconcile locally confirmed requests:",
+          cleanError(error),
+        );
+      })
+      .then(() => updateBadge())
       .then((dashboard) => sendResponse({ ok: true, dashboard }))
       .catch((error) => sendResponse({ ok: false, error: cleanError(error) }));
     return true;
@@ -130,7 +138,15 @@ async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
   await ensureAutoLeadRunState();
   if (workflowPromise) return workflowPromise;
 
-  const previousState = await readAutoLeadRunState();
+  let previousState = await readAutoLeadRunState();
+  previousState = await reconcileLocallyConfirmedConnectionRequests(
+    previousState,
+  );
+  if (collectLocallyConfirmedConnectionRequests(previousState).length > 0) {
+    throw new Error(
+      "A sent connection request is still syncing. Refresh in a moment before starting more work.",
+    );
+  }
   if (resume && previousState.status !== "paused") {
     throw new Error("This run is not paused, so there is nothing to resume.");
   }
@@ -331,6 +347,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
       },
     });
 
+    let connectionSyncPending = false;
     try {
       results.push(
         await runLeadWorkflow(
@@ -346,37 +363,59 @@ async function runDailyWorkflow(specificLeadId, runContext) {
       if (isWorkflowControlError(error)) throw error;
       const message = cleanError(error);
       const requestSent = error?.requestSubmitted === true;
-      if (requestSent) progress.requestsSent += 1;
-      const status = /no recent posts|no supported post permalink/i.test(message)
-        ? "skipped"
-        : "failed";
-      try {
-        await ScoutApi.authenticatedAction("scouts:updateLeadStatus", {
+      if (requestSent) {
+        progress.requestsSent += 1;
+        connectionSyncPending = error?.persistencePending === true;
+        if (connectionSyncPending) {
+          progress.pendingConnectionRequests = upsertPendingConnectionRequest(
+            progress.pendingConnectionRequests,
+            {
+              leadId: lead.id,
+              leadName: lead.fullName,
+              profileUrl: error?.profileUrl || lead.linkedinUrl,
+              confirmedAt: Date.now(),
+            },
+          );
+        }
+        results.push({
           leadId: lead.id,
-          status,
-          email: null,
-          error: message,
+          leadName: lead.fullName,
+          status: connectionSyncPending
+            ? "connection_requested_pending_sync"
+            : "connection_requested",
+          profileUrl: error?.profileUrl || lead.linkedinUrl,
+          engagedCount: error?.engagedCount ?? 0,
         });
-      } catch (statusError) {
-        // If the request confirmation committed before the response failed,
-        // the lead may already be in connection_requested. Keep the error
-        // visible without allowing that lead to be claimed again.
-        await ScoutApi.authenticatedAction("scouts:reportError", {
+      } else {
+        const status =
+          /no recent posts|no supported post permalink/i.test(message)
+            ? "skipped"
+            : "failed";
+        try {
+          await ScoutApi.authenticatedAction("scouts:updateLeadStatus", {
+            leadId: lead.id,
+            status,
+            email: null,
+            error: message,
+          });
+        } catch (statusError) {
+          await ScoutApi.authenticatedAction("scouts:reportError", {
+            leadId: lead.id,
+            message,
+          }).catch(() => {});
+          console.warn(
+            "Could not record the failed lead status:",
+            cleanError(statusError),
+          );
+        }
+        failedLeads.push({
           leadId: lead.id,
+          leadName: lead.fullName,
           message,
-        }).catch(() => {});
-        console.warn(
-          "Could not record the failed lead status:",
-          cleanError(statusError),
-        );
+          requestSent: false,
+        });
+        if (specificLeadId) throw new Error(message);
       }
-      failedLeads.push({
-        leadId: lead.id,
-        leadName: lead.fullName,
-        message,
-        requestSent,
-      });
-      if (specificLeadId) throw new Error(message);
     }
     progress.processedLeads += 1;
     await checkpointRun(runContext, progress, {
@@ -385,7 +424,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
       currentLead: null,
     });
     dashboard = await ScoutApi.authenticatedAction("scouts:getDashboard");
-    if (specificLeadId) break;
+    if (specificLeadId || connectionSyncPending) break;
   }
 
   await updateBadge();
@@ -618,6 +657,7 @@ function defaultRunProgress() {
     requestsSent: 0,
     results: [],
     failedLeads: [],
+    pendingConnectionRequests: [],
   };
 }
 
@@ -643,7 +683,116 @@ function normalizeRunProgress(value) {
     requestsSent: Math.max(0, Math.trunc(Number(value.requestsSent) || 0)),
     results: Array.isArray(value.results) ? value.results : [],
     failedLeads: Array.isArray(value.failedLeads) ? value.failedLeads : [],
+    pendingConnectionRequests: Array.isArray(value.pendingConnectionRequests)
+      ? value.pendingConnectionRequests
+      : [],
   };
+}
+
+function upsertPendingConnectionRequest(requests, request) {
+  const next = Array.isArray(requests) ? [...requests] : [];
+  const existingIndex = next.findIndex(
+    (item) => item?.leadId === request.leadId,
+  );
+  if (existingIndex >= 0) next[existingIndex] = request;
+  else next.push(request);
+  return next;
+}
+
+function collectLocallyConfirmedConnectionRequests(state) {
+  const progress = state?.progress || {};
+  const result = state?.result || {};
+  const candidates = [
+    ...(Array.isArray(progress.pendingConnectionRequests)
+      ? progress.pendingConnectionRequests
+      : []),
+    ...(Array.isArray(progress.failedLeads)
+      ? progress.failedLeads.filter((lead) => lead?.requestSent === true)
+      : []),
+    ...(Array.isArray(result.failedLeads)
+      ? result.failedLeads.filter((lead) => lead?.requestSent === true)
+      : []),
+  ];
+  const unique = new Map();
+  for (const candidate of candidates) {
+    const leadId = String(candidate?.leadId || "").trim();
+    if (!leadId || unique.has(leadId)) continue;
+    unique.set(leadId, { ...candidate, leadId });
+  }
+  return [...unique.values()];
+}
+
+async function reconcileLocallyConfirmedConnectionRequests(state = null) {
+  const current = state || (await readAutoLeadRunState());
+  const confirmed = collectLocallyConfirmedConnectionRequests(current);
+  if (confirmed.length === 0) return current;
+
+  const reconciledLeadIds = new Set();
+  for (const request of confirmed) {
+    const args = { leadId: request.leadId };
+    if (request.profileUrl) args.profileUrl = request.profileUrl;
+    try {
+      await completeConnectionRequestWithRetry(args);
+      reconciledLeadIds.add(request.leadId);
+    } catch (error) {
+      console.warn(
+        `Connection request sync is still pending for ${request.leadId}:`,
+        cleanError(error),
+      );
+    }
+  }
+  if (reconciledLeadIds.size === 0) return current;
+
+  const progress = current.progress
+    ? normalizeRunProgress({
+        ...current.progress,
+        pendingConnectionRequests:
+          current.progress.pendingConnectionRequests?.filter(
+            (request) => !reconciledLeadIds.has(request?.leadId),
+          ) || [],
+        failedLeads:
+          current.progress.failedLeads?.filter(
+            (lead) =>
+              !(
+                lead?.requestSent === true &&
+                reconciledLeadIds.has(lead?.leadId)
+              ),
+          ) || [],
+      })
+    : null;
+  const result = current.result
+    ? {
+        ...current.result,
+        failedLeads:
+          current.result.failedLeads?.filter(
+            (lead) =>
+              !(
+                lead?.requestSent === true &&
+                reconciledLeadIds.has(lead?.leadId)
+              ),
+          ) || [],
+      }
+    : null;
+  const recoveredFailedRun =
+    current.status === "failed" &&
+    current.progress?.failedLeads?.some(
+      (lead) =>
+        lead?.requestSent === true && reconciledLeadIds.has(lead?.leadId),
+    ) &&
+    (progress?.failedLeads?.length || 0) === 0;
+
+  return writeAutoLeadRunState({
+    ...current,
+    status: recoveredFailedRun ? "completed" : current.status,
+    phase: recoveredFailedRun ? "completed" : current.phase,
+    message: recoveredFailedRun
+      ? "The sent connection request is confirmed and synced."
+      : current.message,
+    error: recoveredFailedRun ? null : current.error,
+    completedAt: recoveredFailedRun ? Date.now() : current.completedAt,
+    progress,
+    result,
+  });
 }
 
 function normalizeAutoLeadRunState(value) {
@@ -1108,8 +1257,11 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
   let workflowTabId = null;
   let connectionReserved = false;
   let requestSubmitted = false;
+  let connectionPersistencePending = false;
   let workflowCompleted = false;
   let controlledExit = false;
+  let completedEngagementCount = 0;
+  let resolvedProfileUrl = lead.linkedinUrl;
   try {
     throwIfWorkflowControlled(runContext);
     let includeNote = Boolean(settings.includeNote && settings.linkedinPremium);
@@ -1158,6 +1310,7 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
       tab.id,
       requestedProfileUrl,
     );
+    resolvedProfileUrl = profileUrl;
     await ScoutApi.authenticatedAction("scouts:recordProfileVisit", {
       leadId: lead.id,
       resolvedLinkedinUrl: profileUrl,
@@ -1185,6 +1338,8 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
             "We couldn’t finish this lead’s posts.",
         );
       }
+      completedEngagementCount =
+        engagementResponse.result?.engagedCount ?? 0;
     }
 
     await checkpointRun(runContext, progress, {
@@ -1230,11 +1385,13 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
       );
     }
     requestSubmitted = true;
-    await ScoutApi.authenticatedAction("scouts:completeConnectionRequest", {
+    workflowCompleted = true;
+    connectionPersistencePending = true;
+    await completeConnectionRequestWithRetry({
       leadId: lead.id,
       profileUrl,
     });
-    workflowCompleted = true;
+    connectionPersistencePending = false;
     await updateRunProgress(runContext, progress, {
       phase: "working_leads",
       message: `Connection request sent to ${lead.fullName}.`,
@@ -1249,7 +1406,7 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
       leadName: lead.fullName,
       status: "connection_requested",
       profileUrl,
-      engagedCount: engagementResponse.result?.engagedCount ?? 0,
+      engagedCount: completedEngagementCount,
     };
   } catch (error) {
     const message = cleanError(error);
@@ -1266,13 +1423,24 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
         : new WorkflowControlError(requestedControl);
     }
     if (workflowTabId) {
-      await sendAutomationMessageToTab(runContext, workflowTabId, {
-        type: "SHOW_AUTOMATION_ERROR",
-        error: message,
-      }).catch(() => {});
+      const feedback = requestSubmitted
+        ? {
+            type: "SHOW_AUTOMATION_STATUS",
+            status:
+              "Connection request sent. Callum Scout will finish syncing it automatically.",
+          }
+        : { type: "SHOW_AUTOMATION_ERROR", error: message };
+      await sendAutomationMessageToTab(
+        runContext,
+        workflowTabId,
+        feedback,
+      ).catch(() => {});
     }
     const workflowError = new Error(message);
     workflowError.requestSubmitted = requestSubmitted;
+    workflowError.persistencePending = connectionPersistencePending;
+    workflowError.profileUrl = resolvedProfileUrl;
+    workflowError.engagedCount = completedEngagementCount;
     throw workflowError;
   } finally {
     if (workflowTabId) clearActiveWorkflowTab(workflowTabId);
@@ -1513,6 +1681,23 @@ function cleanError(error) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function completeConnectionRequestWithRetry(args) {
+  let lastError = null;
+  for (const delayMs of CONNECTION_COMPLETION_RETRY_DELAYS_MS) {
+    if (delayMs > 0) await sleep(delayMs);
+    try {
+      await ScoutApi.authenticatedAction(
+        "scouts:completeConnectionRequest",
+        args,
+      );
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error("The sent connection request could not be synced.");
 }
 
 async function updateBadge() {

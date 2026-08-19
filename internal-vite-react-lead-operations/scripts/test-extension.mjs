@@ -48,7 +48,7 @@ const [
   ]);
 const manifest = JSON.parse(manifestSource);
 
-assert.equal(manifest.version, "0.10.0");
+assert.equal(manifest.version, "0.10.1");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -172,6 +172,12 @@ assert.match(contentSource, /a\[href\^='mailto:'\]/);
 assert.match(contentSource, /recordPostActivity/);
 assert.match(contentSource, /options\.validateBeforeCommenting/);
 assert.match(contentSource, /feed\/update\/urn:li:activity/);
+assert.match(contentSource, /function isRepostPost/);
+assert.match(contentSource, /\.update-components-header/);
+assert.match(contentSource, /\.feed-shared-header/);
+assert.match(contentSource, /reposted this/);
+assert.match(contentSource, /predicate: \(post\) => !isRepostPost\(post\)/);
+assert.match(contentSource, /no like or comment was added/i);
 assert.match(contentSource, /INSPECT_PREMIUM_ACCOUNT/);
 assert.match(contentSource, /plan recommendation/i);
 assert.match(contentSource, /manage-premium-account/);
@@ -205,12 +211,21 @@ assert.match(backgroundSource, /recordConnectionReview/);
 assert.match(backgroundSource, /recordContactInfo/);
 assert.match(backgroundSource, /reserveConnectionRequest/);
 assert.match(backgroundSource, /completeConnectionRequest/);
+assert.match(backgroundSource, /completeConnectionRequestWithRetry/);
+assert.match(backgroundSource, /CONNECTION_COMPLETION_RETRY_DELAYS_MS/);
+assert.match(backgroundSource, /reconcileLocallyConfirmedConnectionRequests/);
+assert.match(backgroundSource, /pendingConnectionRequests/);
 assert.match(backgroundSource, /dashboard\.usage\.requestRemaining/);
-assert.match(backgroundSource, /status = \/no recent posts\|no supported post permalink\/i\.test\(message\)/);
+assert.match(backgroundSource, /no recent posts\|no supported post permalink/);
 assert.match(backgroundSource, /failedLeads\.push/);
 assert.match(backgroundSource, /error\?\.requestSubmitted === true/);
 assert.match(backgroundSource, /workflowError\.requestSubmitted = requestSubmitted/);
-assert.match(backgroundSource, /if \(specificLeadId\) throw new Error\(message\)/);
+assert.match(backgroundSource, /workflowError\.persistencePending/);
+assert.match(backgroundSource, /if \(specificLeadId \|\| connectionSyncPending\) break/);
+assert.doesNotMatch(
+  backgroundSource,
+  /if \(requestSent\) progress\.requestsSent \+= 1;[\s\S]{0,300}scouts:updateLeadStatus/,
+);
 assert.match(popupScript, /the run continued automatically/);
 assert.match(clientSource, /error\?\.status === 401/);
 assert.match(clientSource, /refreshOnce/);
@@ -220,6 +235,12 @@ assert.match(scoutSource, /export const getLeadProgress/);
 assert.match(scoutSource, /export const markOldRequestWithdrawn/);
 assert.match(scoutSource, /export const completeFollowupTask/);
 assert.match(scoutSource, /createFollowupTasks/);
+assert.match(
+  scoutSource,
+  /profileUrl: v\.optional\(v\.string\(\)\)/,
+);
+assert.match(scoutSource, /recoveredFromFailed/);
+assert.match(scoutSource, /status IN \('engaged', 'failed'\)/);
 assert.match(adminSource, /export const exportCleanCsv/);
 assert.match(adminSource, /export const retryCrmDelivery/);
 assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS lead_followup_tasks/);
@@ -307,12 +328,19 @@ assert.deepEqual(
 
 const listenerStub = () => ({ addListener() {}, removeListener() {} });
 const backgroundStorage = {};
+const backgroundActions = [];
 const backgroundContext = {
   URL,
   clearTimeout,
   console,
   importScripts() {},
   setTimeout,
+  ScoutApi: {
+    async authenticatedAction(pathname, args) {
+      backgroundActions.push({ pathname, args });
+      return null;
+    },
+  },
   chrome: {
     action: {},
     alarms: { create() {}, onAlarm: listenerStub() },
@@ -417,7 +445,46 @@ assert.deepEqual(
     requestsSent: 2,
     results: [],
     failedLeads: [],
+    pendingConnectionRequests: [],
   },
+);
+const stateWithConfirmedRequest = await backgroundContext.writeAutoLeadRunState({
+  ...backgroundContext.defaultAutoLeadRunState(),
+  status: "completed",
+  runId: "run-with-confirmed-request",
+  progress: backgroundContext.normalizeRunProgress({
+    failedLeads: [
+      { leadId: "sent-lead", requestSent: true },
+      { leadId: "real-problem", requestSent: false },
+    ],
+  }),
+  result: {
+    failedLeads: [
+      { leadId: "sent-lead", requestSent: true },
+      { leadId: "real-problem", requestSent: false },
+    ],
+  },
+});
+const reconciledState =
+  await backgroundContext.reconcileLocallyConfirmedConnectionRequests(
+    stateWithConfirmedRequest,
+  );
+assert.deepEqual(
+  JSON.parse(JSON.stringify(backgroundActions)),
+  [
+    {
+      pathname: "scouts:completeConnectionRequest",
+      args: { leadId: "sent-lead" },
+    },
+  ],
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(reconciledState.progress.failedLeads)),
+  [{ leadId: "real-problem", requestSent: false }],
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(reconciledState.result.failedLeads)),
+  [{ leadId: "real-problem", requestSent: false }],
 );
 await backgroundContext.writeAutoLeadRunState({
   ...backgroundContext.defaultAutoLeadRunState(),
@@ -438,5 +505,5 @@ assert.equal(stoppedRun.progress, null);
 assert.equal(stoppedRun.specificLeadId, null);
 
 console.log(
-  "Extension checks passed: isolated automation window, protected tab group, resumable controls, Premium detection, and auth recovery are wired correctly.",
+  "Extension checks passed: repost skipping, successful-request reconciliation, isolated automation, resumable controls, Premium detection, and auth recovery are wired correctly.",
 );

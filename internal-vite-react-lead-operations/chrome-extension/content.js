@@ -316,15 +316,36 @@
     const posts = await findPostElements({
       timeoutMs: 30_000,
       minimumCount: maxPosts,
+      predicate: (post) => !isRepostPost(post),
     });
     if (!posts || posts.length === 0) {
+      const repostCount = queryPostElements().filter(isRepostPost).length;
+      if (repostCount > 0) {
+        addLog(
+          "Skipped",
+          `${repostCount} repost${repostCount === 1 ? "" : "s"}; Callum Scout only comments on original posts.`,
+        );
+        throw new Error(
+          "We couldn’t find any recent posts that Callum Scout can use. Reposts were skipped.",
+        );
+      }
       throw new Error(
         "We couldn’t find any recent posts. Make sure you’re signed in to LinkedIn and that this lead has posts.",
       );
     }
 
+    const repostCount = queryPostElements().filter(isRepostPost).length;
+    if (repostCount > 0) {
+      addLog(
+        "Skipped",
+        `${repostCount} repost${repostCount === 1 ? "" : "s"}; no like or comment was added.`,
+      );
+    }
     const countToEngage = Math.min(posts.length, maxPosts);
-    addLog("Posts", `Found ${posts.length}. Working on ${countToEngage}.`);
+    addLog(
+      "Posts",
+      `Found ${posts.length} original post${posts.length === 1 ? "" : "s"}. Working on ${countToEngage}.`,
+    );
 
     let engagedCount = 0;
     const activities = [];
@@ -1064,26 +1085,33 @@
     return null;
   }
 
-  async function findPostElements({ timeoutMs = 30_000, minimumCount = 1 } = {}) {
+  async function findPostElements({
+    timeoutMs = 30_000,
+    minimumCount = 1,
+    predicate = () => true,
+  } = {}) {
     const deadline = Date.now() + timeoutMs;
     let bestMatch = [];
+    let bestCandidateCount = 0;
     let lastNewPostAt = Date.now();
     let lastProgressAt = 0;
     let lastScrollAt = 0;
 
     while (Date.now() < deadline) {
-      const posts = queryPostElements();
-      if (posts.length > bestMatch.length) {
-        bestMatch = posts;
+      const candidates = queryPostElements();
+      const posts = candidates.filter(predicate);
+      if (candidates.length > bestCandidateCount) {
+        bestCandidateCount = candidates.length;
         lastNewPostAt = Date.now();
       }
+      if (posts.length > bestMatch.length) bestMatch = posts;
       if (bestMatch.length >= minimumCount) return bestMatch;
 
-      if (bestMatch.length > 0 && Date.now() - lastScrollAt >= 2_000) {
-        bestMatch.at(-1)?.scrollIntoView({ behavior: "smooth", block: "end" });
+      if (candidates.length > 0 && Date.now() - lastScrollAt >= 2_000) {
+        candidates.at(-1)?.scrollIntoView({ behavior: "smooth", block: "end" });
         lastScrollAt = Date.now();
       }
-      if (bestMatch.length > 0 && Date.now() - lastNewPostAt >= 6_000) {
+      if (candidates.length > 0 && Date.now() - lastNewPostAt >= 6_000) {
         return bestMatch;
       }
 
@@ -1119,6 +1147,19 @@
 
     return uniqueElements(
       Array.from(document.querySelectorAll("li")).filter(hasPostActions),
+    );
+  }
+
+  function isRepostPost(postEl) {
+    const headerSelectors = [
+      ".update-components-header",
+      ".feed-shared-header",
+      "[data-view-name='feed-header']",
+    ];
+    return headerSelectors.some((selector) =>
+      Array.from(postEl.querySelectorAll(selector)).some((header) =>
+        /\breposted this\b/i.test(header.textContent?.trim() || ""),
+      ),
     );
   }
 
