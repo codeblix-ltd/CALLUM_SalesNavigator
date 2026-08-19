@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { useAuthActions, useConvexAuth } from "@convex-dev/auth/react";
 import { useAction, useQuery } from "convex/react";
@@ -39,6 +39,8 @@ type View = "overview" | "operations" | "leads";
 type ScoutSort = "activity" | "emails" | "accepted" | "assigned" | "name";
 type EmailAvailability = "present" | "missing";
 type EmailValidation = "validated" | "not_validated";
+
+const SCOUT_PAGE_SIZE = 5;
 
 type Stats = {
   total: number;
@@ -828,6 +830,31 @@ function Overview({
   scoutActivity: RecentActivity[];
   scoutPosts: PostActivity[];
 }) {
+  const [scoutPage, setScoutPage] = useState(1);
+  const liveHistoryRef = useRef<HTMLElement | null>(null);
+
+  const scoutPageCount = Math.max(1, Math.ceil(scouts.length / SCOUT_PAGE_SIZE));
+  const visibleScoutPage = Math.min(scoutPage, scoutPageCount);
+  const scoutPageStart = (visibleScoutPage - 1) * SCOUT_PAGE_SIZE;
+  const visibleScouts = scouts.slice(scoutPageStart, scoutPageStart + SCOUT_PAGE_SIZE);
+
+  useEffect(() => {
+    setScoutPage(1);
+  }, [scoutSearch, scoutSort]);
+
+  useEffect(() => {
+    if (scoutPage <= scoutPageCount) return;
+    setScoutPage(scoutPageCount);
+  }, [scoutPage, scoutPageCount]);
+
+  useEffect(() => {
+    if (!selectedScout) return;
+    const frame = window.requestAnimationFrame(() => {
+      liveHistoryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [selectedScout]);
+
   if (!analytics && loading) {
     return <div className="overview-loading"><RefreshCw size={22} className="spin" /> Building the team overview…</div>;
   }
@@ -926,7 +953,30 @@ function Overview({
             </select>
           </div>
         </div>
-        <ScoutTable scouts={scouts} selectedScout={selectedScout} setSelectedScout={setSelectedScout} />
+        <ScoutTable scouts={visibleScouts} selectedScout={selectedScout} setSelectedScout={setSelectedScout} />
+        {scouts.length > 0 && (
+          <div className="pagination scout-pagination" aria-label="Scout pagination">
+            <p>
+              Showing {scoutPageStart + 1}–{Math.min(scoutPageStart + SCOUT_PAGE_SIZE, scouts.length)} of {scouts.length} scouts · Page {visibleScoutPage} of {scoutPageCount} · 5 per page
+            </p>
+            <div>
+              <button
+                onClick={() => setScoutPage((page) => Math.max(1, page - 1))}
+                disabled={visibleScoutPage === 1}
+                aria-label="Previous scout page"
+              >
+                <ArrowLeft size={16} /> Previous
+              </button>
+              <button
+                onClick={() => setScoutPage((page) => Math.min(scoutPageCount, page + 1))}
+                disabled={visibleScoutPage === scoutPageCount}
+                aria-label="Next scout page"
+              >
+                Next <ArrowRight size={16} />
+              </button>
+            </div>
+          </div>
+        )}
         {activeScout && (
           <ScoutDetail
             scout={activeScout}
@@ -938,7 +988,7 @@ function Overview({
       </section>
 
       <section className="activity-inventory-grid">
-        <article className="panel activity-panel">
+        <article className="panel activity-panel" ref={liveHistoryRef}>
           <PanelHeading
             eyebrow="Live history"
             title={selectedScout ? `${activeScout?.username ?? selectedScout} activity` : "Recent team activity"}

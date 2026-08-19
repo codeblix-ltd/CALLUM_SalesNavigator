@@ -210,6 +210,7 @@ main { max-width: 1320px; margin: 0 auto; padding: 40px 24px 76px; }
 .scout-detail-note { margin: 12px 0 0; color: #8b93a3; font-size: 9px; }
 
 .activity-inventory-grid { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(300px, .55fr); gap: 18px; }
+.activity-panel { scroll-margin-top: 28px; }
 .activity-feed { margin-top: 17px; display: grid; }
 .activity-item { min-height: 52px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 11px; border-top: 1px solid #e9ecf2; }
 .activity-item:first-child { border-top: 0; }
