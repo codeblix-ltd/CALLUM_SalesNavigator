@@ -1088,6 +1088,7 @@ function ScoutsPage({
   const [quickAssignCount, setQuickAssignCount] = useState("50");
   const [quickAssigning, setQuickAssigning] = useState(false);
   const [directoryOpen, setDirectoryOpen] = useState(false);
+  const [assignmentOpen, setAssignmentOpen] = useState(false);
   const [scoutToggleBusyId, setScoutToggleBusyId] = useState<string | null>(null);
 
   const activeScouts = scouts.filter((scout) => scout.active && scout.hasAccount);
@@ -1112,7 +1113,7 @@ function ScoutsPage({
   }, [assignmentSearch]);
 
   const loadUnassigned = useCallback(async () => {
-    if (!assignmentNiche) {
+    if (!assignmentOpen || !assignmentNiche) {
       setUnassignedPage(null);
       return;
     }
@@ -1132,7 +1133,7 @@ function ScoutsPage({
     } finally {
       setUnassignedLoading(false);
     }
-  }, [assignmentNiche, debouncedAssignmentSearch, listUnassignedLeads, unassignedPageNumber]);
+  }, [assignmentNiche, assignmentOpen, debouncedAssignmentSearch, listUnassignedLeads, unassignedPageNumber]);
 
   useEffect(() => {
     void loadUnassigned();
@@ -1289,11 +1290,12 @@ function ScoutsPage({
         </article>
       </section>
 
-      <section className="panel manual-assignment-panel">
+      <section className={`panel manual-assignment-panel ${assignmentOpen ? "is-open" : "is-collapsed"}`}>
         <div className="manual-assignment-head">
-          <PanelHeading eyebrow="Manual allocation" title="Assign leads to a scout" description="Choose a niche, assign a quantity, or select individual leads" icon={<Target size={18} />} />
-          <button className="secondary-button" onClick={() => void loadUnassigned()} disabled={unassignedLoading}><RefreshCw size={14} className={unassignedLoading ? "spin" : ""} /> Refresh</button>
+          <div className="manual-assignment-title"><PanelHeading eyebrow="Manual allocation" title="Assign leads to a scout" description="Choose a niche, assign a quantity, or select individual leads" icon={<Target size={18} />} /><button className="scout-directory-toggle manual-assignment-toggle" type="button" onClick={() => setAssignmentOpen((open) => !open)} aria-expanded={assignmentOpen}><ChevronDown size={16} className={assignmentOpen ? "rotate-180" : ""} />{assignmentOpen ? "Collapse" : "Expand"}</button></div>
+          {assignmentOpen && <button className="secondary-button" onClick={() => void loadUnassigned()} disabled={unassignedLoading}><RefreshCw size={14} className={unassignedLoading ? "spin" : ""} /> Refresh</button>}
         </div>
+        {assignmentOpen && <>
         <div className="assignment-filters">
           <label>Scout<select value={assignmentScout} onChange={(event) => setAssignmentScout(event.target.value)}><option value="">Select scout</option>{activeScouts.map((scout) => <option key={scout.operatorId} value={scout.operatorId}>{scout.username}</option>)}</select></label>
           <label>Niche<select value={assignmentNiche} onChange={(event) => { setAssignmentNiche(event.target.value); setUnassignedPageNumber(1); }}><option value="">Select niche</option>{niches.map((niche) => <option key={niche.name} value={niche.name}>{niche.name} ({formatNumber(niche.unassigned)} open)</option>)}</select></label>
@@ -1325,6 +1327,7 @@ function ScoutsPage({
             {unassignedPage.pageCount > 1 && <div className="pagination"><p>Page {unassignedPage.page} of {unassignedPage.pageCount}</p><div><button onClick={() => setUnassignedPageNumber((page) => Math.max(1, page - 1))} disabled={unassignedPage.page === 1}><ArrowLeft size={15} /> Previous</button><button onClick={() => setUnassignedPageNumber((page) => Math.min(unassignedPage.pageCount, page + 1))} disabled={unassignedPage.page === unassignedPage.pageCount}>Next <ArrowRight size={15} /></button></div></div>}
           </>
         )}
+        </>}
       </section>
 
       <section className={`panel scout-panel scout-directory-panel ${directoryOpen ? "is-open" : "is-collapsed"}`}>

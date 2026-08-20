@@ -380,6 +380,9 @@ main { max-width: 1320px; margin: 0 auto; padding: 40px 24px 76px; }
 .niche-capacity-table td strong { color: #5f43cc; }
 .compact-loading { min-height: 180px; display: flex; align-items: center; justify-content: center; gap: 9px; color: #778399; font-size: 11px; }
 .manual-assignment-head { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.manual-assignment-panel.is-collapsed .manual-assignment-head { padding-bottom: 22px; }
+.manual-assignment-title { min-width: 0; display: flex; align-items: center; gap: 16px; }
+.manual-assignment-title .panel-heading { min-width: 0; }
 .assignment-filters { margin-top: 18px; display: grid; grid-template-columns: 1fr 1fr 1.25fr; gap: 12px; }
 .quick-assignment { margin-top: 16px; padding: 13px 14px; display: grid; grid-template-columns: minmax(0, 1fr) 150px auto; align-items: center; gap: 13px; background: #f8f7fe; border: 1px solid #dfd9f4; border-radius: 12px; }
 .quick-assignment > div { min-width: 0; display: grid; gap: 4px; }
@@ -580,6 +583,7 @@ footer span { display: flex; align-items: center; gap: 6px; }
   .quick-assignment > div { grid-column: 1 / -1; }
   .quick-assignment .primary-button { min-width: 0; }
   .manual-assignment-head, .assignment-selection-bar { align-items: stretch; flex-direction: column; }
+  .manual-assignment-title { width: 100%; align-items: flex-start; justify-content: space-between; }
   .assignment-selection-bar { padding: 12px 0; }
   .assignment-selection-bar > div { flex-wrap: wrap; }
   footer { flex-direction: column; gap: 7px; }
