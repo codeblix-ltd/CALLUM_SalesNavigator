@@ -24,7 +24,7 @@ const secretsRoot = path.join(projectRoot, ".secrets");
 const privateKeyPath = path.join(secretsRoot, "callum-scout-selfhost.pem");
 const releaseMetadataPath = path.join(outputRoot, "release.json");
 
-const defaultBaseUrl = "https://extensions.codeblix.com/callum-scout/";
+const defaultBaseUrl = "https://extensions.codeblix.com/";
 const baseUrl = normalizeBaseUrl(
   process.env.CALLUM_SCOUT_SELF_HOST_BASE_URL || defaultBaseUrl,
 );
@@ -182,7 +182,11 @@ try {
   );
   writeFileSync(
     path.join(outputRoot, "index.html"),
-    createInstallPage({ extensionId, version: sourceManifest.version }),
+    createInstallPage({
+      extensionId,
+      version: sourceManifest.version,
+      installSource,
+    }),
     "utf8",
   );
   writeFileSync(path.join(outputRoot, ".htaccess"), apacheConfig(), "utf8");
@@ -298,7 +302,7 @@ function createRemoveRegistryFile(valueName) {
   return `\ufeffWindows Registry Editor Version 5.00\r\n\r\n[HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Google\\Chrome\\ExtensionInstallSources]\r\n"${valueName}"=-\r\n`;
 }
 
-function createInstallPage({ extensionId, version }) {
+function createInstallPage({ extensionId, version, installSource }) {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -322,6 +326,7 @@ function createInstallPage({ extensionId, version }) {
     .number { display: grid; width: 42px; height: 42px; place-items: center; border-radius: 50%; background: #e1f5ef; color: #0b6457; font-weight: 800; }
     h2 { margin: 1px 0 7px; font-size: 19px; }
     p { margin: 0; color: #53616c; line-height: 1.55; }
+    .step code { overflow-wrap: anywhere; color: #20483f; font-size: .9em; }
     .button { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; margin-top: 16px; padding: 0 18px; border-radius: 10px; background: #0c6f60; color: #fff; font-weight: 750; text-decoration: none; }
     .button.secondary { border: 1px solid #b9c8ce; background: #fff; color: #263842; }
     .note { margin: 0 32px 32px; padding: 18px; border-radius: 12px; background: #f2f7f6; color: #45565f; font-size: 14px; line-height: 1.55; }
@@ -351,14 +356,14 @@ function createInstallPage({ extensionId, version }) {
           <span class="number">2</span>
           <div>
             <h2>Restart Chrome</h2>
-            <p>Close every Chrome window and open Chrome again so the policy is loaded.</p>
+            <p>Close every Chrome window and open Chrome again. Before continuing, open <code>chrome://policy</code> and confirm <strong>ExtensionInstallSources</strong> contains <code>${escapeHtml(installSource)}</code> with status OK.</p>
           </div>
         </li>
         <li class="step">
           <span class="number">3</span>
           <div>
             <h2>Add Callum Scout</h2>
-            <p>Chrome will show the extension permissions and ask you to confirm.</p>
+            <p>Chrome will show the extension permissions and ask you to confirm. If it says “Download suspicious file” instead, stop—the policy has not loaded correctly.</p>
             <a class="button" href="callum-scout.crx">Install Callum Scout</a>
           </div>
         </li>

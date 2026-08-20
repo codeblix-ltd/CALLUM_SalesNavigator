@@ -136,7 +136,7 @@ npm run extension:selfhost
 ```
 
 The hosting bundle is written to `self-hosted-extension`. It targets
-`https://extensions.codeblix.com/callum-scout/` and contains the install page,
+`https://extensions.codeblix.com/` and contains the install page,
 signed CRX, update manifest, scoped Windows policy files, and Apache/Cloudflare
 header configurations. The signing key is created once at
 `.secrets/callum-scout-selfhost.pem`; it is Git-ignored and must never be

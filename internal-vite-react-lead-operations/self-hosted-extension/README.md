@@ -2,7 +2,7 @@
 
 This directory is the static hosting bundle for:
 
-`https://extensions.codeblix.com/callum-scout/`
+`https://extensions.codeblix.com/`
 
 It provides a temporary Windows installation path while the unlisted Chrome
 Web Store release is under review. It does not replace the Web Store release.
@@ -10,9 +10,9 @@ Web Store release is under review. It does not replace the Web Store release.
 ## Hosting needed
 
 Create the `extensions.codeblix.com` subdomain with HTTPS and serve this
-directory at `/callum-scout/`. A normal cPanel/Apache document root, Cloudflare
-Pages project, or equivalent static host is enough. No Node process, database,
-or server-side application is required.
+directory as the subdomain's document root. A normal cPanel/Apache document
+root, Cloudflare Pages project, or equivalent static host is enough. No Node
+process, database, or server-side application is required.
 
 Upload these files:
 
@@ -65,8 +65,8 @@ the CRX so a new XML version cannot be paired with an old cached package.
 ## Live checks
 
 ```powershell
-$release = Invoke-RestMethod https://extensions.codeblix.com/callum-scout/release.json
-$crx = Invoke-WebRequest https://extensions.codeblix.com/callum-scout/callum-scout.crx
+$release = Invoke-RestMethod https://extensions.codeblix.com/release.json
+$crx = Invoke-WebRequest https://extensions.codeblix.com/callum-scout.crx
 $crx.Headers.'Content-Type'
 $release
 ```
@@ -80,10 +80,10 @@ Also test the full flow on a representative Windows scout PC:
 5. Sign in to Callum Scout and run a safe, non-mutating check before normal use.
 
 The registry file allows only the exact
-`https://extensions.codeblix.com/callum-scout/*` source. It does not silently
-install the extension. Chrome may display **Managed by your organization** while
-the policy is present. `Remove-CallumScout-Policy.reg` removes the single value
-created by the installer; it does not uninstall the extension itself.
+`https://extensions.codeblix.com/*` source. It does not silently install the
+extension. Chrome may display **Managed by your organization** while the policy
+is present. `Remove-CallumScout-Policy.reg` removes the single value created by
+the installer; it does not uninstall the extension itself.
 
 ## Move users to the Chrome Web Store
 

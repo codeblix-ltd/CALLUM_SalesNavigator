@@ -2,8 +2,8 @@
   "name": "Callum Scout",
   "version": "0.10.12",
   "extensionId": "pobdcokoonabpchdmbdkofhahejecbck",
-  "baseUrl": "https://extensions.codeblix.com/callum-scout/",
-  "updateUrl": "https://extensions.codeblix.com/callum-scout/updates.xml",
-  "crxUrl": "https://extensions.codeblix.com/callum-scout/callum-scout.crx",
-  "crxSha256": "3c711ab1cdf12853e59db8873f0090f98564dad5b20f2f866d13f8d033847ee1"
+  "baseUrl": "https://extensions.codeblix.com/",
+  "updateUrl": "https://extensions.codeblix.com/updates.xml",
+  "crxUrl": "https://extensions.codeblix.com/callum-scout.crx",
+  "crxSha256": "eacd5310f743ebee1ad11ce6e74bcbe8f1c917200b87132e697bf696c6c4d1a9"
 }
