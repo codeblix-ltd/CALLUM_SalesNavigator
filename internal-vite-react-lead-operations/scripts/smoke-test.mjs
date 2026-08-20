@@ -14,6 +14,9 @@ const getStats = makeFunctionReference("leads:getStats");
 const listLeads = makeFunctionReference("leads:list");
 const exportLeads = makeFunctionReference("leads:exportCsv");
 const getOverview = makeFunctionReference("adminAnalytics:getOverview");
+const getNicheAssignments = makeFunctionReference("adminScouts:getNicheAssignments");
+const listUnassignedLeads = makeFunctionReference("adminScouts:listUnassignedLeads");
+const createScout = makeFunctionReference("adminScouts:createScout");
 const listWorkEmailQueue = makeFunctionReference("workEmails:listQueue");
 const saveWorkEmailResult = makeFunctionReference("workEmails:saveResult");
 const credentials = {
@@ -72,6 +75,25 @@ const filteredExport = await client.action(exportLeads, {
   workEmailValidationFilters: ["validated"],
 });
 const overview = await client.action(getOverview, { range: "all" });
+const nicheAssignments = await client.action(getNicheAssignments, {});
+const firstNiche = nicheAssignments.niches[0] ?? null;
+const unassignedLeads = firstNiche
+  ? await client.action(listUnassignedLeads, {
+      niche: firstNiche.name,
+      search: null,
+      page: 1,
+      pageSize: 10,
+    })
+  : null;
+const existingScout = overview.scouts.find((scout) => scout.hasAccount);
+let duplicateScoutRejected = existingScout === undefined;
+if (existingScout) {
+  try {
+    await client.action(createScout, { username: existingScout.operatorId });
+  } catch (error) {
+    duplicateScoutRejected = String(error).toLowerCase().includes("already exists");
+  }
+}
 const workEmailQueue = await client.action(listWorkEmailQueue, { limit: 1 });
 const unmatchedWorkEmail = await client.action(saveWorkEmailResult, {
   leadId: null,
@@ -94,6 +116,10 @@ if (
   filteredExport.rowCount > 25000 ||
   typeof filteredExport.truncated !== "boolean" ||
   overview.summary.totalLeads !== stats.total ||
+  !Array.isArray(nicheAssignments.niches) ||
+  nicheAssignments.niches.some((niche) => niche.total !== niche.assigned + niche.unassigned) ||
+  (unassignedLeads !== null && unassignedLeads.leads.length > 10) ||
+  !duplicateScoutRejected ||
   !Array.isArray(workEmailQueue.leads) ||
   typeof workEmailQueue.remaining !== "number" ||
   !("originalEmail" in page.leads[0]) ||

@@ -39,7 +39,7 @@ import { api } from "../convex/_generated/api";
 import "./App.css";
 
 type Range = "7d" | "30d" | "90d" | "all";
-type View = "overview" | "operations" | "leads";
+type View = "overview" | "scouts" | "operations" | "leads";
 type ScoutSort = "activity" | "emails" | "accepted" | "assigned" | "name";
 type EmailAvailability = "present" | "missing";
 type EmailValidation = "validated" | "not_validated";
@@ -161,6 +161,29 @@ type Analytics = {
   trend: TrendPoint[];
   recentActivity: RecentActivity[];
   postActivities: PostActivity[];
+};
+
+type NicheAssignment = {
+  name: string;
+  total: number;
+  assigned: number;
+  unassigned: number;
+};
+
+type UnassignedLead = {
+  id: string;
+  fullName: string | null;
+  currentTitle: string | null;
+  companyName: string | null;
+  profileUrl: string;
+};
+
+type UnassignedLeadPage = {
+  total: number;
+  page: number;
+  pageSize: number;
+  pageCount: number;
+  leads: UnassignedLead[];
 };
 
 type HermesUploadLead = {
@@ -412,6 +435,10 @@ function Dashboard({ adminName }: { adminName: string }) {
   const logoutCodex = useAction(api.codexGateway.logout);
   const uploadHermesLeads = useAction(api.hermesUpload.uploadLeads);
   const confirmHermesAssignments = useAction(api.hermesUpload.confirmAssignments);
+  const createScout = useAction(api.adminScouts.createScout);
+  const getNicheAssignments = useAction(api.adminScouts.getNicheAssignments);
+  const listUnassignedLeads = useAction(api.adminScouts.listUnassignedLeads);
+  const assignLeadsToScout = useAction(api.adminScouts.assignLeads);
   const [view, setView] = useState<View>("overview");
   const [range, setRange] = useState<Range>("all");
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
@@ -452,6 +479,9 @@ function Dashboard({ adminName }: { adminName: string }) {
   const [codexBusy, setCodexBusy] = useState(false);
   const [deviceLogin, setDeviceLogin] = useState<DeviceLogin | null>(null);
   const [uploadLeadsOpen, setUploadLeadsOpen] = useState(false);
+  const [nicheAssignments, setNicheAssignments] = useState<NicheAssignment[]>([]);
+  const [nicheAssignmentsLoading, setNicheAssignmentsLoading] = useState(false);
+  const [scoutAdminError, setScoutAdminError] = useState("");
 
   const refreshOverview = useCallback(async () => {
     setAnalyticsLoading(true);
@@ -484,6 +514,19 @@ function Dashboard({ adminName }: { adminName: string }) {
       setOperationsLoading(false);
     }
   }, [getOperations]);
+
+  const refreshNicheAssignments = useCallback(async () => {
+    setNicheAssignmentsLoading(true);
+    setScoutAdminError("");
+    try {
+      const result = await getNicheAssignments({});
+      setNicheAssignments(result.niches);
+    } catch (error) {
+      setScoutAdminError(readError(error));
+    } finally {
+      setNicheAssignmentsLoading(false);
+    }
+  }, [getNicheAssignments]);
 
   const loadLeads = useCallback(async () => {
     setLeadsLoading(true);
@@ -553,6 +596,10 @@ function Dashboard({ adminName }: { adminName: string }) {
   useEffect(() => {
     if (view === "operations") void refreshOperations();
   }, [refreshOperations, view]);
+
+  useEffect(() => {
+    if (view === "scouts") void refreshNicheAssignments();
+  }, [refreshNicheAssignments, view]);
 
   useEffect(() => {
     setScoutAssignedLeadsPage(1);
@@ -781,7 +828,30 @@ function Dashboard({ adminName }: { adminName: string }) {
     }
   }
 
-  const connectionError = analyticsError || leadError;
+  const connectionError = analyticsError || leadError || scoutAdminError;
+  const heroContent = view === "scouts"
+    ? {
+        eyebrow: "Scout administration",
+        title: <>Manage your scout<br /><span>team and queues.</span></>,
+        copy: "Create secure scout logins, see assignment capacity by niche, and place individual leads into the right scout’s queue.",
+      }
+    : view === "operations"
+      ? {
+          eyebrow: "Daily operations",
+          title: <>Keep daily work<br /><span>moving forward.</span></>,
+          copy: "Review questions, follow-ups, CRM delivery, and operational exceptions in one place.",
+        }
+      : view === "leads"
+        ? {
+            eyebrow: "Lead directory",
+            title: <>Find every lead,<br /><span>without the clutter.</span></>,
+            copy: "Search, filter, review, and export the live lead inventory across every niche.",
+          }
+        : {
+            eyebrow: "Lead operations",
+            title: <>Your lead universe,<br /><span>ready to work.</span></>,
+            copy: "One private view of scout capacity, pipeline progress, and every lead outcome.",
+          };
 
   return (
     <div className="app-shell">
@@ -792,6 +862,7 @@ function Dashboard({ adminName }: { adminName: string }) {
         </a>
         <nav className="main-nav" aria-label="Workspace views">
           <button className={view === "overview" ? "active" : ""} onClick={() => setView("overview")}>Overview</button>
+          <button className={view === "scouts" ? "active" : ""} onClick={() => setView("scouts")}>Scouts</button>
           <button className={view === "operations" ? "active" : ""} onClick={() => setView("operations")}>Daily work</button>
           <button className={view === "leads" ? "active" : ""} onClick={() => setView("leads")}>Lead directory</button>
         </nav>
@@ -813,11 +884,9 @@ function Dashboard({ adminName }: { adminName: string }) {
       <main>
         <section className="hero hero-dashboard">
           <div>
-            <p className="eyebrow"><Database size={15} /> Lead operations</p>
-            <h1>Your lead universe,<br /><span>ready to work.</span></h1>
-            <p className="hero-copy">
-              One private view of scout capacity, pipeline progress, and every lead outcome.
-            </p>
+            <p className="eyebrow"><Database size={15} /> {heroContent.eyebrow}</p>
+            <h1>{heroContent.title}</h1>
+            <p className="hero-copy">{heroContent.copy}</p>
           </div>
           {view === "overview" && (
             <div className="range-control" aria-label="Analytics period">
@@ -850,6 +919,31 @@ function Dashboard({ adminName }: { adminName: string }) {
             scoutAssignedLeadsLoading={scoutAssignedLeadsLoading}
             scoutAssignedLeadsError={scoutAssignedLeadsError}
             onScoutAssignedLeadsPageChange={setScoutAssignedLeadsPage}
+          />
+        ) : view === "scouts" ? (
+          <ScoutsPage
+            scouts={filteredScouts}
+            scoutSearch={scoutSearch}
+            setScoutSearch={setScoutSearch}
+            scoutSort={scoutSort}
+            setScoutSort={setScoutSort}
+            selectedScout={selectedScout}
+            setSelectedScout={setSelectedScout}
+            activeScout={activeScout}
+            scoutActivity={scoutActivity}
+            scoutAssignedLeads={scoutAssignedLeads}
+            scoutAssignedLeadsLoading={scoutAssignedLeadsLoading}
+            scoutAssignedLeadsError={scoutAssignedLeadsError}
+            onScoutAssignedLeadsPageChange={setScoutAssignedLeadsPage}
+            niches={nicheAssignments}
+            nichesLoading={nicheAssignmentsLoading}
+            error={scoutAdminError}
+            createScout={createScout}
+            listUnassignedLeads={listUnassignedLeads}
+            assignLeads={assignLeadsToScout}
+            refresh={async () => {
+              await Promise.all([refreshOverview(), refreshNicheAssignments()]);
+            }}
           />
         ) : view === "operations" ? (
           <OperationsCenter
@@ -920,6 +1014,266 @@ function Dashboard({ adminName }: { adminName: string }) {
           }}
         />
       )}
+    </div>
+  );
+}
+
+function ScoutsPage({
+  scouts,
+  scoutSearch,
+  setScoutSearch,
+  scoutSort,
+  setScoutSort,
+  selectedScout,
+  setSelectedScout,
+  activeScout,
+  scoutActivity,
+  scoutAssignedLeads,
+  scoutAssignedLeadsLoading,
+  scoutAssignedLeadsError,
+  onScoutAssignedLeadsPageChange,
+  niches,
+  nichesLoading,
+  error,
+  createScout,
+  listUnassignedLeads,
+  assignLeads,
+  refresh,
+}: {
+  scouts: ScoutMetrics[];
+  scoutSearch: string;
+  setScoutSearch: (value: string) => void;
+  scoutSort: ScoutSort;
+  setScoutSort: (value: ScoutSort) => void;
+  selectedScout: string | null;
+  setSelectedScout: (value: string | null) => void;
+  activeScout: ScoutMetrics | null;
+  scoutActivity: RecentActivity[];
+  scoutAssignedLeads: ScoutAssignedLeadsPage | null;
+  scoutAssignedLeadsLoading: boolean;
+  scoutAssignedLeadsError: string;
+  onScoutAssignedLeadsPageChange: (page: number) => void;
+  niches: NicheAssignment[];
+  nichesLoading: boolean;
+  error: string;
+  createScout: (args: { username: string }) => Promise<{ username: string; password: string }>;
+  listUnassignedLeads: (args: { niche: string; search: string | null; page: number; pageSize: number }) => Promise<UnassignedLeadPage>;
+  assignLeads: (args: { operatorId: string; niche: string; leadIds: string[] }) => Promise<{ assigned: number; skipped: number }>;
+  refresh: () => Promise<void>;
+}) {
+  const [username, setUsername] = useState("");
+  const [createdCredential, setCreatedCredential] = useState<{ username: string; password: string } | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState("");
+  const [copied, setCopied] = useState<"username" | "password" | null>(null);
+  const [assignmentScout, setAssignmentScout] = useState("");
+  const [assignmentNiche, setAssignmentNiche] = useState("");
+  const [assignmentSearch, setAssignmentSearch] = useState("");
+  const [debouncedAssignmentSearch, setDebouncedAssignmentSearch] = useState("");
+  const [unassignedPage, setUnassignedPage] = useState<UnassignedLeadPage | null>(null);
+  const [unassignedPageNumber, setUnassignedPageNumber] = useState(1);
+  const [unassignedLoading, setUnassignedLoading] = useState(false);
+  const [assignmentError, setAssignmentError] = useState("");
+  const [assignmentNotice, setAssignmentNotice] = useState("");
+  const [selectedLeadIds, setSelectedLeadIds] = useState<string[]>([]);
+  const [assigning, setAssigning] = useState(false);
+
+  const activeScouts = scouts.filter((scout) => scout.active && scout.hasAccount);
+
+  useEffect(() => {
+    if (!assignmentScout && activeScouts.length > 0) setAssignmentScout(activeScouts[0].operatorId);
+  }, [activeScouts, assignmentScout]);
+
+  useEffect(() => {
+    if (!assignmentNiche && niches.length > 0) setAssignmentNiche(niches[0].name);
+  }, [assignmentNiche, niches]);
+
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      setDebouncedAssignmentSearch(assignmentSearch.trim().length >= 3 ? assignmentSearch.trim() : "");
+      setUnassignedPageNumber(1);
+    }, 300);
+    return () => window.clearTimeout(handle);
+  }, [assignmentSearch]);
+
+  const loadUnassigned = useCallback(async () => {
+    if (!assignmentNiche) {
+      setUnassignedPage(null);
+      return;
+    }
+    setUnassignedLoading(true);
+    setAssignmentError("");
+    try {
+      setUnassignedPage(await listUnassignedLeads({
+        niche: assignmentNiche,
+        search: debouncedAssignmentSearch || null,
+        page: unassignedPageNumber,
+        pageSize: 25,
+      }));
+      setSelectedLeadIds([]);
+    } catch (loadError) {
+      setAssignmentError(readError(loadError));
+      setUnassignedPage(null);
+    } finally {
+      setUnassignedLoading(false);
+    }
+  }, [assignmentNiche, debouncedAssignmentSearch, listUnassignedLeads, unassignedPageNumber]);
+
+  useEffect(() => {
+    void loadUnassigned();
+  }, [loadUnassigned]);
+
+  async function submitScout(event: FormEvent) {
+    event.preventDefault();
+    const normalized = username.trim().toLowerCase();
+    if (normalized.length < 3) {
+      setCreateError("Username must be at least 3 characters.");
+      return;
+    }
+    setCreating(true);
+    setCreateError("");
+    setCreatedCredential(null);
+    try {
+      const result = await createScout({ username: normalized });
+      setCreatedCredential(result);
+      setUsername("");
+      await refresh();
+      setAssignmentScout(result.username);
+    } catch (submitError) {
+      setCreateError(readError(submitError));
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function copyCredential(kind: "username" | "password", value: string) {
+    await navigator.clipboard.writeText(value);
+    setCopied(kind);
+    window.setTimeout(() => setCopied(null), 1_500);
+  }
+
+  function toggleLead(leadId: string) {
+    setSelectedLeadIds((current) => current.includes(leadId)
+      ? current.filter((id) => id !== leadId)
+      : [...current, leadId]);
+  }
+
+  async function assignSelected() {
+    if (!assignmentScout || !assignmentNiche || selectedLeadIds.length === 0) return;
+    setAssigning(true);
+    setAssignmentError("");
+    setAssignmentNotice("");
+    try {
+      const result = await assignLeads({
+        operatorId: assignmentScout,
+        niche: assignmentNiche,
+        leadIds: selectedLeadIds,
+      });
+      setAssignmentNotice(
+        `${formatNumber(result.assigned)} lead${result.assigned === 1 ? "" : "s"} assigned to ${assignmentScout}${result.skipped ? `; ${result.skipped} were already assigned.` : "."}`,
+      );
+      setSelectedLeadIds([]);
+      await Promise.all([loadUnassigned(), refresh()]);
+    } catch (assignError) {
+      setAssignmentError(readError(assignError));
+    } finally {
+      setAssigning(false);
+    }
+  }
+
+  return (
+    <div className="scouts-workspace">
+      {error && <Notice message={error} onRetry={refresh} />}
+      <section className="scout-admin-grid">
+        <article className="panel create-scout-panel">
+          <PanelHeading eyebrow="New account" title="Create a scout" description="Generate a login for a new team member" icon={<UserCheck size={18} />} />
+          <form className="create-scout-form" onSubmit={submitScout}>
+            <label>
+              Username
+              <input
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                minLength={3}
+                maxLength={40}
+                pattern="[A-Za-z0-9][A-Za-z0-9._-]{2,39}"
+                placeholder="e.g. scout.jane"
+                autoComplete="off"
+                required
+              />
+            </label>
+            <p>Minimum 3 characters. Letters, numbers, dots, underscores, and hyphens are allowed.</p>
+            {createError && <p className="form-error">{createError}</p>}
+            <button className="primary-button" type="submit" disabled={creating || username.trim().length < 3}>
+              {creating ? <RefreshCw size={15} className="spin" /> : <UserCheck size={15} />}
+              {creating ? "Creating scout…" : "Create scout and password"}
+            </button>
+          </form>
+          {createdCredential && (
+            <div className="credential-card">
+              <div><CheckCircle2 size={17} /><strong>Scout created</strong></div>
+              <p>Copy this password now. For security, the dashboard cannot recover it after this card is closed or the page is refreshed.</p>
+              <label><span>Username</span><code>{createdCredential.username}</code><button type="button" onClick={() => void copyCredential("username", createdCredential.username)}>{copied === "username" ? <Check size={14} /> : <Copy size={14} />}</button></label>
+              <label><span>Password</span><code>{createdCredential.password}</code><button type="button" onClick={() => void copyCredential("password", createdCredential.password)}>{copied === "password" ? <Check size={14} /> : <Copy size={14} />}</button></label>
+            </div>
+          )}
+        </article>
+
+        <article className="panel niche-capacity-panel">
+          <PanelHeading eyebrow="Lead capacity" title="Assigned vs unassigned by niche" description="Every niche, with live assignment coverage" icon={<Database size={18} />} />
+          {nichesLoading && niches.length === 0 ? (
+            <div className="compact-loading"><RefreshCw size={16} className="spin" /> Loading niche counts…</div>
+          ) : (
+            <div className="niche-capacity-table-scroll">
+              <table className="niche-capacity-table">
+                <thead><tr><th>Niche</th><th>Total</th><th>Assigned</th><th>Unassigned</th></tr></thead>
+                <tbody>{niches.map((niche) => <tr key={niche.name}><td>{niche.name}</td><td>{formatNumber(niche.total)}</td><td>{formatNumber(niche.assigned)}</td><td><strong>{formatNumber(niche.unassigned)}</strong></td></tr>)}</tbody>
+              </table>
+            </div>
+          )}
+        </article>
+      </section>
+
+      <section className="panel manual-assignment-panel">
+        <div className="manual-assignment-head">
+          <PanelHeading eyebrow="Manual allocation" title="Assign leads to a scout" description="Choose a niche, select individual unassigned leads, then assign them" icon={<Target size={18} />} />
+          <button className="secondary-button" onClick={() => void loadUnassigned()} disabled={unassignedLoading}><RefreshCw size={14} className={unassignedLoading ? "spin" : ""} /> Refresh</button>
+        </div>
+        <div className="assignment-filters">
+          <label>Scout<select value={assignmentScout} onChange={(event) => setAssignmentScout(event.target.value)}><option value="">Select scout</option>{activeScouts.map((scout) => <option key={scout.operatorId} value={scout.operatorId}>{scout.username}</option>)}</select></label>
+          <label>Niche<select value={assignmentNiche} onChange={(event) => { setAssignmentNiche(event.target.value); setUnassignedPageNumber(1); }}><option value="">Select niche</option>{niches.map((niche) => <option key={niche.name} value={niche.name}>{niche.name} ({formatNumber(niche.unassigned)} open)</option>)}</select></label>
+          <label>Search leads<input value={assignmentSearch} onChange={(event) => setAssignmentSearch(event.target.value)} placeholder="Type at least 3 characters" /></label>
+        </div>
+        {assignmentNotice && <p className="assignment-success"><CheckCircle2 size={15} />{assignmentNotice}</p>}
+        {assignmentError && <p className="form-error assignment-message">{assignmentError}</p>}
+        {unassignedLoading ? <div className="compact-loading assignment-loading"><RefreshCw size={17} className="spin" /> Loading unassigned leads…</div> : unassignedPage && (
+          <>
+            <div className="assignment-selection-bar">
+              <span>{formatNumber(unassignedPage.total)} unassigned leads found · {selectedLeadIds.length} selected</span>
+              <div>
+                <button className="secondary-button" type="button" onClick={() => setSelectedLeadIds(unassignedPage.leads.map((lead) => lead.id))} disabled={unassignedPage.leads.length === 0}>Select page</button>
+                <button className="primary-button" type="button" onClick={() => void assignSelected()} disabled={assigning || !assignmentScout || selectedLeadIds.length === 0}>{assigning ? <RefreshCw size={14} className="spin" /> : <UserCheck size={14} />}{assigning ? "Assigning…" : `Assign ${selectedLeadIds.length || "selected"}`}</button>
+              </div>
+            </div>
+            <div className="manual-leads-table-scroll">
+              <table className="manual-leads-table">
+                <thead><tr><th aria-label="Select" /><th>Lead</th><th>Company</th><th>Profile</th></tr></thead>
+                <tbody>{unassignedPage.leads.map((lead) => <tr key={lead.id} className={selectedLeadIds.includes(lead.id) ? "selected" : ""} onClick={() => toggleLead(lead.id)}><td><input type="checkbox" checked={selectedLeadIds.includes(lead.id)} onChange={() => toggleLead(lead.id)} onClick={(event) => event.stopPropagation()} aria-label={`Select ${lead.fullName || "lead"}`} /></td><td><strong>{lead.fullName || "Unnamed lead"}</strong><span>{lead.currentTitle || "No title"}</span></td><td>{lead.companyName || "—"}</td><td><a href={lead.profileUrl} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>Open <ExternalLink size={11} /></a></td></tr>)}</tbody>
+              </table>
+            </div>
+            {unassignedPage.leads.length === 0 && <div className="assigned-leads-state">No unassigned leads match this niche and search.</div>}
+            {unassignedPage.pageCount > 1 && <div className="pagination"><p>Page {unassignedPage.page} of {unassignedPage.pageCount}</p><div><button onClick={() => setUnassignedPageNumber((page) => Math.max(1, page - 1))} disabled={unassignedPage.page === 1}><ArrowLeft size={15} /> Previous</button><button onClick={() => setUnassignedPageNumber((page) => Math.min(unassignedPage.pageCount, page + 1))} disabled={unassignedPage.page === unassignedPage.pageCount}>Next <ArrowRight size={15} /></button></div></div>}
+          </>
+        )}
+      </section>
+
+      <section className="panel scout-panel">
+        <div className="scout-panel-head">
+          <PanelHeading eyebrow="Scout directory" title="Accounts and performance" description="Open a scout to review their full assigned queue" icon={<Users size={18} />} />
+          <div className="scout-controls"><label className="search-field compact"><Search size={16} /><input value={scoutSearch} onChange={(event) => setScoutSearch(event.target.value)} placeholder="Find a scout" />{scoutSearch && <button onClick={() => setScoutSearch("")} aria-label="Clear scout search"><X size={14} /></button>}</label><select value={scoutSort} onChange={(event) => setScoutSort(event.target.value as ScoutSort)} aria-label="Sort scouts"><option value="activity">Most activity</option><option value="emails">Most emails</option><option value="accepted">Most accepted</option><option value="assigned">Most assigned</option><option value="name">Name</option></select></div>
+        </div>
+        <ScoutTable scouts={scouts} selectedScout={selectedScout} setSelectedScout={setSelectedScout} />
+        {activeScout && <ScoutDetail scout={activeScout} activity={scoutActivity} assignedLeads={scoutAssignedLeads} assignedLeadsLoading={scoutAssignedLeadsLoading} assignedLeadsError={scoutAssignedLeadsError} onAssignedLeadsPageChange={onScoutAssignedLeadsPageChange} close={() => setSelectedScout(null)} />}
+      </section>
     </div>
   );
 }
