@@ -127,6 +127,22 @@ assignments.
 4. Choose **Load unpacked** and select the `chrome-extension` directory.
 5. Sign in using a generated scout username and password.
 
+For scouts who cannot use Developer mode while the unlisted Chrome Web Store
+release is under review, a signed Windows self-hosted release can be generated:
+
+```powershell
+npm run extension:test
+npm run extension:selfhost
+```
+
+The hosting bundle is written to `self-hosted-extension`. It targets
+`https://extensions.codeblix.com/callum-scout/` and contains the install page,
+signed CRX, update manifest, scoped Windows policy files, and Apache/Cloudflare
+header configurations. The signing key is created once at
+`.secrets/callum-scout-selfhost.pem`; it is Git-ignored and must never be
+uploaded or committed. See `self-hosted-extension/README.md` for deployment and
+update instructions.
+
 The popup shows fresh, engaged, connection-requested, accepted,
 email-collected, and failed counts. It also lets a scout:
 

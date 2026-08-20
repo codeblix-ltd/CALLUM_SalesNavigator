@@ -1,0 +1,18 @@
+/*.crx
+  Content-Type: application/x-chrome-extension
+  Cache-Control: no-store, max-age=0
+  X-Content-Type-Options: nosniff
+
+/*.xml
+  Content-Type: application/xml; charset=utf-8
+  Cache-Control: no-store, max-age=0
+  X-Content-Type-Options: nosniff
+
+/*.reg
+  Content-Type: application/octet-stream
+  Content-Disposition: attachment
+  Cache-Control: no-store, max-age=0
+
+/*
+  Referrer-Policy: same-origin
+  X-Content-Type-Options: nosniff
