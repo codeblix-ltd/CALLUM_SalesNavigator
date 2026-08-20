@@ -14,6 +14,8 @@ const AUTOMATION_HOME_URL = chrome.runtime.getURL("automation.html");
 const AUTOMATION_GROUP_TITLE = "CALLUM AUTOMATION";
 const ACTIVE_RUN_STATUSES = new Set(["running", "pausing"]);
 const CONNECTION_COMPLETION_RETRY_DELAYS_MS = [0, 750, 2_000];
+const LINKEDIN_TAB_LOAD_TIMEOUT_MS = 90_000;
+const LINKEDIN_TAB_READY_PROBE_MS = 1_000;
 
 let premiumCheckPromise = null;
 let workflowPromise = null;
@@ -1245,7 +1247,10 @@ async function reviewAcceptedConnections(
   runContext.connectionReviewTabId = tab.id;
   let reviewResult;
   try {
-    await waitForTabComplete(tab.id);
+    await waitForTabComplete(tab.id, {
+      expectedUrl: CONNECTIONS_URL,
+      stage: "LinkedIn connections page",
+    });
     throwIfWorkflowControlled(runContext);
     await waitForAutomationContentScript(runContext, tab.id);
     const scan = await sendAutomationMessageToTab(runContext, tab.id, {
@@ -1436,7 +1441,10 @@ async function autoWithdrawOldRequests(runContext = null) {
   }
 
   try {
-    await waitForTabComplete(tab.id);
+    await waitForTabComplete(tab.id, {
+      expectedUrl: SENT_INVITATIONS_URL,
+      stage: "LinkedIn sent invitations page",
+    });
     if (runContext) throwIfWorkflowControlled(runContext);
     if (runContext) await waitForAutomationContentScript(runContext, tab.id);
     else await waitForContentScript(tab.id);
@@ -1492,7 +1500,10 @@ async function collectAcceptedContact(lead, runContext) {
   const tab = await createAutomationTab(runContext, requestedProfileUrl);
   if (!tab?.id) throw new Error("We couldn’t open this LinkedIn profile.");
   try {
-    await waitForTabComplete(tab.id);
+    await waitForTabComplete(tab.id, {
+      expectedUrl: requestedProfileUrl,
+      stage: `${lead.fullName || "This lead"}'s LinkedIn profile`,
+    });
     throwIfWorkflowControlled(runContext);
     const profileUrl = await waitForResolvedLinkedInProfileUrl(
       tab.id,
@@ -1634,7 +1645,10 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
 
     const tab = await createAutomationTab(runContext, requestedProfileUrl);
     workflowTabId = tab.id;
-    await waitForTabComplete(tab.id);
+    await waitForTabComplete(tab.id, {
+      expectedUrl: requestedProfileUrl,
+      stage: `${lead.fullName || "This lead"}'s LinkedIn profile`,
+    });
     throwIfWorkflowControlled(runContext);
     const profileUrl = await waitForResolvedLinkedInProfileUrl(
       tab.id,
@@ -1699,7 +1713,10 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
     if (needsEngagement) {
       const recentActivityUrl = `${profileUrl}/recent-activity/all/`;
       await chrome.tabs.update(tab.id, { url: recentActivityUrl });
-      await waitForTabComplete(tab.id);
+      await waitForTabComplete(tab.id, {
+        expectedUrl: recentActivityUrl,
+        stage: `${lead.fullName || "This lead"}'s recent activity`,
+      });
       throwIfWorkflowControlled(runContext);
       await waitForAutomationContentScript(runContext, tab.id);
       engagementResponse = await sendAutomationMessageToTab(runContext, tab.id, {
@@ -1728,7 +1745,10 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
     });
 
     await chrome.tabs.update(tab.id, { url: profileUrl });
-    await waitForTabComplete(tab.id);
+    await waitForTabComplete(tab.id, {
+      expectedUrl: profileUrl,
+      stage: `${lead.fullName || "This lead"}'s profile before the connection request`,
+    });
     throwIfWorkflowControlled(runContext);
     await waitForAutomationContentScript(runContext, tab.id);
     if (noteDisabledForEligibility) {
@@ -1958,32 +1978,116 @@ async function disableInvitationNoteSetting(settings) {
   });
 }
 
-function waitForTabComplete(tabId) {
+function waitForTabComplete(
+  tabId,
+  {
+    expectedUrl = null,
+    stage = "LinkedIn page",
+    timeoutMs = LINKEDIN_TAB_LOAD_TIMEOUT_MS,
+  } = {},
+) {
   return new Promise((resolve, reject) => {
     let settled = false;
+    let timeout = null;
+    let readinessProbe = null;
+    let lastKnownPath = "";
     const finish = (error) => {
       if (settled) return;
       settled = true;
       chrome.tabs.onUpdated.removeListener(listener);
       clearTimeout(timeout);
+      clearTimeout(readinessProbe);
       if (error) reject(error);
       else resolve();
     };
-    const listener = (id, changeInfo) => {
-      if (id === tabId && changeInfo.status === "complete") finish();
+    const probeReadiness = async () => {
+      if (settled) return;
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        const currentUrl = tab.pendingUrl || tab.url || "";
+        lastKnownPath = linkedInPath(currentUrl) || lastKnownPath;
+        if (
+          tab.status === "complete" &&
+          (!expectedUrl || isExpectedLinkedInPage(currentUrl, expectedUrl))
+        ) {
+          finish();
+          return;
+        }
+        if (expectedUrl) {
+          const pageInfo = await sendMessageToTab(tabId, {
+            type: "GET_PAGE_INFO",
+          });
+          if (
+            pageInfo?.url &&
+            isExpectedLinkedInPage(pageInfo.url, expectedUrl)
+          ) {
+            finish();
+            return;
+          }
+        }
+      } catch (error) {
+        if (/no tab with id/i.test(cleanError(error))) {
+          finish(error);
+          return;
+        }
+      }
+      if (!settled) {
+        readinessProbe = setTimeout(
+          probeReadiness,
+          LINKEDIN_TAB_READY_PROBE_MS,
+        );
+      }
+    };
+    const listener = (id) => {
+      if (id === tabId) void probeReadiness();
     };
     chrome.tabs.onUpdated.addListener(listener);
-    const timeout = setTimeout(
-      () => finish(new Error("LinkedIn took too long to load. Try again.")),
-      45_000,
+    timeout = setTimeout(
+      () =>
+        finish(
+          new Error(
+            `${stage} did not become ready within ${Math.round(timeoutMs / 1_000)} seconds${lastKnownPath ? ` (last page: ${lastKnownPath})` : ""}.`,
+          ),
+        ),
+      timeoutMs,
     );
-    chrome.tabs
-      .get(tabId)
-      .then((tab) => {
-        if (tab.status === "complete") finish();
-      })
-      .catch((error) => finish(error));
+    void probeReadiness();
   });
+}
+
+function isExpectedLinkedInPage(actualValue, expectedValue) {
+  try {
+    const actual = new URL(String(actualValue));
+    const expected = new URL(String(expectedValue));
+    if (
+      !/(^|\.)linkedin\.com$/i.test(actual.hostname) ||
+      !/(^|\.)linkedin\.com$/i.test(expected.hostname)
+    ) {
+      return false;
+    }
+    const actualPath = actual.pathname.replace(/\/+$/, "");
+    const expectedPath = expected.pathname.replace(/\/+$/, "");
+    if (/^\/in\/[^/]+$/i.test(expectedPath)) {
+      return /^\/in\/[^/]+$/i.test(actualPath);
+    }
+    if (/^\/in\/[^/]+\/recent-activity\/all$/i.test(expectedPath)) {
+      return /^\/in\/[^/]+\/recent-activity\/all$/i.test(actualPath);
+    }
+    return actualPath === expectedPath;
+  } catch {
+    return false;
+  }
+}
+
+function linkedInPath(value) {
+  try {
+    const url = new URL(String(value));
+    return /(^|\.)linkedin\.com$/i.test(url.hostname)
+      ? url.pathname
+      : "";
+  } catch {
+    return "";
+  }
 }
 
 async function waitForContentScript(tabId, timeoutMs = 20_000) {

@@ -412,7 +412,7 @@ export const getOverview = action({
              e.operator_id,
              e.event_type,
              l.full_name,
-             coalesce(e.details->>'comment', e.details->>'message') AS detail,
+             coalesce(e.details->>'comment', e.details->>'message', e.details->>'error') AS detail,
              coalesce(e.details->>'postUrl', e.details->>'profileUrl') AS url,
              e.created_at::STRING AS at
            FROM lead_assignment_events AS e

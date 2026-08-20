@@ -492,13 +492,14 @@ async function saveOnboarding(event) {
         "Check your Premium plan before you continue.",
       );
     }
+    const includeNote = premium && premiumVerified;
     const settings = await updateSettings({
       premium,
       premiumVerified: premium && premiumVerified,
       connectionDailyLimit: Number(elements.onboardingConnectionLimit.value),
       postEngagements: Number(elements.onboardingPostsPerLead.value),
       onboardingCompleted: true,
-      includeNote: false,
+      includeNote,
     });
     await chrome.storage.local.set({
       validateBeforeCommenting: elements.onboardingValidateComment.checked,

@@ -147,6 +147,13 @@ assert.match(popupScript, /connectionDailyLimit/);
 assert.doesNotMatch(popupScript, /values\.engagementDailyLimit/);
 assert.match(popupScript, /premiumVerified/);
 assert.match(popupScript, /onboardingValidateComment\.checked/);
+const saveOnboardingSource = popupScript.slice(
+  popupScript.indexOf("async function saveOnboarding"),
+  popupScript.indexOf("async function startAutoLead"),
+);
+assert.match(saveOnboardingSource, /const includeNote = premium && premiumVerified/);
+assert.match(saveOnboardingSource, /includeNote,/);
+assert.doesNotMatch(saveOnboardingSource, /includeNote:\s*false/);
 assert.match(popupScript, /stored\.validateBeforeCommenting \?\? false/);
 assert.match(popupScript, /scouts:resetOnboarding/);
 assert.match(popupSource, /id="daily-checklist"/);
@@ -261,8 +268,15 @@ assert.match(backgroundSource, /outside the protected window/);
 assert.match(backgroundSource, /premium\/my-premium/);
 assert.match(backgroundSource, /isLinkedInPremiumUrl\(finalUrl\)/);
 assert.match(backgroundSource, /premium: true/);
+assert.match(backgroundSource, /LINKEDIN_TAB_LOAD_TIMEOUT_MS = 90_000/);
+assert.match(backgroundSource, /type: "GET_PAGE_INFO"/);
+assert.match(backgroundSource, /isExpectedLinkedInPage/);
 assert.match(backgroundSource, /localSettings\.validateBeforeCommenting \?\? false/);
 assert.match(backgroundSource, /settings\.includeNote && settings\.linkedinPremium/);
+assert.match(
+  adminSource,
+  /coalesce\(e\.details->>'comment', e\.details->>'message', e\.details->>'error'\)/,
+);
 assert.match(backgroundSource, /getConnectionReviewPlan/);
 assert.match(backgroundSource, /recordConnectionReview/);
 assert.match(backgroundSource, /recordSentInvitationReview/);
@@ -517,6 +531,27 @@ assert.equal(
     "https://linkedin.com/in/taylor-example/recent-activity/all/?x=1",
   ),
   "https://www.linkedin.com/in/taylor-example",
+);
+assert.equal(
+  backgroundContext.isExpectedLinkedInPage(
+    "https://www.linkedin.com/in/resolved-profile/",
+    "https://www.linkedin.com/in/requested-profile",
+  ),
+  true,
+);
+assert.equal(
+  backgroundContext.isExpectedLinkedInPage(
+    "https://www.linkedin.com/in/resolved-profile/recent-activity/all/",
+    "https://www.linkedin.com/in/requested-profile/recent-activity/all/",
+  ),
+  true,
+);
+assert.equal(
+  backgroundContext.isExpectedLinkedInPage(
+    "https://www.linkedin.com/feed/",
+    "https://www.linkedin.com/in/requested-profile",
+  ),
+  false,
 );
 assert.equal(backgroundContext.defaultAutoLeadRunState().status, "idle");
 assert.equal(
