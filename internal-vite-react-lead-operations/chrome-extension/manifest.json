@@ -23,7 +23,6 @@
   "permissions": ["alarms", "storage", "tabGroups", "tabs"],
   "host_permissions": [
     "https://*.convex.cloud/*",
-    "https://*.convex.site/*",
     "https://*.linkedin.com/*"
   ],
   "content_scripts": [
