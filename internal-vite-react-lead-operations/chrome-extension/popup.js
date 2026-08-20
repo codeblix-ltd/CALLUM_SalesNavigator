@@ -6,6 +6,7 @@ const elements = {
   onboardingForm: document.querySelector("#onboarding-form"),
   username: document.querySelector("#username"),
   password: document.querySelector("#password"),
+  openHelp: document.querySelector("#open-help"),
   signOut: document.querySelector("#sign-out"),
   refresh: document.querySelector("#refresh"),
   scoutName: document.querySelector("#scout-name"),
@@ -121,6 +122,9 @@ let manualLeadRequestId = 0;
 
 elements.loginForm.addEventListener("submit", handleLogin);
 elements.onboardingForm.addEventListener("submit", saveOnboarding);
+elements.openHelp.addEventListener("click", () =>
+  chrome.tabs.create({ url: chrome.runtime.getURL("help.html"), active: true }),
+);
 elements.signOut.addEventListener("click", handleSignOut);
 elements.refresh.addEventListener("click", refreshDashboard);
 elements.openDashboard.addEventListener("click", () =>

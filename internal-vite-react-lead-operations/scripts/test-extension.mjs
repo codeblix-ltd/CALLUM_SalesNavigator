@@ -51,6 +51,8 @@ const [
     readFile(path.join(projectRoot, "database", "schema.sql"), "utf8"),
   ]);
 const manifest = JSON.parse(manifestSource);
+const helpSource = await readExtensionFile("help.html");
+const helpStyles = await readExtensionFile("help.css");
 
 assert.equal(manifest.version, "0.10.12");
 assert.deepEqual(manifest.content_scripts[0].matches, [
@@ -89,6 +91,11 @@ assert.match(popupScript, /STOP_AUTO_LEAD/);
 assert.match(popupScript, /saved resume point was cleared/i);
 assert.match(popupSource, /id="open-dashboard"/);
 assert.match(popupScript, /dashboard\.html/);
+assert.match(popupSource, /id="open-help"/);
+assert.match(popupScript, /help\.html/);
+assert.match(helpSource, /How Callum Scout works/);
+assert.match(helpSource, /What happens after you click Start today’s work/);
+assert.match(helpStyles, /\.help-steps/);
 assert.match(automationSource, /Dedicated automation window/);
 assert.match(automationSource, /purple group/);
 assert.match(automationSource, /id="pause-run"/);

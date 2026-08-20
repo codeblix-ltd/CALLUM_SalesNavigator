@@ -35,6 +35,7 @@ button:disabled { cursor: wait; opacity: .55; }
   font-weight: 900;
 }
 .topbar > div:nth-child(2) { min-width: 0; flex: 1; }
+.topbar-actions { display: flex; align-items: center; gap: 2px; }
 .topbar strong, .topbar span { display: block; }
 .topbar strong { font-size: 14px; }
 .topbar span { margin-top: 3px; color: #758097; font-size: 10px; }
