@@ -8,6 +8,7 @@ import { action } from "./_generated/server";
 import { getPool } from "./lib/cockroach";
 
 const usernamePattern = /^[a-z0-9][a-z0-9._-]{2,39}$/;
+type ScoutLookup = { operatorId: string; active: boolean };
 
 const nicheAssignmentValidator = v.object({
   name: v.string(),
@@ -190,7 +191,7 @@ export const assignLeads = action({
       throw new Error("Select between 1 and 100 leads.");
     }
     const accounts = await ctx.runQuery(internal.adminIdentity.listScouts, {});
-    const scout = accounts.scouts.find((item) => item.operatorId === operatorId);
+    const scout = (accounts.scouts as ScoutLookup[]).find((item) => item.operatorId === operatorId);
     if (!scout?.active) throw new Error("Select an active scout.");
 
     const result = await getPool().query(
@@ -230,7 +231,7 @@ export const assignLeadCount = action({
       throw new Error("Choose a number between 1 and 100,000.");
     }
     const accounts = await ctx.runQuery(internal.adminIdentity.listScouts, {});
-    const scout = accounts.scouts.find((item) => item.operatorId === operatorId);
+    const scout = (accounts.scouts as ScoutLookup[]).find((item) => item.operatorId === operatorId);
     if (!scout?.active) throw new Error("Select an active scout.");
 
     const database = getPool();
@@ -258,6 +259,26 @@ export const assignLeadCount = action({
       assigned: result.rowCount ?? 0,
       remaining: Number(remainingResult.rows[0]?.remaining ?? 0),
     };
+  },
+});
+
+export const setScoutActive = action({
+  args: {
+    operatorId: v.string(),
+    active: v.boolean(),
+  },
+  returns: v.object({
+    operatorId: v.string(),
+    username: v.string(),
+    active: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
+    const operatorId = normalizeUsername(args.operatorId);
+    return await ctx.runMutation("adminScoutMutations:updateScoutActive" as any, {
+      operatorId,
+      active: args.active,
+    });
   },
 });
 

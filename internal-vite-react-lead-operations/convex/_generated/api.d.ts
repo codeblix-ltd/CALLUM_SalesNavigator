@@ -10,6 +10,7 @@
 
 import type * as adminAnalytics from "../adminAnalytics.js";
 import type * as adminIdentity from "../adminIdentity.js";
+import type * as adminScoutMutations from "../adminScoutMutations.js";
 import type * as adminScouts from "../adminScouts.js";
 import type * as auth from "../auth.js";
 import type * as codexGateway from "../codexGateway.js";
@@ -33,6 +34,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   adminAnalytics: typeof adminAnalytics;
   adminIdentity: typeof adminIdentity;
+  adminScoutMutations: typeof adminScoutMutations;
   adminScouts: typeof adminScouts;
   auth: typeof auth;
   codexGateway: typeof codexGateway;

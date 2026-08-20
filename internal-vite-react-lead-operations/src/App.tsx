@@ -440,6 +440,7 @@ function Dashboard({ adminName }: { adminName: string }) {
   const listUnassignedLeads = useAction(api.adminScouts.listUnassignedLeads);
   const assignLeadsToScout = useAction(api.adminScouts.assignLeads);
   const assignLeadCount = useAction(api.adminScouts.assignLeadCount);
+  const setScoutActive = useAction(api.adminScouts.setScoutActive);
   const [view, setView] = useState<View>("overview");
   const [range, setRange] = useState<Range>("all");
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
@@ -943,6 +944,7 @@ function Dashboard({ adminName }: { adminName: string }) {
             listUnassignedLeads={listUnassignedLeads}
             assignLeads={assignLeadsToScout}
             assignLeadCount={assignLeadCount}
+            setScoutActive={setScoutActive}
             refresh={async () => {
               await Promise.all([refreshOverview(), refreshNicheAssignments()]);
             }}
@@ -1041,6 +1043,7 @@ function ScoutsPage({
   listUnassignedLeads,
   assignLeads,
   assignLeadCount,
+  setScoutActive,
   refresh,
 }: {
   scouts: ScoutMetrics[];
@@ -1063,6 +1066,7 @@ function ScoutsPage({
   listUnassignedLeads: (args: { niche: string; search: string | null; page: number; pageSize: number }) => Promise<UnassignedLeadPage>;
   assignLeads: (args: { operatorId: string; niche: string; leadIds: string[] }) => Promise<{ assigned: number; skipped: number }>;
   assignLeadCount: (args: { operatorId: string; niche: string; count: number }) => Promise<{ requested: number; assigned: number; remaining: number }>;
+  setScoutActive: (args: { operatorId: string; active: boolean }) => Promise<{ operatorId: string; username: string; active: boolean }>;
   refresh: () => Promise<void>;
 }) {
   const [username, setUsername] = useState("");
@@ -1083,11 +1087,16 @@ function ScoutsPage({
   const [assigning, setAssigning] = useState(false);
   const [quickAssignCount, setQuickAssignCount] = useState("50");
   const [quickAssigning, setQuickAssigning] = useState(false);
+  const [directoryOpen, setDirectoryOpen] = useState(false);
+  const [scoutToggleBusyId, setScoutToggleBusyId] = useState<string | null>(null);
 
   const activeScouts = scouts.filter((scout) => scout.active && scout.hasAccount);
 
   useEffect(() => {
     if (!assignmentScout && activeScouts.length > 0) setAssignmentScout(activeScouts[0].operatorId);
+    if (assignmentScout && !activeScouts.some((scout) => scout.operatorId === assignmentScout)) {
+      setAssignmentScout(activeScouts[0]?.operatorId ?? "");
+    }
   }, [activeScouts, assignmentScout]);
 
   useEffect(() => {
@@ -1214,6 +1223,20 @@ function ScoutsPage({
     }
   }
 
+  async function toggleScout(scout: ScoutMetrics) {
+    setScoutToggleBusyId(scout.operatorId);
+    setAssignmentError("");
+    try {
+      const result = await setScoutActive({ operatorId: scout.operatorId, active: !scout.active });
+      setAssignmentNotice(`${result.username} is now ${result.active ? "enabled" : "disabled"}. ${result.active ? "They can be included in future uploads." : "They will be excluded from lead uploads."}`);
+      await refresh();
+    } catch (toggleError) {
+      setAssignmentError(readError(toggleError));
+    } finally {
+      setScoutToggleBusyId(null);
+    }
+  }
+
   return (
     <div className="scouts-workspace">
       {error && <Notice message={error} onRetry={refresh} />}
@@ -1304,13 +1327,12 @@ function ScoutsPage({
         )}
       </section>
 
-      <section className="panel scout-panel">
+      <section className={`panel scout-panel scout-directory-panel ${directoryOpen ? "is-open" : "is-collapsed"}`}>
         <div className="scout-panel-head">
-          <PanelHeading eyebrow="Scout directory" title="Accounts and performance" description="Open a scout to review their full assigned queue" icon={<Users size={18} />} />
-          <div className="scout-controls"><label className="search-field compact"><Search size={16} /><input value={scoutSearch} onChange={(event) => setScoutSearch(event.target.value)} placeholder="Find a scout" />{scoutSearch && <button onClick={() => setScoutSearch("")} aria-label="Clear scout search"><X size={14} /></button>}</label><select value={scoutSort} onChange={(event) => setScoutSort(event.target.value as ScoutSort)} aria-label="Sort scouts"><option value="activity">Most activity</option><option value="emails">Most emails</option><option value="accepted">Most accepted</option><option value="assigned">Most assigned</option><option value="name">Name</option></select></div>
+          <div className="scout-directory-title"><PanelHeading eyebrow="Scout directory" title="Accounts and performance" description="Open a scout to review their full assigned queue" icon={<Users size={18} />} /><button className="scout-directory-toggle" type="button" onClick={() => setDirectoryOpen((open) => !open)} aria-expanded={directoryOpen}><ChevronDown size={16} className={directoryOpen ? "rotate-180" : ""} />{directoryOpen ? "Collapse" : "Expand"}</button></div>
+          {directoryOpen && <div className="scout-controls"><label className="search-field compact"><Search size={16} /><input value={scoutSearch} onChange={(event) => setScoutSearch(event.target.value)} placeholder="Find a scout" />{scoutSearch && <button onClick={() => setScoutSearch("")} aria-label="Clear scout search"><X size={14} /></button>}</label><select value={scoutSort} onChange={(event) => setScoutSort(event.target.value as ScoutSort)} aria-label="Sort scouts"><option value="activity">Most activity</option><option value="emails">Most emails</option><option value="accepted">Most accepted</option><option value="assigned">Most assigned</option><option value="name">Name</option></select></div>}
         </div>
-        <ScoutTable scouts={scouts} selectedScout={selectedScout} setSelectedScout={setSelectedScout} />
-        {activeScout && <ScoutDetail scout={activeScout} activity={scoutActivity} assignedLeads={scoutAssignedLeads} assignedLeadsLoading={scoutAssignedLeadsLoading} assignedLeadsError={scoutAssignedLeadsError} onAssignedLeadsPageChange={onScoutAssignedLeadsPageChange} close={() => setSelectedScout(null)} />}
+        {directoryOpen && <><ScoutTable scouts={scouts} selectedScout={selectedScout} setSelectedScout={setSelectedScout} onToggleActive={(scout) => void toggleScout(scout)} togglingScoutId={scoutToggleBusyId} />{activeScout && <ScoutDetail scout={activeScout} activity={scoutActivity} assignedLeads={scoutAssignedLeads} assignedLeadsLoading={scoutAssignedLeadsLoading} assignedLeadsError={scoutAssignedLeadsError} onAssignedLeadsPageChange={onScoutAssignedLeadsPageChange} close={() => setSelectedScout(null)} />}</>}
       </section>
     </div>
   );
@@ -1808,17 +1830,18 @@ function Funnel({ summary }: { summary: Summary }) {
   );
 }
 
-function ScoutTable({ scouts, selectedScout, setSelectedScout }: { scouts: ScoutMetrics[]; selectedScout: string | null; setSelectedScout: (value: string | null) => void }) {
+function ScoutTable({ scouts, selectedScout, setSelectedScout, onToggleActive, togglingScoutId }: { scouts: ScoutMetrics[]; selectedScout: string | null; setSelectedScout: (value: string | null) => void; onToggleActive?: (scout: ScoutMetrics) => void; togglingScoutId?: string | null }) {
   if (scouts.length === 0) return <div className="empty-state compact-empty"><Users size={23} /><h3>No scouts found</h3><p>Try clearing the scout search.</p></div>;
   return (
     <div className="scout-table-scroll">
       <table className="scout-table">
-        <thead><tr><th>Scout</th><th>Assigned</th><th>Fresh</th><th>Engaged</th><th>Requests</th><th>Pending</th><th>Accepted</th><th>Original emails</th><th>Failed</th><th>Last active</th></tr></thead>
+        <thead><tr><th>Scout</th><th>Assigned</th><th>Fresh</th><th>Engaged</th><th>Requests</th><th>Pending</th><th>Accepted</th><th>Original emails</th><th>Failed</th><th>Last active</th>{onToggleActive && <th>Access</th>}</tr></thead>
         <tbody>
           {scouts.map((scout) => (
             <tr key={scout.operatorId} className={selectedScout === scout.operatorId ? "selected" : ""} onClick={() => setSelectedScout(selectedScout === scout.operatorId ? null : scout.operatorId)}>
               <td><div className="scout-cell"><span>{initials(scout.username)}</span><div><strong>{scout.username}</strong><small className={scout.active ? "status-active" : "status-inactive"}>{scout.active ? "Active" : scout.hasAccount ? "Disabled" : "Unlinked"}</small></div></div></td>
               <td>{formatNumber(scout.assigned)}</td><td>{formatNumber(scout.fresh)}</td><td><strong>{formatNumber(scout.engaged)}</strong></td><td>{formatNumber(scout.requests)}</td><td>{formatNumber(scout.pending)}</td><td>{formatNumber(scout.accepted)}</td><td><span className="email-count"><Mail size={13} />{formatNumber(scout.emails)}</span></td><td><span className={scout.failed ? "failed-count" : ""}>{formatNumber(scout.failed)}</span></td><td><span className="last-active">{scout.lastActive ? formatRelativeTime(scout.lastActive) : "No activity"}</span></td>
+              {onToggleActive && <td><button className={`scout-access-toggle ${scout.active ? "is-enabled" : "is-disabled"}`} type="button" disabled={togglingScoutId === scout.operatorId} onClick={(event) => { event.stopPropagation(); onToggleActive(scout); }}>{togglingScoutId === scout.operatorId ? <RefreshCw size={12} className="spin" /> : scout.active ? "Disable" : "Enable"}</button></td>}
             </tr>
           ))}
         </tbody>
