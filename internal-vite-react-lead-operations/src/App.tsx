@@ -439,6 +439,7 @@ function Dashboard({ adminName }: { adminName: string }) {
   const getNicheAssignments = useAction(api.adminScouts.getNicheAssignments);
   const listUnassignedLeads = useAction(api.adminScouts.listUnassignedLeads);
   const assignLeadsToScout = useAction(api.adminScouts.assignLeads);
+  const assignLeadCount = useAction(api.adminScouts.assignLeadCount);
   const [view, setView] = useState<View>("overview");
   const [range, setRange] = useState<Range>("all");
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
@@ -941,6 +942,7 @@ function Dashboard({ adminName }: { adminName: string }) {
             createScout={createScout}
             listUnassignedLeads={listUnassignedLeads}
             assignLeads={assignLeadsToScout}
+            assignLeadCount={assignLeadCount}
             refresh={async () => {
               await Promise.all([refreshOverview(), refreshNicheAssignments()]);
             }}
@@ -1038,6 +1040,7 @@ function ScoutsPage({
   createScout,
   listUnassignedLeads,
   assignLeads,
+  assignLeadCount,
   refresh,
 }: {
   scouts: ScoutMetrics[];
@@ -1059,6 +1062,7 @@ function ScoutsPage({
   createScout: (args: { username: string }) => Promise<{ username: string; password: string }>;
   listUnassignedLeads: (args: { niche: string; search: string | null; page: number; pageSize: number }) => Promise<UnassignedLeadPage>;
   assignLeads: (args: { operatorId: string; niche: string; leadIds: string[] }) => Promise<{ assigned: number; skipped: number }>;
+  assignLeadCount: (args: { operatorId: string; niche: string; count: number }) => Promise<{ requested: number; assigned: number; remaining: number }>;
   refresh: () => Promise<void>;
 }) {
   const [username, setUsername] = useState("");
@@ -1077,6 +1081,8 @@ function ScoutsPage({
   const [assignmentNotice, setAssignmentNotice] = useState("");
   const [selectedLeadIds, setSelectedLeadIds] = useState<string[]>([]);
   const [assigning, setAssigning] = useState(false);
+  const [quickAssignCount, setQuickAssignCount] = useState("50");
+  const [quickAssigning, setQuickAssigning] = useState(false);
 
   const activeScouts = scouts.filter((scout) => scout.active && scout.hasAccount);
 
@@ -1181,6 +1187,33 @@ function ScoutsPage({
     }
   }
 
+  async function assignByCount() {
+    const count = Number(quickAssignCount);
+    if (!assignmentScout || !assignmentNiche || !Number.isSafeInteger(count) || count < 1) {
+      setAssignmentError("Choose an active scout, a niche, and a lead count of at least 1.");
+      return;
+    }
+    setQuickAssigning(true);
+    setAssignmentError("");
+    setAssignmentNotice("");
+    try {
+      const result = await assignLeadCount({
+        operatorId: assignmentScout,
+        niche: assignmentNiche,
+        count,
+      });
+      setAssignmentNotice(
+        `${formatNumber(result.assigned)} of ${formatNumber(result.requested)} requested lead${result.requested === 1 ? "" : "s"} assigned to ${assignmentScout}. ${formatNumber(result.remaining)} remain open in ${assignmentNiche}.`,
+      );
+      setSelectedLeadIds([]);
+      await Promise.all([loadUnassigned(), refresh()]);
+    } catch (assignError) {
+      setAssignmentError(readError(assignError));
+    } finally {
+      setQuickAssigning(false);
+    }
+  }
+
   return (
     <div className="scouts-workspace">
       {error && <Notice message={error} onRetry={refresh} />}
@@ -1235,13 +1268,18 @@ function ScoutsPage({
 
       <section className="panel manual-assignment-panel">
         <div className="manual-assignment-head">
-          <PanelHeading eyebrow="Manual allocation" title="Assign leads to a scout" description="Choose a niche, select individual unassigned leads, then assign them" icon={<Target size={18} />} />
+          <PanelHeading eyebrow="Manual allocation" title="Assign leads to a scout" description="Choose a niche, assign a quantity, or select individual leads" icon={<Target size={18} />} />
           <button className="secondary-button" onClick={() => void loadUnassigned()} disabled={unassignedLoading}><RefreshCw size={14} className={unassignedLoading ? "spin" : ""} /> Refresh</button>
         </div>
         <div className="assignment-filters">
           <label>Scout<select value={assignmentScout} onChange={(event) => setAssignmentScout(event.target.value)}><option value="">Select scout</option>{activeScouts.map((scout) => <option key={scout.operatorId} value={scout.operatorId}>{scout.username}</option>)}</select></label>
           <label>Niche<select value={assignmentNiche} onChange={(event) => { setAssignmentNiche(event.target.value); setUnassignedPageNumber(1); }}><option value="">Select niche</option>{niches.map((niche) => <option key={niche.name} value={niche.name}>{niche.name} ({formatNumber(niche.unassigned)} open)</option>)}</select></label>
           <label>Search leads<input value={assignmentSearch} onChange={(event) => setAssignmentSearch(event.target.value)} placeholder="Type at least 3 characters" /></label>
+        </div>
+        <div className="quick-assignment">
+          <div><strong>Quick assign by quantity</strong><span>Take the next available leads from the selected niche automatically.</span></div>
+          <label>Number of leads<input type="number" min="1" max="100000" step="1" value={quickAssignCount} onChange={(event) => setQuickAssignCount(event.target.value)} /></label>
+          <button className="primary-button" type="button" onClick={() => void assignByCount()} disabled={quickAssigning || !assignmentScout || !assignmentNiche || Number(quickAssignCount) < 1}>{quickAssigning ? <RefreshCw size={14} className="spin" /> : <Target size={14} />}{quickAssigning ? "Assigning…" : "Assign quantity"}</button>
         </div>
         {assignmentNotice && <p className="assignment-success"><CheckCircle2 size={15} />{assignmentNotice}</p>}
         {assignmentError && <p className="form-error assignment-message">{assignmentError}</p>}

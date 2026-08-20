@@ -17,6 +17,7 @@ const getOverview = makeFunctionReference("adminAnalytics:getOverview");
 const getNicheAssignments = makeFunctionReference("adminScouts:getNicheAssignments");
 const listUnassignedLeads = makeFunctionReference("adminScouts:listUnassignedLeads");
 const createScout = makeFunctionReference("adminScouts:createScout");
+const assignLeadCount = makeFunctionReference("adminScouts:assignLeadCount");
 const listWorkEmailQueue = makeFunctionReference("workEmails:listQueue");
 const saveWorkEmailResult = makeFunctionReference("workEmails:saveResult");
 const credentials = {
@@ -94,6 +95,18 @@ if (existingScout) {
     duplicateScoutRejected = String(error).toLowerCase().includes("already exists");
   }
 }
+let invalidQuantityRejected = existingScout === undefined || firstNiche === null;
+if (existingScout && firstNiche) {
+  try {
+    await client.action(assignLeadCount, {
+      operatorId: existingScout.operatorId,
+      niche: firstNiche.name,
+      count: 0,
+    });
+  } catch (error) {
+    invalidQuantityRejected = String(error).toLowerCase().includes("between 1 and 100,000");
+  }
+}
 const workEmailQueue = await client.action(listWorkEmailQueue, { limit: 1 });
 const unmatchedWorkEmail = await client.action(saveWorkEmailResult, {
   leadId: null,
@@ -120,6 +133,7 @@ if (
   nicheAssignments.niches.some((niche) => niche.total !== niche.assigned + niche.unassigned) ||
   (unassignedLeads !== null && unassignedLeads.leads.length > 10) ||
   !duplicateScoutRejected ||
+  !invalidQuantityRejected ||
   !Array.isArray(workEmailQueue.leads) ||
   typeof workEmailQueue.remaining !== "number" ||
   !("originalEmail" in page.leads[0]) ||

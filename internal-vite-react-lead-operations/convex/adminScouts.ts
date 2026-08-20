@@ -209,6 +209,58 @@ export const assignLeads = action({
   },
 });
 
+export const assignLeadCount = action({
+  args: {
+    operatorId: v.string(),
+    niche: v.string(),
+    count: v.number(),
+  },
+  returns: v.object({
+    requested: v.number(),
+    assigned: v.number(),
+    remaining: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
+    const operatorId = normalizeUsername(args.operatorId);
+    const niche = args.niche.trim();
+    const count = Math.floor(args.count);
+    if (!niche) throw new Error("Select a niche.");
+    if (!Number.isSafeInteger(count) || count < 1 || count > 100_000) {
+      throw new Error("Choose a number between 1 and 100,000.");
+    }
+    const accounts = await ctx.runQuery(internal.adminIdentity.listScouts, {});
+    const scout = accounts.scouts.find((item) => item.operatorId === operatorId);
+    if (!scout?.active) throw new Error("Select an active scout.");
+
+    const database = getPool();
+    const result = await database.query(
+      `INSERT INTO lead_assignments (lead_id, operator_id, status)
+       SELECT ln.lead_id, $2, 'assigned'
+         FROM lead_niches AS ln
+         LEFT JOIN lead_assignments AS a ON a.lead_id = ln.lead_id
+        WHERE ln.niche = $1 AND a.lead_id IS NULL
+        ORDER BY ln.lead_id
+        LIMIT $3
+       ON CONFLICT (lead_id) DO NOTHING
+       RETURNING lead_id`,
+      [niche, operatorId, count],
+    );
+    const remainingResult = await database.query(
+      `SELECT count(*)::FLOAT8 AS remaining
+         FROM lead_niches AS ln
+         LEFT JOIN lead_assignments AS a ON a.lead_id = ln.lead_id
+        WHERE ln.niche = $1 AND a.lead_id IS NULL`,
+      [niche],
+    );
+    return {
+      requested: count,
+      assigned: result.rowCount ?? 0,
+      remaining: Number(remainingResult.rows[0]?.remaining ?? 0),
+    };
+  },
+});
+
 function normalizeUsername(value: string) {
   const username = value.trim().toLowerCase();
   if (!usernamePattern.test(username)) {
