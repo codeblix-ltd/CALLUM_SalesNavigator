@@ -35,6 +35,8 @@ const elements = {
   manualLeadList: document.querySelector("#manual-lead-list"),
   toggleSettings: document.querySelector("#toggle-settings"),
   settingsForm: document.querySelector("#settings-form"),
+  toggleAdvanced: document.querySelector("#toggle-advanced"),
+  advancedPanel: document.querySelector("#advanced-panel"),
   saveSettings: document.querySelector("#save-settings"),
   linkedinPlan: document.querySelector("#linkedin-plan"),
   connectionDailyLimit: document.querySelector("#connection-daily-limit"),
@@ -139,8 +141,12 @@ elements.manualLead.addEventListener("click", toggleManualLeadPicker);
 elements.closeManualLead.addEventListener("click", closeManualLeadPicker);
 elements.manualLeadSearch.addEventListener("input", queueManualLeadSearch);
 elements.toggleSettings.addEventListener("click", () => {
+  closeManualLeadPicker();
+  elements.advancedPanel.hidden = true;
+  elements.toggleAdvanced.setAttribute("aria-expanded", "false");
   elements.settingsForm.hidden = !elements.settingsForm.hidden;
 });
+elements.toggleAdvanced.addEventListener("click", toggleAdvancedPanel);
 elements.settingsForm.addEventListener("submit", saveSettings);
 elements.dailyChecklist.addEventListener("change", updateDailyTask);
 elements.followupList.addEventListener("click", handleFollowupClick);
@@ -535,11 +541,21 @@ function toggleManualLeadPicker() {
     return;
   }
   elements.settingsForm.hidden = true;
+  elements.advancedPanel.hidden = true;
+  elements.toggleAdvanced.setAttribute("aria-expanded", "false");
   elements.manualLeadPanel.hidden = false;
   elements.manualLead.setAttribute("aria-expanded", "true");
   elements.manualLeadSearch.value = "";
   void loadManualLeads("");
   elements.manualLeadSearch.focus();
+}
+
+function toggleAdvancedPanel() {
+  const shouldOpen = elements.advancedPanel.hidden;
+  closeManualLeadPicker();
+  elements.settingsForm.hidden = true;
+  elements.advancedPanel.hidden = !shouldOpen;
+  elements.toggleAdvanced.setAttribute("aria-expanded", String(shouldOpen));
 }
 
 function closeManualLeadPicker() {

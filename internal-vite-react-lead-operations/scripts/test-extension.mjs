@@ -154,6 +154,8 @@ assert.match(popupSource, /id="followup-list"/);
 assert.match(popupSource, /id="lead-check-list"/);
 assert.match(popupSource, /id="old-request-list"/);
 assert.match(popupSource, /id="question-form"/);
+assert.match(popupSource, /id="toggle-advanced"/);
+assert.match(popupSource, /id="advanced-panel"/);
 assert.match(popupSource, /<details id="work-tools" class="card work-tools">/);
 assert.doesNotMatch(popupSource, /<details id="work-tools"[^>]*\bopen\b/);
 assert.ok(
@@ -162,6 +164,11 @@ assert.ok(
   "Your work should stay at the end of the popup",
 );
 assert.match(popupSource, /id="check-accepted-connections"/);
+assert.match(popupSource, /<details id="connection-review-tools" class="card connection-review-tools">/);
+assert.doesNotMatch(
+  popupSource,
+  /<details id="connection-review-tools"[^>]*\bopen\b/,
+);
 assert.match(popupSource, /id="connection-review-status"/);
 assert.match(popupSource, /rejects matching sent requests older than 30 days/);
 assert.match(popupScript, /CHECK_ACCEPTED_CONNECTIONS/);
