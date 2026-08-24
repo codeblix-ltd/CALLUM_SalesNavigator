@@ -41,9 +41,19 @@
       </div>
 
       <div id="databaseSource" class="database-source">
-        <label for="dbLimit">Number of pending leads to load</label>
-        <input id="dbLimit" type="number" min="1" max="500" step="1" value="100">
-        <p>The oldest pending or retryable database leads are loaded first.</p>
+        <div class="database-fields">
+          <label for="dbNiche">
+            <span>Niche — choose one</span>
+            <select id="dbNiche" disabled>
+              <option value="">Sign in to load niches</option>
+            </select>
+          </label>
+          <label for="dbLimit">
+            <span>Number of leads to load</span>
+            <input id="dbLimit" type="number" min="1" max="500" step="1" value="100">
+          </label>
+        </div>
+        <p id="nicheHelp">Only pending or retryable leads from the niche you choose will be loaded.</p>
       </div>
 
       <div class="settings-grid">

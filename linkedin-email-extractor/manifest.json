@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Callum Work Email Finder",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Find company work emails from pasted LinkedIn links or the Callum lead database and save them safely.",
   "minimum_chrome_version": "118",
   "permissions": [

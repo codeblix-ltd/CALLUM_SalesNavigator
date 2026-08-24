@@ -47,8 +47,9 @@ const queueScheduler = createQueueScheduler(() => pumpQueue(), {
 
 function emptyState() {
   return {
-    version: 5,
+    version: 6,
     runId: null,
+    databaseNiche: null,
     running: false,
     paused: false,
     pauseReason: null,
@@ -85,7 +86,7 @@ function normalizeStoredState(stored) {
   return {
     ...emptyState(),
     ...stored,
-    version: 5,
+    version: 6,
     settings,
     jobs: (stored.jobs || []).map((job) => ({
       retryCount: 0,
@@ -199,7 +200,7 @@ function makeJob(input, index) {
   };
 }
 
-async function startRun(rawItems, rawSettings) {
+async function startRun(rawItems, rawSettings, metadata = {}) {
   await requireDatabaseAuth();
   const seen = new Set();
   const invalid = [];
@@ -236,8 +237,9 @@ async function startRun(rawItems, rawSettings) {
   await chrome.alarms.clear(RATE_LIMIT_RETRY_ALARM);
   if (current.workerWindowId) await safeCloseWindow(current.workerWindowId);
   const state = {
-    version: 5,
+    version: 6,
     runId: crypto.randomUUID(),
+    databaseNiche: metadata.databaseNiche || null,
     running: true,
     paused: false,
     pauseReason: null,
@@ -255,19 +257,29 @@ async function startRun(rawItems, rawSettings) {
   return { accepted: items.length, invalid };
 }
 
-async function startDatabaseRun(limit, rawSettings) {
+async function startDatabaseRun(niche, limit, rawSettings) {
+  const selectedNiche = String(niche || "").trim();
+  if (!selectedNiche || selectedNiche.length > 120) {
+    throw new Error("Choose one niche before starting.");
+  }
   const requested = Math.max(1, Math.min(500, Math.trunc(Number(limit) || 100)));
   const queue = await WorkEmailApi.authenticatedAction("workEmails:listQueue", {
     limit: requested,
+    niche: selectedNiche,
   });
   if (!queue?.leads?.length) {
-    throw new Error("There are no pending or retryable work-email leads in the database.");
+    throw new Error(`There are no pending or retryable work-email leads in ${selectedNiche}.`);
   }
   const result = await startRun(
     queue.leads.map((lead) => ({ ...lead, source: "database" })),
     rawSettings,
+    { databaseNiche: selectedNiche },
   );
-  return { ...result, remaining: Number(queue.remaining || queue.leads.length) };
+  return {
+    ...result,
+    niche: selectedNiche,
+    remaining: Number(queue.remaining || queue.leads.length),
+  };
 }
 
 function activeJobCount(state) {
@@ -982,6 +994,9 @@ async function retryFailed() {
   await chrome.alarms.clear(RATE_LIMIT_RETRY_ALARM);
   const update = await updateState((state) => {
     if (state.running) throw new Error("The queue is already running.");
+    if (!state.databaseNiche && state.jobs.some((job) => job.source === "database")) {
+      throw new Error("This older database queue was not limited to one niche. Clear it, choose one niche, and start again.");
+    }
     let accepted = 0;
     for (const job of state.jobs) {
       if (!["queued", "error", "timeout", "stopped"].includes(job.status)) continue;
@@ -1139,7 +1154,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       case "startDatabase":
         return {
           ok: true,
-          ...(await startDatabaseRun(message.limit, message.settings)),
+          ...(await startDatabaseRun(message.niche, message.limit, message.settings)),
         };
       case "stop":
         await stopRun();

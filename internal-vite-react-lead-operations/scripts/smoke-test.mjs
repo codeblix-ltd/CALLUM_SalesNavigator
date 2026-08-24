@@ -19,6 +19,7 @@ const listUnassignedLeads = makeFunctionReference("adminScouts:listUnassignedLea
 const createScout = makeFunctionReference("adminScouts:createScout");
 const assignLeadCount = makeFunctionReference("adminScouts:assignLeadCount");
 const setScoutActive = makeFunctionReference("adminScouts:setScoutActive");
+const listWorkEmailNiches = makeFunctionReference("workEmails:listQueueNiches");
 const listWorkEmailQueue = makeFunctionReference("workEmails:listQueue");
 const saveWorkEmailResult = makeFunctionReference("workEmails:saveResult");
 const credentials = {
@@ -116,7 +117,11 @@ if (existingScout) {
   });
   scoutToggleHealthy = toggleResult.operatorId === existingScout.operatorId && toggleResult.active === existingScout.active;
 }
-const workEmailQueue = await client.action(listWorkEmailQueue, { limit: 1 });
+const workEmailNiches = await client.action(listWorkEmailNiches, {});
+const firstWorkEmailNiche = workEmailNiches.niches[0] ?? null;
+const workEmailQueue = firstWorkEmailNiche
+  ? await client.action(listWorkEmailQueue, { limit: 1, niche: firstWorkEmailNiche.name })
+  : { leads: [], remaining: 0 };
 const unmatchedWorkEmail = await client.action(saveWorkEmailResult, {
   leadId: null,
   inputLinkedinUrl: "https://www.linkedin.com/in/callum-smoke-test-not-a-real-lead/",
@@ -144,6 +149,8 @@ if (
   !duplicateScoutRejected ||
   !invalidQuantityRejected ||
   !scoutToggleHealthy ||
+  !Array.isArray(workEmailNiches.niches) ||
+  workEmailNiches.niches.some((niche) => !niche.name || niche.eligible < 1) ||
   !Array.isArray(workEmailQueue.leads) ||
   typeof workEmailQueue.remaining !== "number" ||
   !("originalEmail" in page.leads[0]) ||

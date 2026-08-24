@@ -22,8 +22,9 @@ The lead record now has two explicit email fields:
 
 1. Sign in with the Callum Leads administrator account. Authentication is
    required for both sources so matched results can be saved.
-2. Load pending/retryable leads directly from the database (the primary
-   option), or switch to pasted LinkedIn profile URLs when needed.
+2. For a database run, choose one niche and the number of leads to load. Only
+   pending/retryable leads from that niche can enter the queue. You can also
+   switch to pasted LinkedIn profile URLs when needed.
 3. Start the queue. Opaque LinkedIn `AC...` URLs are resolved before they are
    sent to Mailmeteor.
 4. Found and not-found results are written to the database before the local row
@@ -32,6 +33,11 @@ The lead record now has two explicit email fields:
 5. Database runs load 100 leads by default. The live run-time counter shows the
    minutes or hours for the exact number of leads loaded, then freezes when the
    queue finishes.
+
+After updating from an older version, a paused database queue may contain more
+than one niche. The extension will not resume that old queue. Clear the local
+queue, choose one niche, and start again; clearing it does not delete database
+leads or saved email results.
 
 ## Parallel runs, retries, and stop guarantees
 
@@ -81,6 +87,12 @@ The lead record now has two explicit email fields:
 - `storage`: retain authentication and resumable queue state.
 - Host access is limited to LinkedIn, Mailmeteor, the Mailmeteor tools host, and
   the configured Convex deployment.
+
+## Version 2.3.0
+
+- Adds a required single-niche selector for database runs.
+- Shows the pending/retryable work-email count for each available niche.
+- Enforces the selected niche in the server-side queue query.
 
 ## Version 2.2.0
 

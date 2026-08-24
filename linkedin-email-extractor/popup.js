@@ -10,7 +10,9 @@ const els = {
   signOut: document.querySelector("#signOut"),
   pasteSource: document.querySelector("#pasteSource"),
   databaseSource: document.querySelector("#databaseSource"),
+  dbNiche: document.querySelector("#dbNiche"),
   dbLimit: document.querySelector("#dbLimit"),
+  nicheHelp: document.querySelector("#nicheHelp"),
   urls: document.querySelector("#urls"),
   concurrency: document.querySelector("#concurrency"),
   staggerMs: document.querySelector("#staggerMs"),
@@ -36,6 +38,7 @@ const els = {
 
 let currentState = null;
 let signedIn = false;
+let nichesLoading = false;
 
 async function send(type, payload = {}) {
   const response = await chrome.runtime.sendMessage({ type, ...payload });
@@ -46,6 +49,50 @@ async function send(type, payload = {}) {
 function setMessage(text = "", kind = "") {
   els.message.textContent = text;
   els.message.className = `message ${kind}`.trim();
+}
+
+function selectedDatabaseNiche() {
+  return els.dbNiche.value.trim();
+}
+
+function setNicheOptions(niches = [], preferredNiche = "") {
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = niches.length ? "Choose one niche" : "No eligible niches found";
+  els.dbNiche.replaceChildren(placeholder);
+
+  for (const niche of niches) {
+    const option = document.createElement("option");
+    option.value = niche.name;
+    option.textContent = `${niche.name} (${Number(niche.eligible || 0).toLocaleString()} eligible)`;
+    els.dbNiche.append(option);
+  }
+
+  if (niches.some((niche) => niche.name === preferredNiche)) {
+    els.dbNiche.value = preferredNiche;
+  }
+}
+
+async function loadNiches(preferredNiche = currentState?.databaseNiche || "") {
+  nichesLoading = true;
+  els.nicheHelp.textContent = "Loading niches from the database…";
+  if (currentState) render(currentState);
+  try {
+    const response = await WorkEmailApi.authenticatedAction("workEmails:listQueueNiches", {});
+    const niches = Array.isArray(response?.niches) ? response.niches : [];
+    setNicheOptions(niches, preferredNiche);
+    els.nicheHelp.textContent = niches.length
+      ? "Choose one niche. Only its pending or retryable leads will be loaded."
+      : "There are no pending or retryable work-email leads in any niche.";
+  } catch (error) {
+    setNicheOptions();
+    els.dbNiche.firstElementChild.textContent = "Could not load niches";
+    els.nicheHelp.textContent = "Close and reopen the extension to try loading niches again.";
+    throw error;
+  } finally {
+    nichesLoading = false;
+    if (currentState) render(currentState);
+  }
 }
 
 function parseUrls() {
@@ -122,23 +169,31 @@ function render(state) {
   const notFound = jobs.filter((job) => job.status === "not_found").length;
   const errors = jobs.filter((job) => ["error", "timeout"].includes(job.status)).length;
   const retryable = jobs.some((job) => ["queued", "error", "timeout", "stopped"].includes(job.status));
+  const unscopedDatabaseRun = !state?.databaseNiche && jobs.some((job) => job.source === "database");
 
   els.runBadge.textContent = running ? "Running" : paused ? "Paused" : "Idle";
   els.runBadge.className = `badge ${running ? "running" : paused ? "paused" : "idle"}`;
-  els.start.disabled = running || paused || !signedIn;
+  els.start.disabled = running || paused || !signedIn || nichesLoading || (
+    selectedSource() === "database" && !selectedDatabaseNiche()
+  );
   els.stop.disabled = !running;
   els.clear.disabled = running;
-  els.retry.disabled = running || !signedIn || !retryable;
+  els.retry.disabled = running || !signedIn || !retryable || unscopedDatabaseRun;
   els.copyJson.disabled = jobs.length === 0;
   els.exportCsv.disabled = jobs.length === 0;
   els.concurrency.disabled = running;
   els.staggerMs.disabled = running;
   els.timeoutMs.disabled = running;
   els.keepFailedTabs.disabled = running;
+  els.dbNiche.disabled = running || !signedIn || nichesLoading;
   els.dbLimit.disabled = running;
   for (const input of document.querySelectorAll('input[name="source"]')) input.disabled = running;
 
-  if (paused && state.pauseReason) setMessage(state.pauseReason, "error");
+  if (paused && unscopedDatabaseRun) {
+    setMessage("This older paused queue may include multiple niches. Clear it, choose one niche, and start again.", "error");
+  } else if (paused && state.pauseReason) {
+    setMessage(state.pauseReason, "error");
+  }
 
   els.totalCount.textContent = jobs.length;
   els.doneCount.textContent = done;
@@ -244,14 +299,19 @@ els.start.addEventListener("click", async () => {
   try {
     setMessage("Starting queue…");
     const source = selectedSource();
+    const niche = selectedDatabaseNiche();
+    if (source === "database" && !niche) throw new Error("Choose one niche before starting.");
     const response = source === "database"
       ? await send("startDatabase", {
+          niche,
           limit: Number(els.dbLimit.value),
           settings: settingsFromForm(),
         })
       : await send("start", { urls: parseUrls(), settings: settingsFromForm() });
     const suffix = response.invalid?.length ? ` ${response.invalid.length} invalid URL(s) skipped.` : "";
-    const remaining = source === "database" ? ` ${response.remaining} database lead(s) were eligible when loaded.` : "";
+    const remaining = source === "database"
+      ? ` ${response.remaining} lead(s) in ${response.niche} were eligible when loaded.`
+      : "";
     setMessage(`${response.accepted} lead(s) queued.${suffix}${remaining}`, "success");
     const stateResponse = await send("getState");
     render(stateResponse.state);
@@ -320,6 +380,10 @@ for (const input of document.querySelectorAll('input[name="source"]')) {
   input.addEventListener("change", renderSource);
 }
 
+els.dbNiche.addEventListener("change", () => {
+  if (currentState) render(currentState);
+});
+
 els.loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const button = els.loginForm.querySelector("button");
@@ -329,7 +393,8 @@ els.loginForm.addEventListener("submit", async (event) => {
     const auth = await WorkEmailApi.signIn(els.username.value, els.password.value);
     els.password.value = "";
     setSignedIn(auth);
-    setMessage("Database connected. Work-email results will be saved.", "success");
+    await loadNiches();
+    setMessage("Database connected. Choose one niche for this run.", "success");
   } catch (error) {
     setMessage(error.message || String(error), "error");
   } finally {
@@ -356,6 +421,7 @@ function renderSource() {
   els.pasteSource.hidden = database;
   els.databaseSource.hidden = !database;
   els.start.textContent = database ? "Start from database" : "Start queue";
+  if (currentState) render(currentState);
 }
 
 function setSignedIn(auth) {
@@ -363,6 +429,11 @@ function setSignedIn(auth) {
   els.loginForm.hidden = signedIn;
   els.signedInRow.hidden = !signedIn;
   els.signedInName.textContent = signedIn ? auth.username || "Administrator" : "";
+  if (!signedIn) {
+    setNicheOptions();
+    els.dbNiche.firstElementChild.textContent = "Sign in to load niches";
+    els.nicheHelp.textContent = "Sign in, then choose the one niche you want to use.";
+  }
   if (currentState) render(currentState);
 }
 
@@ -373,6 +444,7 @@ function setSignedIn(auth) {
     const response = await send("getState");
     render(response.state);
     applySettings(response.state?.settings);
+    if (signedIn) await loadNiches(response.state?.databaseNiche || "");
     if (!els.urls.value && response.state?.jobs?.length) {
       els.urls.value = response.state.jobs.map((job) => job.inputLinkedinUrl || job.linkedinUrl).join("\n");
     }

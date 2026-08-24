@@ -16,9 +16,48 @@ const queueRowValidator = v.object({
   workEmailStatus: v.string(),
   lastError: optionalText,
 });
+const queueNicheValidator = v.object({
+  name: v.string(),
+  eligible: v.number(),
+});
+
+export const listQueueNiches = action({
+  args: {},
+  returns: v.object({ niches: v.array(queueNicheValidator) }),
+  handler: async (ctx) => {
+    await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
+    const result = await getPool().query(
+      `WITH queueable AS (
+         SELECT l.id
+         FROM leads AS l
+         LEFT JOIN lead_assignments AS a ON a.lead_id = l.id
+         WHERE (${preferredLinkedInUrlSql} LIKE 'https://linkedin.com/in/%' OR ${preferredLinkedInUrlSql} LIKE 'https://www.linkedin.com/in/%')
+           AND l.work_email IS NULL
+           AND (
+             l.work_email_status IN ('pending', 'error')
+             OR (
+               l.work_email_status = 'processing'
+               AND l.work_email_checked_at < now() - INTERVAL '30 minutes'
+             )
+           )
+       )
+       SELECT ln.niche AS name, count(*)::FLOAT8 AS eligible
+       FROM queueable AS q
+       INNER JOIN lead_niches AS ln ON ln.lead_id = q.id
+       GROUP BY ln.niche
+       ORDER BY lower(ln.niche), ln.niche`,
+    );
+    return {
+      niches: result.rows.map((row) => ({
+        name: String(row.name),
+        eligible: Number(row.eligible ?? 0),
+      })),
+    };
+  },
+});
 
 export const listQueue = action({
-  args: { limit: v.number() },
+  args: { limit: v.number(), niche: v.string() },
   returns: v.object({
     leads: v.array(queueRowValidator),
     remaining: v.number(),
@@ -26,6 +65,8 @@ export const listQueue = action({
   handler: async (ctx, args) => {
     await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
     const limit = Math.max(1, Math.min(500, Math.trunc(args.limit)));
+    const niche = args.niche.trim();
+    if (!niche || niche.length > 120) throw new Error("Choose one valid niche.");
     const database = getPool();
     const [rows, count] = await Promise.all([
       database.query(
@@ -45,6 +86,7 @@ export const listQueue = action({
              l.id AS sort_id
            FROM leads AS l
            LEFT JOIN lead_assignments AS a ON a.lead_id = l.id
+           INNER JOIN lead_niches AS ln ON ln.lead_id = l.id AND ln.niche = $1
          )
          SELECT lead_id, linkedin_url, full_name, company_name, work_email_status, work_email_last_error
          FROM queueable
@@ -62,13 +104,14 @@ export const listQueue = action({
            source_file,
            source_row,
            sort_id
-         LIMIT $1`,
-        [limit],
+         LIMIT $2`,
+        [niche, limit],
       ),
       database.query(
         `SELECT count(*)::FLOAT8 AS count
          FROM leads AS l
          LEFT JOIN lead_assignments AS a ON a.lead_id = l.id
+         INNER JOIN lead_niches AS ln ON ln.lead_id = l.id AND ln.niche = $1
          WHERE (${preferredLinkedInUrlSql} LIKE 'https://linkedin.com/in/%' OR ${preferredLinkedInUrlSql} LIKE 'https://www.linkedin.com/in/%')
            AND l.work_email IS NULL
            AND (
@@ -78,6 +121,7 @@ export const listQueue = action({
                AND l.work_email_checked_at < now() - INTERVAL '30 minutes'
              )
            )`,
+        [niche],
       ),
     ]);
 

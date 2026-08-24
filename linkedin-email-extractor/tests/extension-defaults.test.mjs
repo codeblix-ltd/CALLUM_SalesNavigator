@@ -6,14 +6,27 @@ const root = new URL("../", import.meta.url);
 
 test("database leads and a five-minute timeout are the primary defaults", async () => {
   const popup = await readFile(new URL("popup.html", root), "utf8");
+  const popupScript = await readFile(new URL("popup.js", root), "utf8");
   const background = await readFile(new URL("background.js", root), "utf8");
+  const workEmailActions = await readFile(
+    new URL("../internal-vite-react-lead-operations/convex/workEmails.ts", root),
+    "utf8",
+  );
 
   assert.match(popup, /name="source" value="database" checked/);
+  assert.match(popup, /id="dbNiche"/);
+  assert.match(popup, /Niche — choose one/);
   assert.match(popup, /id="dbLimit"[^>]*value="100"/);
   assert.match(popup, /value="300000" selected>5 minutes/);
   assert.doesNotMatch(popup.match(/<textarea id="urls"[^>]*>/)?.[0] || "", /placeholder=/);
   assert.match(background, /timeoutMs: 300000/);
   assert.match(background, /Number\(limit\) \|\| 100/);
+  assert.match(background, /startDatabaseRun\(message\.niche, message\.limit/);
+  assert.match(background, /older database queue was not limited to one niche/);
+  assert.match(popupScript, /workEmails:listQueueNiches/);
+  assert.match(popupScript, /niche,/);
+  assert.match(workEmailActions, /args: \{ limit: v\.number\(\), niche: v\.string\(\) \}/);
+  assert.match(workEmailActions, /ln\.niche = \$1/);
 });
 
 test("the popup includes a persistent run-time counter", async () => {
