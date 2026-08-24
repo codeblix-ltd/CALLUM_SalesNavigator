@@ -543,6 +543,7 @@ export const claimNextLead = action({
   args: {
     excludeLeadIds: v.optional(v.array(v.string())),
     leadId: v.optional(v.string()),
+    resumeExisting: v.optional(v.boolean()),
   },
   returns: v.union(leadValidator, v.null()),
   handler: async (ctx, args): Promise<ScoutLead | null> => {
@@ -631,38 +632,42 @@ export const claimNextLead = action({
       : "";
     const queryParameters = [scout.operatorId, ...excludedLeadIds];
     const database = getPool();
-    const existing = await database.query(
-      `SELECT
-         l.id::STRING AS id,
-         l.full_name,
-         l.current_title,
-         l.company_name,
-         coalesce(a.resolved_linkedin_url, l.linkedin_url) AS linkedin_url,
-         a.status
-       FROM lead_assignments AS a
-       INNER JOIN leads AS l ON l.id = a.lead_id
-       WHERE a.operator_id = $1
-         AND a.status IN ('viewed', 'engaged')
-         ${existingExclusionSql}
-       ORDER BY a.updated_at DESC, a.lead_id
-       LIMIT 1`,
-      queryParameters,
-    );
-    if (existing.rows[0]) return mapLead(existing.rows[0]);
+    if (args.resumeExisting) {
+      const existing = await database.query(
+        `SELECT
+           l.id::STRING AS id,
+           l.full_name,
+           l.current_title,
+           l.company_name,
+           coalesce(a.resolved_linkedin_url, l.linkedin_url) AS linkedin_url,
+           a.status
+         FROM lead_assignments AS a
+         INNER JOIN leads AS l ON l.id = a.lead_id
+         WHERE a.operator_id = $1
+           AND a.status IN ('viewed', 'engaged')
+           ${existingExclusionSql}
+         ORDER BY a.updated_at DESC, a.lead_id
+         LIMIT 1`,
+        queryParameters,
+      );
+      if (existing.rows[0]) return mapLead(existing.rows[0]);
+    }
 
     const client = await database.connect();
     try {
       await client.query("BEGIN");
       const selected = await client.query(
-        `SELECT lead_id
+        `SELECT lead_id, status
            FROM lead_assignments
           WHERE operator_id = $1
-            AND status = 'assigned'
-            AND qualification_status <> 'not_qualified'
+            AND (
+              status IN ('viewed', 'engaged')
+              OR (status = 'assigned' AND qualification_status <> 'not_qualified')
+            )
             ${selectedExclusionSql}
           ORDER BY
+            assigned_at DESC,
             CASE WHEN qualification_status = 'qualified' THEN 0 ELSE 1 END,
-            assigned_at,
             lead_id
           LIMIT 1
           FOR UPDATE SKIP LOCKED`,
@@ -673,24 +678,28 @@ export const claimNextLead = action({
         return null;
       }
       const leadId = selected.rows[0].lead_id;
-      await client.query(
-        `UPDATE lead_assignments
-            SET status = 'viewed', viewed_at = coalesce(viewed_at, now()), updated_at = now()
-          WHERE lead_id = $1 AND operator_id = $2`,
-        [leadId, scout.operatorId],
-      );
-      await insertEvent(client, leadId, scout.operatorId, "viewed", {});
+      if (selected.rows[0].status === "assigned") {
+        await client.query(
+          `UPDATE lead_assignments
+              SET status = 'viewed', viewed_at = coalesce(viewed_at, now()), updated_at = now()
+            WHERE lead_id = $1 AND operator_id = $2`,
+          [leadId, scout.operatorId],
+        );
+        await insertEvent(client, leadId, scout.operatorId, "viewed", {});
+      }
       const leadResult = await client.query(
         `SELECT
            l.id::STRING AS id,
            l.full_name,
            l.current_title,
            l.company_name,
-           l.linkedin_url,
-           'viewed' AS status
+           coalesce(a.resolved_linkedin_url, l.linkedin_url) AS linkedin_url,
+           a.status
          FROM leads AS l
+         INNER JOIN lead_assignments AS a
+           ON a.lead_id = l.id AND a.operator_id = $2
          WHERE l.id = $1`,
-        [leadId],
+        [leadId, scout.operatorId],
       );
       await client.query("COMMIT");
       return leadResult.rows[0] ? mapLead(leadResult.rows[0]) : null;

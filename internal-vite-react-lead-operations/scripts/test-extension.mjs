@@ -386,8 +386,15 @@ assert.match(
 assert.match(scoutSource, /recoveredFromFailed/);
 assert.match(scoutSource, /status IN \('engaged', 'failed'\)/);
 assert.match(scoutSource, /excludeLeadIds: v\.optional\(v\.array\(v\.string\(\)\)\)/);
+assert.match(scoutSource, /resumeExisting: v\.optional\(v\.boolean\(\)\)/);
 assert.match(scoutSource, /existingExclusionSql/);
 assert.match(scoutSource, /selectedExclusionSql/);
+assert.match(
+  scoutSource,
+  /status IN \('viewed', 'engaged'\)[\s\S]*?status = 'assigned'[\s\S]*?ORDER BY\s+assigned_at DESC,\s+CASE WHEN qualification_status = 'qualified' THEN 0 ELSE 1 END,\s+lead_id/,
+);
+assert.match(backgroundSource, /resumeExisting: resumeExistingLead/);
+assert.match(backgroundSource, /resumeExistingLead = false/);
 assert.match(adminSource, /export const exportCleanCsv/);
 assert.match(adminSource, /export const retryCrmDelivery/);
 assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS lead_followup_tasks/);

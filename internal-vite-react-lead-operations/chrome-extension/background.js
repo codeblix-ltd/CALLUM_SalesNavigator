@@ -410,6 +410,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
       (request) => request.leadId,
     ),
   );
+  let resumeExistingLead = runContext.resume;
   if (specificLeadId && pendingConnectionLeadIds.has(specificLeadId)) {
     progress.processedLeads = Math.max(progress.processedLeads, 1);
   }
@@ -440,7 +441,9 @@ async function runDailyWorkflow(specificLeadId, runContext) {
     } else {
       lead = await ScoutApi.authenticatedAction("scouts:claimNextLead", {
         excludeLeadIds: [...pendingConnectionLeadIds],
+        resumeExisting: resumeExistingLead,
       });
+      resumeExistingLead = false;
     }
     if (!lead?.linkedinUrl) break;
 
