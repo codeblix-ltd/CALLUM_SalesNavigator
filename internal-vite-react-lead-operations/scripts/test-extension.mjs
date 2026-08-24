@@ -54,7 +54,7 @@ const manifest = JSON.parse(manifestSource);
 const helpSource = await readExtensionFile("help.html");
 const helpStyles = await readExtensionFile("help.css");
 
-assert.equal(manifest.version, "0.10.16");
+assert.equal(manifest.version, "0.10.17");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -106,7 +106,11 @@ assert.match(automationScript, /PAUSE_AUTO_LEAD/);
 assert.match(automationScript, /RESUME_AUTO_LEAD/);
 assert.match(automationScript, /status === "paused" \|\| status === "failed"/);
 assert.match(automationScript, /STOP_AUTO_LEAD/);
+assert.match(automationSource, /id="run-estimate"/);
+assert.match(automationScript, /Estimated finish/);
+assert.match(automationScript, /averageLeadDurationMs/);
 assert.match(automationStyles, /#100b27/);
+assert.match(automationStyles, /\.run-estimate/);
 assert.match(dashboardSource, /All leads and steps/);
 assert.match(dashboardSource, /id="lead-drawer"/);
 assert.match(dashboardScript, /scouts:getLeadProgress/);
@@ -251,6 +255,15 @@ assert.match(contentSource, /EXTRACT_FIRST_DM_PROFILE/);
 assert.match(contentSource, /runFirstDmProfileExtraction/);
 assert.match(contentSource, /a\[href\*='\/messaging\/compose\/'\]/);
 assert.match(contentSource, /no like or comment was added/i);
+assert.match(contentSource, /TOP_POST_SCAN_LIMIT = 3/);
+assert.match(contentSource, /\.slice\(0, TOP_POST_SCAN_LIMIT\)/);
+const findPostElementsSource = contentSource.slice(
+  contentSource.indexOf("async function findPostElements"),
+  contentSource.indexOf("function queryPostElements"),
+);
+assert.doesNotMatch(findPostElementsSource, /scrollIntoView/);
+assert.match(contentSource, /CONNECTION_LOOKBACK_DAYS = 183/);
+assert.match(contentSource, /Checking connections from the last 6 months/);
 assert.match(contentSource, /INSPECT_PREMIUM_ACCOUNT/);
 assert.match(contentSource, /LinkedIn kept the Premium page open/);
 assert.match(contentSource, /SET_AUTOMATION_CONTEXT/);
@@ -263,6 +276,11 @@ assert.match(backgroundSource, /scouts:draftFirstDm/);
 assert.match(backgroundSource, /PREMIUM_CHECK_TTL_MS/);
 assert.match(backgroundSource, /force: true/);
 assert.match(backgroundSource, /cached: true/);
+assert.match(backgroundSource, /maxProfiles: 1_000/);
+assert.match(backgroundSource, /recordCompletedLeadTiming/);
+assert.match(backgroundSource, /estimatedCompletionAt/);
+assert.match(popupScript, /ETA will appear after the first lead finishes/);
+assert.match(popupScript, /Estimated finish/);
 assert.match(backgroundSource, /GET_AUTO_LEAD_RUN_STATE/);
 assert.match(backgroundSource, /PAUSE_AUTO_LEAD/);
 assert.match(backgroundSource, /RESUME_AUTO_LEAD/);
@@ -411,6 +429,7 @@ assert.match(scoutSource, /export const draftFirstDm/);
 assert.match(scoutSource, /firstDms/);
 assert.match(scoutSource, /first_dm_drafted/);
 assert.match(scoutSource, /a\.accepted_at >= now\(\) - INTERVAL '30 days'/);
+assert.match(scoutSource, /inspect at most 1,000 profiles/);
 assert.match(schemaSource, /personalized_at TIMESTAMPTZ NULL/);
 assert.match(scoutSource, /export const getLeadProgress/);
 assert.match(scoutSource, /automation_ready/);
@@ -682,11 +701,27 @@ assert.deepEqual(
     targetRequests: 10,
     processedLeads: 3,
     requestsSent: 2,
+    timedLeads: 0,
+    totalLeadDurationMs: 0,
+    averageLeadDurationMs: null,
+    estimatedRemainingLeads: null,
+    estimatedRemainingMs: null,
+    estimatedCompletionAt: null,
     results: [],
     failedLeads: [],
     pendingConnectionRequests: [],
   },
 );
+const etaProgress = backgroundContext.normalizeRunProgress({
+  targetRequests: 20,
+  processedLeads: 1,
+  requestsSent: 1,
+});
+backgroundContext.recordCompletedLeadTiming(etaProgress, 120_000, 1_000_000);
+assert.equal(etaProgress.averageLeadDurationMs, 120_000);
+assert.equal(etaProgress.estimatedRemainingLeads, 19);
+assert.equal(etaProgress.estimatedRemainingMs, 2_280_000);
+assert.equal(etaProgress.estimatedCompletionAt, 3_280_000);
 const stateWithConfirmedRequest = await backgroundContext.writeAutoLeadRunState({
   ...backgroundContext.defaultAutoLeadRunState(),
   status: "completed",

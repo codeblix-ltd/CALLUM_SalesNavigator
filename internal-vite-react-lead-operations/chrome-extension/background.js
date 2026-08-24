@@ -427,6 +427,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
     );
   }
   const availableRequestSlots = progress.targetRequests;
+  if (progress.timedLeads > 0) refreshRunEta(progress);
   const results = progress.results;
   const failedLeads = progress.failedLeads;
   const pendingConnectionLeadIds = new Set(
@@ -471,6 +472,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
     }
     if (!lead?.linkedinUrl) break;
 
+    const leadStartedAt = Date.now();
     await checkpointRun(runContext, progress, {
       phase: lead.status === "engaged" ? "connecting" : "engaging",
       message:
@@ -578,6 +580,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
       }
     }
     progress.processedLeads += 1;
+    recordCompletedLeadTiming(progress, Date.now() - leadStartedAt);
     await checkpointRun(runContext, progress, {
       phase: "working_leads",
       message: `${progress.processedLeads} of ${availableRequestSlots} leads finished in this run.`,
@@ -829,6 +832,12 @@ function defaultRunProgress() {
     targetRequests: null,
     processedLeads: 0,
     requestsSent: 0,
+    timedLeads: 0,
+    totalLeadDurationMs: 0,
+    averageLeadDurationMs: null,
+    estimatedRemainingLeads: null,
+    estimatedRemainingMs: null,
+    estimatedCompletionAt: null,
     results: [],
     failedLeads: [],
     pendingConnectionRequests: [],
@@ -855,12 +864,69 @@ function normalizeRunProgress(value) {
         : Math.max(0, Math.trunc(Number(value.targetRequests) || 0)),
     processedLeads: Math.max(0, Math.trunc(Number(value.processedLeads) || 0)),
     requestsSent: Math.max(0, Math.trunc(Number(value.requestsSent) || 0)),
+    timedLeads: Math.max(0, Math.trunc(Number(value.timedLeads) || 0)),
+    totalLeadDurationMs: Math.max(0, Number(value.totalLeadDurationMs) || 0),
+    averageLeadDurationMs:
+      Number(value.averageLeadDurationMs) > 0
+        ? Number(value.averageLeadDurationMs)
+        : null,
+    estimatedRemainingLeads:
+      value.estimatedRemainingLeads !== null &&
+      value.estimatedRemainingLeads !== undefined &&
+      Number.isFinite(Number(value.estimatedRemainingLeads))
+        ? Math.max(0, Math.trunc(Number(value.estimatedRemainingLeads)))
+        : null,
+    estimatedRemainingMs:
+      value.estimatedRemainingMs !== null &&
+      value.estimatedRemainingMs !== undefined &&
+      Number.isFinite(Number(value.estimatedRemainingMs))
+        ? Math.max(0, Number(value.estimatedRemainingMs))
+        : null,
+    estimatedCompletionAt:
+      Number(value.estimatedCompletionAt) > 0
+        ? Number(value.estimatedCompletionAt)
+        : null,
     results: Array.isArray(value.results) ? value.results : [],
     failedLeads: Array.isArray(value.failedLeads) ? value.failedLeads : [],
     pendingConnectionRequests: Array.isArray(value.pendingConnectionRequests)
       ? value.pendingConnectionRequests
       : [],
   };
+}
+
+function recordCompletedLeadTiming(progress, durationMs, now = Date.now()) {
+  const safeDurationMs = Math.max(1_000, Number(durationMs) || 0);
+  progress.timedLeads = Math.max(0, Number(progress.timedLeads) || 0) + 1;
+  progress.totalLeadDurationMs =
+    Math.max(0, Number(progress.totalLeadDurationMs) || 0) + safeDurationMs;
+  progress.averageLeadDurationMs = Math.round(
+    progress.totalLeadDurationMs / progress.timedLeads,
+  );
+  refreshRunEta(progress, now);
+}
+
+function refreshRunEta(progress, now = Date.now()) {
+  const averageMs = Number(progress.averageLeadDurationMs) || 0;
+  const targetRequests = Number(progress.targetRequests);
+  if (averageMs <= 0 || !Number.isFinite(targetRequests)) {
+    progress.estimatedRemainingLeads = null;
+    progress.estimatedRemainingMs = null;
+    progress.estimatedCompletionAt = null;
+    return;
+  }
+
+  const requestsSent = Math.max(0, Number(progress.requestsSent) || 0);
+  const processedLeads = Math.max(0, Number(progress.processedLeads) || 0);
+  const remainingRequests = Math.max(0, targetRequests - requestsSent);
+  const successRate =
+    processedLeads > 0 && requestsSent > 0
+      ? Math.max(0.1, Math.min(1, requestsSent / processedLeads))
+      : 1;
+  const remainingLeads = Math.ceil(remainingRequests / successRate);
+  const remainingMs = Math.round(remainingLeads * averageMs);
+  progress.estimatedRemainingLeads = remainingLeads;
+  progress.estimatedRemainingMs = remainingMs;
+  progress.estimatedCompletionAt = now + remainingMs;
 }
 
 function upsertPendingConnectionRequest(requests, request) {
@@ -1306,7 +1372,7 @@ async function reviewAcceptedConnections(
           ? { topProfileUrl: null, topConnectedOn: null }
           : plan.checkpoint,
         cutoffDate: forceReview ? null : plan.cutoffDate,
-        maxProfiles: 250,
+        maxProfiles: 1_000,
       },
     });
     throwIfWorkflowControlled(runContext);

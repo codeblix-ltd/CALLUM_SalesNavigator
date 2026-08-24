@@ -872,6 +872,7 @@ function renderAutoLeadRunState(state) {
   const processed = Number(progress.processedLeads || 0);
   const target = Number(progress.targetRequests || 0);
   const progressText = target > 0 ? ` ${processed} of ${target} leads finished.` : "";
+  const etaText = formatRunEta(progress, status);
   const labels = {
     idle: "Ready",
     running: "In progress",
@@ -884,7 +885,7 @@ function renderAutoLeadRunState(state) {
 
   elements.automationRunStatus.dataset.status = status;
   elements.automationRunLabel.textContent = labels[status] || "Ready";
-  elements.automationRunDetail.textContent = `${state.message || "Ready to start today’s work."}${progressText}`;
+  elements.automationRunDetail.textContent = `${state.message || "Ready to start today’s work."}${progressText}${etaText}`;
 
   const isRunning = status === "running";
   const isPausing = status === "pausing";
@@ -900,6 +901,47 @@ function renderAutoLeadRunState(state) {
       : status === "completed"
         ? "Start again"
         : "Start today’s work";
+}
+
+function formatRunEta(progress, status) {
+  const target = Number(progress.targetRequests || 0);
+  if (
+    target <= 0 ||
+    !["running", "pausing", "paused", "failed"].includes(status)
+  ) {
+    return "";
+  }
+  const averageMs = Number(progress.averageLeadDurationMs || 0);
+  if (averageMs <= 0) {
+    return " ETA will appear after the first lead finishes.";
+  }
+  const storedRemainingMs = Math.max(
+    0,
+    Number(progress.estimatedRemainingMs || 0),
+  );
+  if (status === "paused" || status === "failed") {
+    return ` About ${formatEtaDuration(storedRemainingMs)} left after resume.`;
+  }
+  const completionAt = Number(progress.estimatedCompletionAt || 0);
+  const remainingMs = completionAt > 0
+    ? Math.max(0, completionAt - Date.now())
+    : storedRemainingMs;
+  if (remainingMs < 30_000) return " Estimated to finish very soon.";
+  const clock = new Date(Date.now() + remainingMs).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  return ` Estimated finish: ${clock} (about ${formatEtaDuration(remainingMs)} left).`;
+}
+
+function formatEtaDuration(milliseconds) {
+  const minutes = Math.max(1, Math.ceil(milliseconds / 60_000));
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes > 0
+    ? `${hours} hr ${remainingMinutes} min`
+    : `${hours} hr`;
 }
 
 async function restartOnboarding() {

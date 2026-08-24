@@ -1405,8 +1405,8 @@ export const recordConnectionReview = action({
     matched: v.number(),
   }),
   handler: async (ctx, args) => {
-    if (args.connections.length > 250) {
-      throw new Error("A connection review can inspect at most 250 profiles.");
+    if (args.connections.length > 1_000) {
+      throw new Error("A connection review can inspect at most 1,000 profiles.");
     }
     const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
     const database = getPool();

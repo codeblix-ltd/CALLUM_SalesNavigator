@@ -5,6 +5,7 @@ const elements = {
   progressLabel: document.querySelector("#progress-label"),
   progressValue: document.querySelector("#progress-value"),
   progressBar: document.querySelector("#progress-bar"),
+  runEstimate: document.querySelector("#run-estimate"),
   pause: document.querySelector("#pause-run"),
   resume: document.querySelector("#resume-run"),
   stop: document.querySelector("#stop-run"),
@@ -74,6 +75,7 @@ function renderRunState(state) {
     : "Run progress";
   elements.progressValue.textContent = `${processed} / ${target}`;
   elements.progressBar.style.width = `${percentage}%`;
+  elements.runEstimate.textContent = formatRunEta(progress, status);
 
   const running = status === "running";
   const pausing = status === "pausing";
@@ -82,6 +84,41 @@ function renderRunState(state) {
   elements.resume.hidden = !resumable;
   elements.stop.hidden = !(running || pausing || resumable);
   elements.message.hidden = true;
+}
+
+function formatRunEta(progress, status) {
+  const target = Number(progress.targetRequests || 0);
+  if (target <= 0) return "ETA appears after today’s lead target is ready.";
+  const averageMs = Number(progress.averageLeadDurationMs || 0);
+  if (averageMs <= 0) return "ETA appears after the first lead finishes.";
+  const storedRemainingMs = Math.max(
+    0,
+    Number(progress.estimatedRemainingMs || 0),
+  );
+  if (status === "completed") return "Today’s run is complete.";
+  if (status === "paused" || status === "failed") {
+    return `About ${formatEtaDuration(storedRemainingMs)} left after resume.`;
+  }
+  const completionAt = Number(progress.estimatedCompletionAt || 0);
+  const remainingMs = completionAt > 0
+    ? Math.max(0, completionAt - Date.now())
+    : storedRemainingMs;
+  if (remainingMs < 30_000) return "Estimated to finish very soon.";
+  const clock = new Date(Date.now() + remainingMs).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  return `Estimated finish: ${clock} · about ${formatEtaDuration(remainingMs)} left`;
+}
+
+function formatEtaDuration(milliseconds) {
+  const minutes = Math.max(1, Math.ceil(milliseconds / 60_000));
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes > 0
+    ? `${hours} hr ${remainingMinutes} min`
+    : `${hours} hr`;
 }
 
 function setControlsDisabled(disabled) {

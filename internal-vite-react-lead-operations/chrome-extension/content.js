@@ -7,6 +7,8 @@
   let overlayContainer = null;
   let automationContext = null;
   const MAX_POST_AGE_DAYS = 92;
+  const TOP_POST_SCAN_LIMIT = 3;
+  const CONNECTION_LOOKBACK_DAYS = 183;
 
   // Listen for messages from background script or popup
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -266,17 +268,20 @@
       );
     }
 
-    // LinkedIn renders the activity feed after the document load event. Wait for
-    // the actual post/action DOM from doc.md instead of taking one early snapshot.
-    updateStatus("Waiting for posts to load...");
-    const posts = await findPostElements({
-      timeoutMs: 30_000,
-      minimumCount: maxPosts,
-      predicate: (post) =>
-        !isRepostPost(post) && isPostWithinAgeLimit(post),
-    });
+    // Only inspect the first three feed cards. LinkedIn orders activity newest
+    // first, so scrolling farther can only reach older posts.
+    updateStatus("Checking the latest 3 posts...");
+    const inspectedPosts = (
+      await findPostElements({
+        timeoutMs: 15_000,
+        minimumCount: TOP_POST_SCAN_LIMIT,
+      })
+    ).slice(0, TOP_POST_SCAN_LIMIT);
+    const posts = inspectedPosts.filter(
+      (post) => !isRepostPost(post) && isPostWithinAgeLimit(post),
+    );
     if (!posts || posts.length === 0) {
-      const candidates = queryPostElements();
+      const candidates = inspectedPosts;
       const repostCount = candidates.filter(isRepostPost).length;
       const oldPostCount = candidates.filter(
         (post) =>
@@ -292,7 +297,7 @@
           `${oldPostCount} post${oldPostCount === 1 ? "" : "s"} older than 3 months and ${unknownPostCount} with no readable date.`,
         );
         throw new Error(
-          "We couldn’t find any recent posts from the last 3 months. Older posts and posts with no readable date were skipped.",
+          "No recent posts among the latest 3 were suitable from the last 3 months. Older posts and posts with no readable date were skipped.",
         );
       }
       if (repostCount > 0) {
@@ -301,15 +306,15 @@
           `${repostCount} repost${repostCount === 1 ? "" : "s"}; Callum Scout only comments on original posts.`,
         );
         throw new Error(
-          "We couldn’t find any recent posts that Callum Scout can use. Reposts were skipped.",
+          "No recent posts among the latest 3 could be used. Reposts were skipped.",
         );
       }
       throw new Error(
-        "We couldn’t find any recent posts. Make sure you’re signed in to LinkedIn and that this lead has posts.",
+        "No recent posts could be read among the latest 3. Make sure you’re signed in to LinkedIn and that this lead has posts.",
       );
     }
 
-    const candidates = queryPostElements();
+    const candidates = inspectedPosts;
     const repostCount = candidates.filter(isRepostPost).length;
     const oldPostCount = candidates.filter(
       (post) =>
@@ -333,7 +338,7 @@
     const countToEngage = Math.min(posts.length, maxPosts);
     addLog(
       "Posts",
-      `Found ${posts.length} original post${posts.length === 1 ? "" : "s"}. Working on ${countToEngage}.`,
+      `Checked only the latest ${inspectedPosts.length}. Found ${posts.length} recent original post${posts.length === 1 ? "" : "s"}; working on ${countToEngage}.`,
     );
 
     let engagedCount = 0;
@@ -823,15 +828,24 @@
       throw new Error("LinkedIn’s Connections page did not open. Try again.");
     }
 
-    updateStatus("Checking new connections...");
-    const maxProfiles = clampInteger(options.maxProfiles ?? 250, 1, 250);
+    updateStatus("Checking connections from the last 6 months...");
+    const maxProfiles = clampInteger(options.maxProfiles ?? 1_000, 1, 1_000);
     const checkpointUrl = normalizeLinkedInProfileHref(
       options.checkpoint?.topProfileUrl,
     );
     const checkpointDate = String(
       options.checkpoint?.topConnectedOn || "",
     ).slice(0, 10);
-    const cutoffDate = String(options.cutoffDate || "").slice(0, 10);
+    const requestedCutoffDate = String(options.cutoffDate || "").slice(0, 10);
+    const sixMonthCutoffDate = new Date(
+      Date.now() - CONNECTION_LOOKBACK_DAYS * 24 * 60 * 60 * 1_000,
+    )
+      .toISOString()
+      .slice(0, 10);
+    const cutoffDate = [requestedCutoffDate, sixMonthCutoffDate]
+      .filter(Boolean)
+      .sort()
+      .at(-1);
     const found = new Map();
     let top = null;
     let reachedPriorScan = false;
@@ -847,7 +861,7 @@
       );
     }
 
-    for (let pass = 0; pass < 35 && found.size < maxProfiles; pass++) {
+    for (let pass = 0; pass < 100 && found.size < maxProfiles; pass++) {
       const cards = queryConnectionCards();
       const sizeBefore = found.size;
       for (const card of cards) {
@@ -889,7 +903,7 @@
     );
     addLog(
       "New connections",
-      `${connections.length} found`,
+      `${connections.length} found within the 6-month limit`,
     );
     updateStatus("New connections checked.");
     return { connections, top, reachedPriorScan };
@@ -1301,32 +1315,23 @@
   }
 
   async function findPostElements({
-    timeoutMs = 30_000,
+    timeoutMs = 15_000,
     minimumCount = 1,
-    predicate = () => true,
   } = {}) {
     const deadline = Date.now() + timeoutMs;
     let bestMatch = [];
-    let bestCandidateCount = 0;
     let lastNewPostAt = Date.now();
     let lastProgressAt = 0;
-    let lastScrollAt = 0;
 
     while (Date.now() < deadline) {
-      const candidates = queryPostElements();
-      const posts = candidates.filter(predicate);
-      if (candidates.length > bestCandidateCount) {
-        bestCandidateCount = candidates.length;
+      const candidates = queryPostElements().slice(0, TOP_POST_SCAN_LIMIT);
+      if (candidates.length > bestMatch.length) {
+        bestMatch = candidates;
         lastNewPostAt = Date.now();
       }
-      if (posts.length > bestMatch.length) bestMatch = posts;
       if (bestMatch.length >= minimumCount) return bestMatch;
 
-      if (candidates.length > 0 && Date.now() - lastScrollAt >= 2_000) {
-        candidates.at(-1)?.scrollIntoView({ behavior: "smooth", block: "end" });
-        lastScrollAt = Date.now();
-      }
-      if (candidates.length > 0 && Date.now() - lastNewPostAt >= 6_000) {
+      if (candidates.length > 0 && Date.now() - lastNewPostAt >= 3_000) {
         return bestMatch;
       }
 

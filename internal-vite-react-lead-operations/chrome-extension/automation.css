@@ -64,6 +64,7 @@ h1 { max-width: 690px; margin: 0; font-size: clamp(36px, 5vw, 62px); line-height
 .progress-copy strong { color: #f4f1ff; }
 .progress-track { height: 6px; margin-top: 10px; overflow: hidden; background: #29213f; border-radius: 999px; }
 .progress-track span { display: block; width: 0; height: 100%; background: linear-gradient(90deg, #7457e3, #a78dfb); border-radius: inherit; transition: width .25s ease; }
+.run-estimate { margin: 9px 0 0; color: #c8bdf0; font-size: 10px; line-height: 1.4; }
 .run-controls { display: flex; grid-column: 2 / -1; justify-content: flex-end; gap: 8px; }
 .button { min-height: 38px; padding: 0 15px; border-radius: 10px; cursor: pointer; font-size: 11px; font-weight: 850; }
 .button:disabled { cursor: wait; opacity: .55; }
