@@ -258,8 +258,17 @@
     addLog("Settings", `Posts: ${maxPosts}, Check comments: ${validate ? "Yes" : "No"}`);
 
     if (maxPosts === 0) {
-      updateStatus("Skipping posts. Next: connection request.");
-      return { engagedCount: 0, totalProcessed: 0, skipped: true };
+      const skipReason = "The post limit has been reached for today.";
+      addLog("Posts skipped", skipReason);
+      updateStatus("No comment was added. Continuing to the connection request...");
+      return {
+        engagedCount: 0,
+        totalProcessed: 0,
+        activities: [],
+        partial: true,
+        skipped: true,
+        skipReason,
+      };
     }
 
     if (!window.location.pathname.includes("/recent-activity/")) {
@@ -291,27 +300,33 @@
         (post) =>
           !isRepostPost(post) && extractPostAgeDays(post) === null,
       ).length;
+      let skipReason =
+        "No recent posts could be read among the latest 3. Make sure you’re signed in to LinkedIn and that this lead has posts.";
       if (oldPostCount > 0 || unknownPostCount > 0) {
         addLog(
           "Skipped",
           `${oldPostCount} post${oldPostCount === 1 ? "" : "s"} older than 3 months and ${unknownPostCount} with no readable date.`,
         );
-        throw new Error(
-          "No recent posts among the latest 3 were suitable from the last 3 months. Older posts and posts with no readable date were skipped.",
-        );
-      }
-      if (repostCount > 0) {
+        skipReason =
+          "No recent posts among the latest 3 were suitable from the last 3 months. Older posts and posts with no readable date were skipped.";
+      } else if (repostCount > 0) {
         addLog(
           "Skipped",
           `${repostCount} repost${repostCount === 1 ? "" : "s"}; Callum Scout only comments on original posts.`,
         );
-        throw new Error(
-          "No recent posts among the latest 3 could be used. Reposts were skipped.",
-        );
+        skipReason =
+          "No recent posts among the latest 3 could be used. Reposts were skipped.";
       }
-      throw new Error(
-        "No recent posts could be read among the latest 3. Make sure you’re signed in to LinkedIn and that this lead has posts.",
-      );
+      addLog("Connection next", "No comment was added, but this lead will still be connected.");
+      updateStatus("No comment was added. Continuing to the connection request...");
+      return {
+        engagedCount: 0,
+        totalProcessed: inspectedPosts.length,
+        activities: [],
+        partial: true,
+        skipped: true,
+        skipReason,
+      };
     }
 
     const candidates = inspectedPosts;
@@ -457,12 +472,19 @@
     }
 
     if (engagedCount < 1) {
-      const details = skippedReasons.length
-        ? ` Details: ${skippedReasons.join("; ")}.`
-        : "";
-      throw new Error(
-        `Finished ${engagedCount} of ${countToEngage} posts. No connection request was sent for this lead.${details}`,
-      );
+      const skipReason = skippedReasons.length
+        ? `Finished ${engagedCount} of ${countToEngage} posts. Details: ${skippedReasons.join("; ")}.`
+        : `Finished ${engagedCount} of ${countToEngage} posts.`;
+      addLog("Connection next", "No comment was added, but this lead will still be connected.");
+      updateStatus("No comment was added. Continuing to the connection request...");
+      return {
+        engagedCount,
+        totalProcessed: countToEngage,
+        activities,
+        partial: true,
+        skipped: true,
+        skipReason,
+      };
     }
 
     const partial = engagedCount < countToEngage;

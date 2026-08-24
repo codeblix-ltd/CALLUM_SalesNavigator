@@ -1801,6 +1801,8 @@ async function recordPendingConnectionRequest(
   runContext,
   progress,
   engagedCount = 0,
+  engagementSkipped = false,
+  engagementSkipReason = null,
 ) {
   await ScoutApi.authenticatedAction("scouts:recordPendingConnectionRequest", {
     leadId: lead.id,
@@ -1821,6 +1823,8 @@ async function recordPendingConnectionRequest(
     status: "connection_requested",
     profileUrl,
     engagedCount,
+    engagementSkipped,
+    engagementSkipReason,
     requestAlreadyPending: true,
   };
 }
@@ -1880,6 +1884,33 @@ async function runPostEngagementWithRecovery(
   return response;
 }
 
+function resolvePostEngagementOutcome(response) {
+  if (!response?.ok) {
+    return {
+      engagedCount: 0,
+      skipped: true,
+      skipReason: cleanError(
+        response?.error || "We couldn’t finish this lead’s posts.",
+      ),
+    };
+  }
+
+  const engagedCount = Math.max(
+    0,
+    Math.trunc(Number(response.result?.engagedCount || 0)),
+  );
+  const skipped = Boolean(response.result?.skipped) || engagedCount < 1;
+  return {
+    engagedCount,
+    skipped,
+    skipReason: skipped
+      ? cleanError(
+          response.result?.skipReason || "No suitable comment was added.",
+        )
+      : null,
+  };
+}
+
 async function executeConnectionRequestWithRecovery(
   runContext,
   tabId,
@@ -1888,6 +1919,8 @@ async function executeConnectionRequestWithRecovery(
   requestOptions,
   progress,
   engagedCount,
+  engagementSkipped = false,
+  engagementSkipReason = null,
 ) {
   const message = {
     type: "EXECUTE_CONNECTION_REQUEST",
@@ -1929,6 +1962,8 @@ async function executeConnectionRequestWithRecovery(
         runContext,
         progress,
         engagedCount,
+        engagementSkipped,
+        engagementSkipReason,
       );
       return { response: { ok: true }, pendingResult };
     }
@@ -1968,6 +2003,8 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
   let requestSubmitted = false;
   let connectionPersistencePending = false;
   let completedEngagementCount = 0;
+  let engagementSkipped = false;
+  let engagementSkipReason = null;
   let resolvedProfileUrl = lead.linkedinUrl;
   let knownConnectionDetected = false;
   try {
@@ -2075,15 +2112,14 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
         engagedCount: 0,
       };
     }
-    if (needsEngagement && postEngagements < 1) {
-      throw new Error("You’ve used all your likes for today.");
-    }
-
     let engagementResponse = {
       ok: true,
       result: { engagedCount: 0, resumedAfterEngagement: true },
     };
-    if (needsEngagement) {
+    if (needsEngagement && postEngagements < 1) {
+      engagementSkipped = true;
+      engagementSkipReason = "The post limit has been reached for today.";
+    } else if (needsEngagement) {
       const recentActivityUrl = `${profileUrl}/recent-activity/all/`;
       await chrome.tabs.update(tab.id, { url: recentActivityUrl });
       await waitForTabComplete(tab.id, {
@@ -2102,22 +2138,22 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
       );
       if (!engagementResponse?.ok) {
         throwIfWorkflowControlled(runContext);
-        throw new Error(
-          engagementResponse?.error ||
-            "We couldn’t finish this lead’s posts.",
-        );
       }
-      completedEngagementCount =
-        engagementResponse.result?.engagedCount ?? 0;
+      const engagementOutcome = resolvePostEngagementOutcome(engagementResponse);
+      completedEngagementCount = engagementOutcome.engagedCount;
+      engagementSkipped = engagementOutcome.skipped;
+      engagementSkipReason = engagementOutcome.skipReason;
     }
 
     await checkpointRun(runContext, progress, {
       phase: "connecting",
-      message: `Posts finished for ${lead.fullName}. Preparing the connection request...`,
+      message: engagementSkipped
+        ? `No comment was added for ${lead.fullName}. Continuing to the connection request...`
+        : `Posts finished for ${lead.fullName}. Preparing the connection request...`,
       currentLead: {
         id: lead.id,
         fullName: lead.fullName,
-        status: "engaged",
+        status: completedEngagementCount > 0 ? "engaged" : "viewed",
       },
     });
 
@@ -2154,6 +2190,8 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
       },
       progress,
       completedEngagementCount,
+      engagementSkipped,
+      engagementSkipReason,
     );
     if (connectionAttempt.pendingResult) {
       requestSubmitted = true;
@@ -2189,6 +2227,8 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
       status: "connection_requested",
       profileUrl,
       engagedCount: completedEngagementCount,
+      engagementSkipped,
+      engagementSkipReason,
     };
   } catch (error) {
     const message = cleanError(error);

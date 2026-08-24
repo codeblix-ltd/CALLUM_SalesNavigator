@@ -54,7 +54,7 @@ const manifest = JSON.parse(manifestSource);
 const helpSource = await readExtensionFile("help.html");
 const helpStyles = await readExtensionFile("help.css");
 
-assert.equal(manifest.version, "0.10.17");
+assert.equal(manifest.version, "0.10.18");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -95,6 +95,7 @@ assert.match(popupSource, /id="open-help"/);
 assert.match(popupScript, /help\.html/);
 assert.match(helpSource, /How Callum Scout works/);
 assert.match(helpSource, /What happens after you click Start today’s work/);
+assert.match(helpSource, /the connection request still continues/);
 assert.match(helpStyles, /\.help-steps/);
 assert.match(automationSource, /Dedicated automation window/);
 assert.match(automationSource, /purple group/);
@@ -369,6 +370,9 @@ assert.match(scoutSource, /connection_detected/);
 assert.match(contentSource, /if \(engagedCount < 1\)/);
 assert.doesNotMatch(contentSource, /engagedCount !== countToEngage/);
 assert.match(contentSource, /Finished \$\{engagedCount\} of \$\{countToEngage\} posts\. Continuing safely/);
+assert.match(contentSource, /No comment was added\. Continuing to the connection request/);
+assert.match(contentSource, /No comment was added, but this lead will still be connected/);
+assert.doesNotMatch(contentSource, /No connection request was sent for this lead/);
 assert.match(contentSource, /connectionState === "pending"/);
 assert.match(contentSource, /No duplicate will be sent/);
 assert.match(contentSource, /openConnectionInvitation/);
@@ -383,6 +387,9 @@ assert.match(
 );
 assert.match(contentSource, /Details: \$\{skippedReasons\.join\("; "\)\}/);
 assert.match(backgroundSource, /runPostEngagementWithRecovery/);
+assert.match(backgroundSource, /engagementSkipped/);
+assert.match(backgroundSource, /No comment was added for \$\{lead\.fullName\}\. Continuing to the connection request/);
+assert.doesNotMatch(backgroundSource, /throw new Error\("You’ve used all your likes for today\."\)/);
 assert.match(backgroundSource, /executeConnectionRequestWithRecovery/);
 assert.match(backgroundSource, /isClosedMessageChannelError/);
 assert.match(backgroundSource, /retryOnClosedChannel: true/);
@@ -642,6 +649,40 @@ assert.equal(
 assert.equal(
   backgroundContext.isClosedMessageChannelError("LinkedIn did not open the profile."),
   false,
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(backgroundContext.resolvePostEngagementOutcome({
+    ok: true,
+    result: {
+      engagedCount: 0,
+      skipped: true,
+      skipReason: "The reviewer skipped this comment.",
+    },
+  }))),
+  {
+    engagedCount: 0,
+    skipped: true,
+    skipReason: "The reviewer skipped this comment.",
+  },
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(backgroundContext.resolvePostEngagementOutcome({
+    ok: false,
+    error: "No recent posts were suitable.",
+  }))),
+  {
+    engagedCount: 0,
+    skipped: true,
+    skipReason: "No recent posts were suitable.",
+  },
+  "A failed or skipped comment stage must become a non-blocking connection outcome.",
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(backgroundContext.resolvePostEngagementOutcome({
+    ok: true,
+    result: { engagedCount: 1 },
+  }))),
+  { engagedCount: 1, skipped: false, skipReason: null },
 );
 assert.equal(
   backgroundContext.isProtectedAutomationTab(
