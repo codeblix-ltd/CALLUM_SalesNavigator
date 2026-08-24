@@ -675,6 +675,25 @@
       throw new Error("LinkedIn opened a different profile.");
     }
 
+    updateStatus("Waiting for the profile actions to finish loading...");
+    const profileActionsReady = await waitForMatch(() => {
+      const main = document.querySelector("main");
+      if (!main) return null;
+      const currentName = getCurrentProfileName(options.expectedProfileName);
+      const hasVisibleAction = Array.from(
+        main.querySelectorAll("button, a[role='button'], [role='button']"),
+      ).some((element) => isElementVisible(element) && !element.closest("aside"));
+      return currentName && hasVisibleAction ? true : null;
+    }, 15_000);
+    if (!profileActionsReady) {
+      addLog("Retry needed", "LinkedIn did not finish loading the profile actions.");
+      return {
+        checked: true,
+        connectAvailable: false,
+        connectionState: "unavailable",
+      };
+    }
+
     const targetProfileName =
       getCurrentProfileName(options.expectedProfileName) ||
       String(options.expectedProfileName || "").trim();

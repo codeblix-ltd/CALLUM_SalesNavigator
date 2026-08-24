@@ -18,6 +18,7 @@ const elements = {
   acceptedCount: document.querySelector("#accepted-count"),
   emailCount: document.querySelector("#email-count"),
   attentionCount: document.querySelector("#attention-count"),
+  retryFailedLeads: document.querySelector("#retry-failed-leads"),
   completionRate: document.querySelector("#completion-rate"),
   pipeline: document.querySelector("#pipeline"),
   requestUsage: document.querySelector("#request-usage"),
@@ -59,6 +60,7 @@ let searchTimer = null;
 elements.loginForm.addEventListener("submit", handleLogin);
 elements.signOut.addEventListener("click", handleSignOut);
 elements.refresh.addEventListener("click", () => loadDashboard({ includeSummary: true }));
+elements.retryFailedLeads.addEventListener("click", retryAllFailedLeads);
 elements.openLinkedIn.addEventListener("click", () =>
   chrome.tabs.create({ url: "https://www.linkedin.com/feed/", active: true }),
 );
@@ -84,6 +86,7 @@ elements.previousPage.addEventListener("click", () => changePage(-1));
 elements.nextPage.addEventListener("click", () => changePage(1));
 elements.leadRows.addEventListener("click", handleLeadRowClick);
 elements.drawerContent.addEventListener("submit", handleLeadNoteSubmit);
+elements.drawerContent.addEventListener("click", handleDrawerActionClick);
 elements.closeDrawer.addEventListener("click", closeDrawer);
 elements.drawerBackdrop.addEventListener("click", closeDrawer);
 document.addEventListener("keydown", (event) => {
@@ -94,6 +97,17 @@ document.querySelectorAll(".nav-link").forEach((link) => {
     document.querySelectorAll(".nav-link").forEach((item) => item.classList.remove("is-active"));
     link.classList.add("is-active");
   });
+});
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== "local" || !changes.autoLeadRunState) return;
+  const status = String(changes.autoLeadRunState.newValue?.status || "idle");
+  elements.retryFailedLeads.disabled = ["running", "pausing", "paused"].includes(status);
+  if (
+    ["completed", "failed", "stopped"].includes(status) &&
+    changes.autoLeadRunState.oldValue?.status !== status
+  ) {
+    void loadDashboard({ includeSummary: true });
+  }
 });
 
 void hydrate().catch((error) => {
@@ -191,6 +205,8 @@ function renderSummary(dashboard) {
   elements.acceptedCount.textContent = formatNumber(counts.accepted);
   elements.emailCount.textContent = formatNumber(counts.emailCollected);
   elements.attentionCount.textContent = formatNumber(counts.failed);
+  elements.retryFailedLeads.hidden = Number(counts.failed || 0) < 1;
+  elements.retryFailedLeads.textContent = `Retry ${formatNumber(counts.failed)} failed lead${Number(counts.failed) === 1 ? "" : "s"}`;
   const completion = counts.total ? Math.round((counts.emailCollected / counts.total) * 100) : 0;
   elements.completionRate.textContent = `${completion}% complete`;
   elements.requestUsage.textContent = `${formatNumber(usage.requestsSent)} of ${formatNumber(usage.requestLimit)}`;
@@ -277,13 +293,16 @@ function openDrawer(lead) {
     timelineItem("Connected", lead.repliedAt ? "Connected and replied" : "Request accepted", lead.acceptedAt, Boolean(lead.acceptedAt)),
     timelineItem(email ? "Email saved" : lead.status === "connection_requested" ? "Email waiting" : "Email checked", email || (emailUnavailable ? "No email available on LinkedIn" : lead.status === "connection_requested" ? "Available after connection acceptance" : "Not checked yet"), lead.emailCollectedAt || lead.workEmailCollectedAt || lead.originalEmailCheckedAt, Boolean(email) || emailUnavailable, lead.workEmailStatus === "error"),
   ].join("");
+  const failedActions = lead.status === "failed"
+    ? `<button type="button" data-drawer-action="retry" data-lead-id="${escapeAttribute(lead.id)}">Retry this lead</button><button class="danger" type="button" data-drawer-action="reject" data-lead-id="${escapeAttribute(lead.id)}" data-lead-name="${escapeAttribute(lead.fullName || "this lead")}">Mark rejected</button>`
+    : "";
   elements.drawerContent.innerHTML = `
     <header class="drawer-header">
       <p class="eyebrow">${escapeHtml(stageLabel(lead.status))}</p>
       <h2 id="drawer-name">${escapeHtml(lead.fullName || "Unnamed lead")}</h2>
       <p>${escapeHtml([lead.currentTitle, lead.companyName].filter(Boolean).join(" · ") || "Lead details")}</p>
     </header>
-    <div class="drawer-actions"><a href="${escapeAttribute(lead.profileUrl)}" target="_blank" rel="noreferrer">Open LinkedIn profile</a></div>
+    <div class="drawer-actions"><a href="${escapeAttribute(lead.profileUrl)}" target="_blank" rel="noreferrer">Open LinkedIn profile</a>${failedActions}</div>
     <section class="drawer-section lead-note-section">
       <h3>Lead note</h3>
       <form class="lead-note-form" data-lead-note-form data-lead-id="${escapeAttribute(lead.id)}">
@@ -325,6 +344,63 @@ function openDrawer(lead) {
   elements.leadDrawer.hidden = false;
   document.body.style.overflow = "hidden";
   elements.closeDrawer.focus();
+}
+
+async function retryAllFailedLeads() {
+  hideError();
+  elements.retryFailedLeads.disabled = true;
+  elements.retryFailedLeads.textContent = "Starting failed lead retry…";
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "RETRY_FAILED_LEADS",
+    });
+    if (!response?.ok) {
+      throw new Error(response?.error || "Failed leads could not be retried.");
+    }
+    elements.lastUpdated.textContent =
+      "Failed lead retry started. You can follow it in the protected automation window.";
+  } catch (error) {
+    showError(readError(error));
+    elements.retryFailedLeads.disabled = false;
+    if (state.dashboard) renderSummary(state.dashboard);
+  }
+}
+
+async function handleDrawerActionClick(event) {
+  const button = event.target.closest("button[data-drawer-action]");
+  if (!button) return;
+  const leadId = button.dataset.leadId;
+  if (!leadId) return;
+  hideError();
+  button.disabled = true;
+  try {
+    if (button.dataset.drawerAction === "retry") {
+      const response = await chrome.runtime.sendMessage({
+        type: "START_AUTO_LEAD",
+        leadId,
+      });
+      if (!response?.ok) {
+        throw new Error(response?.error || "This lead could not be retried.");
+      }
+      closeDrawer();
+      elements.lastUpdated.textContent =
+        "Lead retry started. Follow it in the protected automation window.";
+      return;
+    }
+    if (button.dataset.drawerAction === "reject") {
+      const confirmed = window.confirm(
+        `Mark ${button.dataset.leadName || "this lead"} as rejected? It will not be retried again.`,
+      );
+      if (!confirmed) return;
+      await ScoutApi.authenticatedAction("scouts:rejectFailedLead", { leadId });
+      closeDrawer();
+      await loadDashboard({ includeSummary: true });
+    }
+  } catch (error) {
+    showError(readError(error));
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function handleLeadNoteSubmit(event) {

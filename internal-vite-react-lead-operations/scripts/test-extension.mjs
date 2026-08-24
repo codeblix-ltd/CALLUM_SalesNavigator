@@ -54,7 +54,7 @@ const manifest = JSON.parse(manifestSource);
 const helpSource = await readExtensionFile("help.html");
 const helpStyles = await readExtensionFile("help.css");
 
-assert.equal(manifest.version, "0.10.18");
+assert.equal(manifest.version, "0.10.19");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -76,6 +76,7 @@ assert.doesNotMatch(
 );
 assert.match(popupSource, /id="start-auto-lead"/);
 assert.match(popupSource, /id="automation-run-status"/);
+assert.match(popupSource, /id="retry-failed-leads"/);
 assert.match(popupSource, /id="pause-auto-lead"/);
 assert.match(popupSource, /id="resume-auto-lead"/);
 assert.match(popupSource, /id="stop-auto-lead"/);
@@ -88,6 +89,7 @@ assert.match(popupScript, /PAUSE_AUTO_LEAD/);
 assert.match(popupScript, /RESUME_AUTO_LEAD/);
 assert.match(popupScript, /startAutoLead\(\)\)/);
 assert.match(popupScript, /STOP_AUTO_LEAD/);
+assert.match(popupScript, /RETRY_FAILED_LEADS/);
 assert.match(popupScript, /saved resume point was cleared/i);
 assert.match(popupSource, /id="open-dashboard"/);
 assert.match(popupScript, /dashboard\.html/);
@@ -113,9 +115,13 @@ assert.match(automationScript, /averageLeadDurationMs/);
 assert.match(automationStyles, /#100b27/);
 assert.match(automationStyles, /\.run-estimate/);
 assert.match(dashboardSource, /All leads and steps/);
+assert.match(dashboardSource, /id="retry-failed-leads"/);
 assert.match(dashboardSource, /id="lead-drawer"/);
 assert.match(dashboardScript, /scouts:getLeadProgress/);
 assert.match(dashboardScript, /scouts:setLeadNote/);
+assert.match(dashboardScript, /scouts:rejectFailedLead/);
+assert.match(dashboardScript, /Retry this lead/);
+assert.match(dashboardScript, /Mark rejected/);
 assert.match(dashboardScript, /data-lead-note-form/);
 assert.match(dashboardScript, /maxlength="10000"/);
 assert.match(dashboardScript, /No email available/);
@@ -239,6 +245,7 @@ assert.match(contentSource, /INSPECT_CONNECTION_STATUS/);
 assert.match(contentSource, /runConnectionStatusInspection/);
 assert.match(contentSource, /findDirectConnectButton/);
 assert.match(contentSource, /Connection state could not be confirmed\. Skipping safely/);
+assert.match(contentSource, /Waiting for the profile actions to finish loading/);
 assert.match(contentSource, /a\[href\^='mailto:'\]/);
 assert.match(contentSource, /ContactInfoDetailSection/);
 assert.match(contentSource, /contactDetailsStartedAt/);
@@ -391,10 +398,14 @@ assert.match(backgroundSource, /engagementSkipped/);
 assert.match(backgroundSource, /No comment was added for \$\{lead\.fullName\}\. Continuing to the connection request/);
 assert.doesNotMatch(backgroundSource, /throw new Error\("You’ve used all your likes for today\."\)/);
 assert.match(backgroundSource, /executeConnectionRequestWithRecovery/);
+assert.match(backgroundSource, /CONNECTION_STATE_MAX_ATTEMPTS = 3/);
+assert.match(backgroundSource, /CONNECTION_STATE_RETRY_DELAYS_MS = \[2_000, 4_000\]/);
+assert.match(backgroundSource, /failedOnly: retryFailedOnly/);
+assert.match(backgroundSource, /Retry mode: only failed leads will be processed/);
 assert.match(backgroundSource, /isClosedMessageChannelError/);
 assert.match(backgroundSource, /retryOnClosedChannel: true/);
 assert.match(backgroundSource, /chrome\.tabs\.reload\(tabId\)/);
-assert.match(backgroundSource, /profile actions did not finish loading/);
+assert.match(backgroundSource, /profile actions are still loading/);
 assert.match(backgroundSource, /recordPendingConnectionRequest/);
 assert.match(backgroundSource, /progress\.requestsSent \+ dashboard\.usage\.requestRemaining/);
 assert.match(backgroundSource, /return \{ status: state\.status, state \};/);
@@ -406,7 +417,7 @@ assert.match(backgroundSource, /completeConnectionRequestWithRetry/);
 assert.match(backgroundSource, /CONNECTION_COMPLETION_RETRY_DELAYS_MS/);
 assert.match(backgroundSource, /reconcileLocallyConfirmedConnectionRequests/);
 assert.match(backgroundSource, /pendingConnectionRequests/);
-assert.match(backgroundSource, /excludeLeadIds: \[\.\.\.pendingConnectionLeadIds\]/);
+assert.match(backgroundSource, /excludeLeadIds: \[\.\.\.attemptedLeadIds\]/);
 assert.match(backgroundSource, /pendingConnectionLeadIds\.add\(lead\.id\)/);
 assert.match(backgroundSource, /Resume will continue with the next lead while it syncs/);
 assert.match(backgroundSource, /chrome\.tabs\.onRemoved/);
@@ -456,6 +467,10 @@ assert.match(schemaSource, /ADD COLUMN IF NOT EXISTS lead_note STRING NULL/);
 assert.match(schemaSource, /original_email_status IN \('pending', 'found', 'not_found'\)/);
 assert.match(schemaSource, /event_type = 'contact_info_checked'/);
 assert.match(scoutSource, /export const markOldRequestWithdrawn/);
+assert.match(scoutSource, /export const rejectFailedLead/);
+assert.match(scoutSource, /source: "scout_dashboard"/);
+assert.match(scoutSource, /failedOnly: v\.optional\(v\.boolean\(\)\)/);
+assert.match(scoutSource, /\["viewed", "engaged", "failed"\]\.includes\(row\.status\)/);
 assert.match(scoutSource, /export const completeFollowupTask/);
 assert.match(scoutSource, /createFollowupTasks/);
 assert.match(
@@ -463,7 +478,7 @@ assert.match(
   /profileUrl: v\.optional\(v\.string\(\)\)/,
 );
 assert.match(scoutSource, /recoveredFromFailed/);
-assert.match(scoutSource, /status IN \('engaged', 'failed'\)/);
+assert.match(scoutSource, /status IN \('viewed', 'engaged', 'failed'\)/);
 assert.match(scoutSource, /excludeLeadIds: v\.optional\(v\.array\(v\.string\(\)\)\)/);
 assert.match(scoutSource, /resumeExisting: v\.optional\(v\.boolean\(\)\)/);
 assert.match(scoutSource, /existingExclusionSql/);
@@ -472,7 +487,7 @@ assert.match(
   scoutSource,
   /status IN \('viewed', 'engaged'\)[\s\S]*?status = 'assigned'[\s\S]*?ORDER BY\s+assigned_at DESC,\s+CASE WHEN qualification_status = 'qualified' THEN 0 ELSE 1 END,\s+lead_id/,
 );
-assert.match(backgroundSource, /resumeExisting: resumeExistingLead/);
+assert.match(backgroundSource, /resumeExisting: retryFailedOnly \? false : resumeExistingLead/);
 assert.match(backgroundSource, /resumeExistingLead = false/);
 assert.match(adminSource, /export const exportCleanCsv/);
 assert.match(adminSource, /export const retryCrmDelivery/);
@@ -640,6 +655,7 @@ assert.equal(
   false,
 );
 assert.equal(backgroundContext.defaultAutoLeadRunState().status, "idle");
+assert.equal(backgroundContext.defaultAutoLeadRunState().retryFailedOnly, false);
 assert.equal(
   backgroundContext.isClosedMessageChannelError(
     "A listener indicated an asynchronous response by returning true, but the message channel closed before a response was received",

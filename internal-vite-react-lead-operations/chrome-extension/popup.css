@@ -292,6 +292,18 @@ input:focus, select:focus, textarea:focus {
   border-color: #6447d5;
 }
 .metric-fresh span, .metric-fresh strong { color: white; }
+.retry-failed-button {
+  width: 100%;
+  min-height: 38px;
+  margin-top: 8px;
+  color: #8f414b;
+  background: #fff3f4;
+  border: 1px solid #e8c9ce;
+  border-radius: 10px;
+  font-size: 9px;
+  font-weight: 850;
+}
+.retry-failed-button:hover:not(:disabled) { background: #ffe9ec; }
 
 .work-tools { margin-top: 10px; padding: 15px; }
 .work-tools-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 6px; }

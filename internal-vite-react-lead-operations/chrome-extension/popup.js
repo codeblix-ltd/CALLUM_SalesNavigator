@@ -16,6 +16,7 @@ const elements = {
   acceptedCount: document.querySelector("#accepted-count"),
   emailCount: document.querySelector("#email-count"),
   failedCount: document.querySelector("#failed-count"),
+  retryFailedLeads: document.querySelector("#retry-failed-leads"),
   requestUsage: document.querySelector("#request-usage"),
   engagementUsage: document.querySelector("#engagement-usage"),
   openDashboard: document.querySelector("#open-dashboard"),
@@ -135,6 +136,7 @@ elements.openDashboard.addEventListener("click", () =>
   chrome.tabs.create({ url: chrome.runtime.getURL("dashboard.html"), active: true }),
 );
 elements.startAutoLead.addEventListener("click", () => startAutoLead());
+elements.retryFailedLeads.addEventListener("click", retryFailedLeads);
 elements.pauseAutoLead.addEventListener("click", pauseAutoLead);
 elements.resumeAutoLead.addEventListener("click", resumeAutoLead);
 elements.stopAutoLead.addEventListener("click", stopAutoLead);
@@ -539,6 +541,22 @@ async function startAutoLead(specificLeadId = null, leadName = null) {
   }
 }
 
+async function retryFailedLeads() {
+  clearMessages();
+  elements.retryFailedLeads.disabled = true;
+  try {
+    showSuccess("Preparing to retry only the failed leads...");
+    const response = await chrome.runtime.sendMessage({
+      type: "RETRY_FAILED_LEADS",
+    });
+    await handleAutoLeadOutcome(response);
+  } catch (error) {
+    showError(error, true);
+  } finally {
+    await refreshAutoLeadRunState().catch(() => {});
+  }
+}
+
 async function handleFirstDmClick(event) {
   const button = event.target.closest("button[data-first-dm-action]");
   if (!button) return;
@@ -895,6 +913,11 @@ function renderAutoLeadRunState(state) {
   elements.pauseAutoLead.hidden = !isRunning;
   elements.resumeAutoLead.hidden = !isResumable;
   elements.stopAutoLead.hidden = !(isRunning || isPausing || isResumable);
+  elements.retryFailedLeads.disabled =
+    isRunning ||
+    isPausing ||
+    status === "paused" ||
+    Number(dashboard?.counts?.failed || 0) < 1;
   elements.startAutoLead.textContent =
     status === "stopped"
       ? "Start a new run"
@@ -1045,6 +1068,11 @@ function renderDashboard(value, updatedAt) {
   elements.acceptedCount.textContent = formatNumber(value.counts.accepted);
   elements.emailCount.textContent = formatNumber(value.counts.emailCollected);
   elements.failedCount.textContent = formatNumber(value.counts.failed);
+  elements.retryFailedLeads.hidden = Number(value.counts.failed || 0) < 1;
+  elements.retryFailedLeads.textContent = `Retry ${formatCount(
+    value.counts.failed,
+    "failed lead",
+  )}`;
   elements.requestUsage.textContent = `${formatNumber(value.usage.requestsSent)} / ${formatNumber(value.usage.requestLimit)}`;
   elements.engagementUsage.textContent = `${formatNumber(value.usage.likesUsed)} / ${formatNumber(value.usage.engagementLimit)}`;
   elements.updated.textContent = `Updated ${relativeTime(updatedAt)} · counts start over each day`;

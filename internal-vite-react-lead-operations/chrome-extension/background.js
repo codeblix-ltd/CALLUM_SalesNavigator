@@ -14,6 +14,8 @@ const AUTOMATION_HOME_URL = chrome.runtime.getURL("automation.html");
 const AUTOMATION_GROUP_TITLE = "CALLUM AUTOMATION";
 const ACTIVE_RUN_STATUSES = new Set(["running", "pausing"]);
 const CONNECTION_COMPLETION_RETRY_DELAYS_MS = [0, 750, 2_000];
+const CONNECTION_STATE_MAX_ATTEMPTS = 3;
+const CONNECTION_STATE_RETRY_DELAYS_MS = [2_000, 4_000];
 const LINKEDIN_TAB_LOAD_TIMEOUT_MS = 90_000;
 const LINKEDIN_TAB_READY_PROBE_MS = 1_000;
 const PREMIUM_CHECK_TTL_MS = 24 * 60 * 60 * 1_000;
@@ -101,6 +103,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "RETRY_FAILED_LEADS") {
+    startDailyWorkflow(null, { resume: false, retryFailedOnly: true })
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((error) => sendResponse({ ok: false, error: cleanError(error) }));
+    return true;
+  }
+
   if (message?.type === "CHECK_ACCEPTED_CONNECTIONS") {
     checkAcceptedConnectionsManually()
       .then((result) => sendResponse({ ok: true, result }))
@@ -176,7 +185,10 @@ async function initializeExtensionDefaults() {
   await chrome.storage.local.remove("temporaryLeadTest");
 }
 
-async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
+async function startDailyWorkflow(
+  specificLeadId,
+  { resume = false, retryFailedOnly = false } = {},
+) {
   await ensureAutoLeadRunState();
   if (manualConnectionReviewPromise) {
     throw new Error(
@@ -200,6 +212,9 @@ async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
   }
 
   const resolvedSpecificLeadId = specificLeadId || null;
+  const resolvedRetryFailedOnly = resume
+    ? previousState.retryFailedOnly === true
+    : retryFailedOnly === true;
 
   const runId = resume ? previousState.runId : createRunId();
   const inheritedPendingRequests = collectLocallyConfirmedConnectionRequests(
@@ -214,6 +229,7 @@ async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
   const runContext = {
     runId,
     resume,
+    retryFailedOnly: resolvedRetryFailedOnly,
     progress,
     automationWindowId: null,
     automationHomeTabId: null,
@@ -239,6 +255,7 @@ async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
       specificLeadId: resume
         ? previousState.specificLeadId || null
         : resolvedSpecificLeadId,
+      retryFailedOnly: resolvedRetryFailedOnly,
       startedAt,
       resumedAt: resume ? Date.now() : null,
       pausedAt: null,
@@ -247,7 +264,9 @@ async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
       phase: resume ? previousState.phase || "preparing" : "preparing",
       message: resume
         ? "Resuming from the last completed step..."
-        : "Preparing today’s work...",
+        : resolvedRetryFailedOnly
+          ? "Preparing to retry failed leads..."
+          : "Preparing today’s work...",
       currentLead: resume ? previousState.currentLead || null : null,
       automationWindowId: runContext.automationWindowId,
       automationHomeTabId: runContext.automationHomeTabId,
@@ -274,7 +293,9 @@ async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
       const state = await updateActiveRunState(runContext, {
         status: "completed",
         phase: "completed",
-        message: "Today’s work is complete.",
+        message: resolvedRetryFailedOnly
+          ? "Failed lead retry is complete."
+          : "Today’s work is complete.",
         currentLead: null,
         completedAt: Date.now(),
         progress: result.progress,
@@ -329,6 +350,7 @@ async function resumeDailyWorkflow() {
     await writeAutoLeadRunState({
       ...state,
       specificLeadId: null,
+      retryFailedOnly: false,
       progress: defaultRunProgress(),
       currentLead: null,
       phase: "preparing",
@@ -336,12 +358,17 @@ async function resumeDailyWorkflow() {
       error: null,
     });
   }
-  return startDailyWorkflow(specificLeadId, { resume: true });
+  return startDailyWorkflow(specificLeadId, {
+    resume: true,
+    retryFailedOnly: state.retryFailedOnly === true,
+  });
 }
 
 async function runDailyWorkflow(specificLeadId, runContext) {
   const progress = runContext.progress;
   const isolatedLeadRun = Boolean(specificLeadId);
+  const retryFailedOnly = runContext.retryFailedOnly === true;
+  const skipDailyMaintenance = isolatedLeadRun || retryFailedOnly;
   throwIfWorkflowControlled(runContext);
   await updateRunProgress(runContext, progress, {
     phase: "preparing",
@@ -355,7 +382,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
   }
 
   let autoWithdraw = progress.autoWithdraw;
-  if (!isolatedLeadRun && !progress.autoWithdrawComplete) {
+  if (!skipDailyMaintenance && !progress.autoWithdrawComplete) {
     await updateRunProgress(runContext, progress, {
       phase: "syncing_sent_invitations",
       message: "Syncing sent connection requests...",
@@ -377,7 +404,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
   }
 
   let review = progress.review;
-  if (isolatedLeadRun) {
+  if (skipDailyMaintenance) {
     if (!progress.reviewComplete) {
       review = emptyConnectionReview();
       progress.review = review;
@@ -389,7 +416,9 @@ async function runDailyWorkflow(specificLeadId, runContext) {
     }
     await checkpointRun(runContext, progress, {
       phase: "working_leads",
-      message: "Manual mode: only the selected lead will be processed.",
+      message: retryFailedOnly
+        ? "Retry mode: only failed leads will be processed."
+        : "Manual mode: only the selected lead will be processed.",
       currentLead: null,
     });
   } else if (!progress.reviewComplete) {
@@ -419,7 +448,11 @@ async function runDailyWorkflow(specificLeadId, runContext) {
 
   dashboard = await ScoutApi.authenticatedAction("scouts:getDashboard");
   if (progress.targetRequests === null) {
-    progress.targetRequests = specificLeadId ? 1 : dashboard.usage.requestRemaining;
+    progress.targetRequests = specificLeadId
+      ? 1
+      : retryFailedOnly
+        ? Math.min(dashboard.counts.failed, dashboard.usage.requestRemaining)
+        : dashboard.usage.requestRemaining;
   } else if (!specificLeadId) {
     progress.targetRequests = Math.min(
       progress.targetRequests,
@@ -435,6 +468,11 @@ async function runDailyWorkflow(specificLeadId, runContext) {
       (request) => request.leadId,
     ),
   );
+  const attemptedLeadIds = new Set([
+    ...progress.results.map((result) => result?.leadId).filter(Boolean),
+    ...progress.failedLeads.map((result) => result?.leadId).filter(Boolean),
+    ...pendingConnectionLeadIds,
+  ]);
   let resumeExistingLead = runContext.resume;
   if (specificLeadId && pendingConnectionLeadIds.has(specificLeadId)) {
     progress.processedLeads = Math.max(progress.processedLeads, 1);
@@ -446,13 +484,6 @@ async function runDailyWorkflow(specificLeadId, runContext) {
     index++
   ) {
     throwIfWorkflowControlled(runContext);
-    if (
-      !isolatedLeadRun &&
-      dashboard.usage.engagementRemaining <= 0 &&
-      dashboard.activeLead?.status !== "engaged"
-    ) {
-      break;
-    }
     let lead;
     if (specificLeadId && index === 0) {
       lead = await ScoutApi.authenticatedAction("scouts:claimNextLead", {
@@ -465,12 +496,14 @@ async function runDailyWorkflow(specificLeadId, runContext) {
       }
     } else {
       lead = await ScoutApi.authenticatedAction("scouts:claimNextLead", {
-        excludeLeadIds: [...pendingConnectionLeadIds],
-        resumeExisting: resumeExistingLead,
+        excludeLeadIds: [...attemptedLeadIds],
+        resumeExisting: retryFailedOnly ? false : resumeExistingLead,
+        failedOnly: retryFailedOnly,
       });
       resumeExistingLead = false;
     }
     if (!lead?.linkedinUrl) break;
+    attemptedLeadIds.add(lead.id);
 
     const leadStartedAt = Date.now();
     await checkpointRun(runContext, progress, {
@@ -748,6 +781,7 @@ async function requestWorkflowControl(action, { reason = null } = {}) {
     phase: "stopped",
     message: "Run stopped completely. Start again whenever you are ready.",
     specificLeadId: null,
+    retryFailedOnly: false,
     currentLead: null,
     automationWindowId: null,
     automationHomeTabId: null,
@@ -780,6 +814,7 @@ async function finalizeControlledRun(runContext, control) {
       phase: "stopped",
       message: "Run stopped completely. Start again whenever you are ready.",
       specificLeadId: null,
+      retryFailedOnly: false,
       currentLead: null,
       automationWindowId: null,
       automationHomeTabId: null,
@@ -805,6 +840,7 @@ function defaultAutoLeadRunState() {
     status: "idle",
     runId: null,
     specificLeadId: null,
+    retryFailedOnly: false,
     startedAt: null,
     resumedAt: null,
     pausedAt: null,
@@ -1762,24 +1798,26 @@ async function inspectConnectionStatus(runContext, tabId, lead, profileUrl) {
       expectedProfileUrl: profileUrl,
     },
   };
-  let response = await sendAutomationMessageToTab(
-    runContext,
-    tabId,
-    message,
-    {
+  let response = null;
+  for (let attempt = 0; attempt < CONNECTION_STATE_MAX_ATTEMPTS; attempt++) {
+    response = await sendAutomationMessageToTab(runContext, tabId, message, {
       retryOnClosedChannel: true,
       recoveryMessage: `LinkedIn refreshed while checking ${lead.fullName}. Reconnecting safely...`,
-    },
-  );
-  if (
-    response?.ok &&
-    response.result?.checked &&
-    response.result?.connectionState === "unavailable"
-  ) {
+    });
+    const unavailable =
+      response?.ok &&
+      response.result?.checked &&
+      response.result?.connectionState === "unavailable";
+    if (!unavailable || attempt === CONNECTION_STATE_MAX_ATTEMPTS - 1) {
+      return response;
+    }
+
+    const nextAttempt = attempt + 2;
     await updateActiveRunState(runContext, {
-      message: `LinkedIn's profile actions did not finish loading for ${lead.fullName}. Refreshing once before skipping...`,
+      message: `LinkedIn's profile actions are still loading for ${lead.fullName}. Waiting, then retrying (${nextAttempt} of ${CONNECTION_STATE_MAX_ATTEMPTS})...`,
     });
     throwIfWorkflowControlled(runContext);
+    await sleep(CONNECTION_STATE_RETRY_DELAYS_MS[attempt] || 2_000);
     await chrome.tabs.reload(tabId);
     await waitForTabComplete(tabId, {
       expectedUrl: profileUrl,
@@ -1787,10 +1825,6 @@ async function inspectConnectionStatus(runContext, tabId, lead, profileUrl) {
     });
     await waitForAutomationContentScript(runContext, tabId);
     throwIfWorkflowControlled(runContext);
-    response = await sendAutomationMessageToTab(runContext, tabId, message, {
-      retryOnClosedChannel: true,
-      recoveryMessage: `LinkedIn refreshed again while checking ${lead.fullName}. Reconnecting safely...`,
-    });
   }
   return response;
 }

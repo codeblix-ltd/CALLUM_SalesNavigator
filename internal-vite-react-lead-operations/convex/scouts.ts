@@ -574,6 +574,7 @@ export const claimNextLead = action({
     excludeLeadIds: v.optional(v.array(v.string())),
     leadId: v.optional(v.string()),
     resumeExisting: v.optional(v.boolean()),
+    failedOnly: v.optional(v.boolean()),
   },
   returns: v.union(leadValidator, v.null()),
   handler: async (ctx, args): Promise<ScoutLead | null> => {
@@ -608,7 +609,7 @@ export const claimNextLead = action({
            WHERE a.operator_id = $1
              AND a.lead_id = $2::UUID
              AND (
-               a.status IN ('viewed', 'engaged', 'connected', 'connection_requested', 'accepted', 'email_collected')
+               a.status IN ('viewed', 'engaged', 'failed', 'connected', 'connection_requested', 'accepted', 'email_collected')
                OR (a.status = 'assigned' AND a.qualification_status <> 'not_qualified')
              )
            FOR UPDATE`,
@@ -686,14 +687,15 @@ export const claimNextLead = action({
     const client = await database.connect();
     try {
       await client.query("BEGIN");
+      const queueStatusSql = args.failedOnly
+        ? "status = 'failed'"
+        : `(status IN ('viewed', 'engaged')
+              OR (status = 'assigned' AND qualification_status <> 'not_qualified'))`;
       const selected = await client.query(
         `SELECT lead_id, status
            FROM lead_assignments
           WHERE operator_id = $1
-            AND (
-              status IN ('viewed', 'engaged')
-              OR (status = 'assigned' AND qualification_status <> 'not_qualified')
-            )
+            AND (${queueStatusSql})
             ${selectedExclusionSql}
           ORDER BY
             assigned_at DESC,
@@ -757,7 +759,7 @@ export const recordProfileVisit = action({
               updated_at = now()
         WHERE lead_id = $1::UUID
           AND operator_id = $2
-          AND status IN ('assigned', 'viewed', 'engaged', 'connected', 'connection_requested', 'accepted', 'email_collected')
+          AND status IN ('assigned', 'viewed', 'engaged', 'failed', 'connected', 'connection_requested', 'accepted', 'email_collected')
       RETURNING lead_id`,
       [args.leadId, scout.operatorId, resolvedUrl],
     );
@@ -806,6 +808,7 @@ export const recordKnownConnection = action({
           "assigned",
           "viewed",
           "engaged",
+          "failed",
           "connected",
           "accepted",
           "email_collected",
@@ -1030,7 +1033,7 @@ export const recordPostActivity = action({
         [args.leadId, scout.operatorId],
       );
       const status = String(assignment.rows[0]?.status ?? "");
-      if (!["viewed", "engaged"].includes(status)) {
+      if (!["viewed", "engaged", "failed"].includes(status)) {
         throw new Error("This lead is not available for post engagement.");
       }
 
@@ -1135,8 +1138,8 @@ export const reserveConnectionRequest = action({
         [args.leadId, scout.operatorId],
       );
       const row = assignment.rows[0];
-      if (!row || row.status !== "engaged") {
-        throw new Error("The lead must complete engagement before connecting.");
+      if (!row || !["viewed", "engaged", "failed"].includes(row.status)) {
+        throw new Error("This lead is not ready for a connection request.");
       }
       await ensureDailyUsageRow(client, scout.operatorId);
       const usageResult = await client.query(
@@ -1192,7 +1195,7 @@ export const releaseConnectionRequest = action({
             SET connection_request_reserved_on = NULL, updated_at = now()
           WHERE lead_id = $1::UUID
             AND operator_id = $2
-            AND status = 'engaged'
+            AND status IN ('viewed', 'engaged', 'failed')
             AND connection_request_reserved_on = current_date
         RETURNING lead_id`,
         [args.leadId, scout.operatorId],
@@ -1251,7 +1254,7 @@ export const completeConnectionRequest = action({
         return null;
       }
       if (
-        !["engaged", "failed"].includes(currentStatus) ||
+        !["viewed", "engaged", "failed"].includes(currentStatus) ||
         !row.reserved_on
       ) {
         throw new Error("No reserved connection-request slot exists for this lead.");
@@ -1273,7 +1276,7 @@ export const completeConnectionRequest = action({
                 updated_at = now()
           WHERE lead_id = $1::UUID
             AND operator_id = $2
-            AND status IN ('engaged', 'failed')
+            AND status IN ('viewed', 'engaged', 'failed')
             AND connection_request_reserved_on IS NOT NULL
         RETURNING lead_id`,
         [args.leadId, scout.operatorId, profileUrl],
@@ -1834,6 +1837,58 @@ export const updateLeadStatus = action({
       );
       await insertEvent(client, args.leadId, scout.operatorId, args.status, {
         error: args.status === "failed" ? args.error?.slice(0, 1000) : null,
+      });
+      await client.query("COMMIT");
+      return null;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+});
+
+export const rejectFailedLead = action({
+  args: { leadId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
+    const database = getPool();
+    const client = await database.connect();
+    try {
+      await client.query("BEGIN");
+      const current = await client.query(
+        `SELECT status, connection_request_reserved_on::STRING AS reserved_on
+           FROM lead_assignments
+          WHERE lead_id = $1::UUID AND operator_id = $2
+          FOR UPDATE`,
+        [args.leadId, scout.operatorId],
+      );
+      const row = current.rows[0];
+      if (!row) throw new Error("This lead is not assigned to you.");
+      if (row.status !== "failed") {
+        throw new Error("Only a lead that needs attention can be rejected here.");
+      }
+      if (row.reserved_on) {
+        throw new Error(
+          "This lead may still have a connection request syncing. Refresh the extension before rejecting it.",
+        );
+      }
+      await client.query(
+        `UPDATE lead_assignments
+            SET status = 'skipped',
+                qualification_status = 'not_qualified',
+                qualification_note = coalesce(
+                  qualification_note,
+                  'Rejected by scout after automation retry'
+                ),
+                updated_at = now()
+          WHERE lead_id = $1::UUID AND operator_id = $2 AND status = 'failed'`,
+        [args.leadId, scout.operatorId],
+      );
+      await insertEvent(client, args.leadId, scout.operatorId, "lead_rejected", {
+        source: "scout_dashboard",
       });
       await client.query("COMMIT");
       return null;
@@ -2889,7 +2944,7 @@ function isValidEmail(value: string | null): value is string {
 
 function isAllowedTransition(current: string, next: string) {
   if (next === "failed" || next === "skipped") {
-    return ["assigned", "viewed", "engaged"].includes(current);
+    return ["assigned", "viewed", "engaged", "failed"].includes(current);
   }
   return current === "viewed" && next === "engaged";
 }
