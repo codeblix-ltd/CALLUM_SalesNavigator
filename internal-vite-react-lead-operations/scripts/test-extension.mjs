@@ -54,7 +54,7 @@ const manifest = JSON.parse(manifestSource);
 const helpSource = await readExtensionFile("help.html");
 const helpStyles = await readExtensionFile("help.css");
 
-assert.equal(manifest.version, "0.10.13");
+assert.equal(manifest.version, "0.10.14");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -229,7 +229,7 @@ assert.match(contentSource, /EXTRACT_CONTACT_INFO/);
 assert.match(contentSource, /INSPECT_CONNECTION_STATUS/);
 assert.match(contentSource, /runConnectionStatusInspection/);
 assert.match(contentSource, /findDirectConnectButton/);
-assert.match(contentSource, /Posts were skipped safely/);
+assert.match(contentSource, /Connection state could not be confirmed\. Skipping safely/);
 assert.match(contentSource, /a\[href\^='mailto:'\]/);
 assert.match(contentSource, /ContactInfoDetailSection/);
 assert.match(contentSource, /contactDetailsStartedAt/);
@@ -325,8 +325,26 @@ assert.match(
 assert.match(backgroundSource, /recordContactInfo/);
 assert.match(scoutSource, /export const recordKnownConnection/);
 assert.match(scoutSource, /export const recordSentInvitationReview/);
+assert.match(scoutSource, /export const recordPendingConnectionRequest/);
+assert.match(scoutSource, /source: "linkedin_profile_pending"/);
+assert.match(scoutSource, /export const getLeadAutomationCheckpoint/);
+assert.match(scoutSource, /\["assigned", "viewed", "engaged", "failed"\]/);
 assert.match(scoutSource, /linkedin_sent_invitations_sync/);
 assert.match(scoutSource, /connection_detected/);
+assert.match(contentSource, /if \(engagedCount < 1\)/);
+assert.doesNotMatch(contentSource, /engagedCount !== countToEngage/);
+assert.match(contentSource, /Finished \$\{engagedCount\} of \$\{countToEngage\} posts\. Continuing safely/);
+assert.match(contentSource, /connectionState === "pending"/);
+assert.match(contentSource, /No duplicate will be sent/);
+assert.match(backgroundSource, /runPostEngagementWithRecovery/);
+assert.match(backgroundSource, /executeConnectionRequestWithRecovery/);
+assert.match(backgroundSource, /isClosedMessageChannelError/);
+assert.match(backgroundSource, /retryOnClosedChannel: true/);
+assert.match(backgroundSource, /recordPendingConnectionRequest/);
+assert.match(backgroundSource, /progress\.requestsSent \+ dashboard\.usage\.requestRemaining/);
+assert.match(backgroundSource, /return \{ status: state\.status, state \};/);
+assert.doesNotMatch(backgroundSource, /return workflowPromise;/);
+assert.match(popupScript, /Automation started\. Follow progress in the protected purple window/);
 assert.match(backgroundSource, /reserveConnectionRequest/);
 assert.match(backgroundSource, /completeConnectionRequest/);
 assert.match(backgroundSource, /completeConnectionRequestWithRetry/);
@@ -561,6 +579,16 @@ assert.equal(
   false,
 );
 assert.equal(backgroundContext.defaultAutoLeadRunState().status, "idle");
+assert.equal(
+  backgroundContext.isClosedMessageChannelError(
+    "A listener indicated an asynchronous response by returning true, but the message channel closed before a response was received",
+  ),
+  true,
+);
+assert.equal(
+  backgroundContext.isClosedMessageChannelError("LinkedIn did not open the profile."),
+  false,
+);
 assert.equal(
   backgroundContext.isProtectedAutomationTab(
     { windowId: 42, groupId: 7 },

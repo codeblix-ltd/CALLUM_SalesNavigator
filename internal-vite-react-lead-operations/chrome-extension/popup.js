@@ -775,6 +775,14 @@ async function handleAutoLeadOutcome(response) {
   }
   const outcome = response.result || {};
   if (outcome.state) renderAutoLeadRunState(outcome.state);
+  if (outcome.status === "running" || outcome.status === "pausing") {
+    showSuccess(
+      outcome.status === "running"
+        ? "Automation started. Follow progress in the protected purple window."
+        : "Pausing after the current safe step...",
+    );
+    return;
+  }
   if (outcome.status === "paused") {
     showSuccess("Paused. Resume will continue from the last completed step.");
     return;

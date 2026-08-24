@@ -838,6 +838,135 @@ export const recordKnownConnection = action({
   },
 });
 
+export const getLeadAutomationCheckpoint = action({
+  args: { leadId: v.string() },
+  returns: v.object({ status: v.string(), engagedCount: v.number() }),
+  handler: async (ctx, args): Promise<{ status: string; engagedCount: number }> => {
+    const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
+    const database = getPool();
+    const result = await database.query(
+      `SELECT a.status,
+              count(p.lead_id)::INT8 AS engaged_count
+         FROM lead_assignments AS a
+         LEFT JOIN lead_post_activities AS p
+           ON p.lead_id = a.lead_id
+          AND p.operator_id = a.operator_id
+        WHERE a.lead_id = $1::UUID
+          AND a.operator_id = $2
+        GROUP BY a.status`,
+      [args.leadId, scout.operatorId],
+    );
+    const row = result.rows[0];
+    if (!row) throw new Error("This lead is not assigned to you.");
+    return {
+      status: String(row.status || "assigned"),
+      engagedCount: Number(row.engaged_count || 0),
+    };
+  },
+});
+
+export const recordPendingConnectionRequest = action({
+  args: { leadId: v.string(), profileUrl: v.string() },
+  returns: v.object({
+    status: v.string(),
+    alreadyRecorded: v.boolean(),
+    countedToday: v.boolean(),
+  }),
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{
+    status: string;
+    alreadyRecorded: boolean;
+    countedToday: boolean;
+  }> => {
+    const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
+    const profileUrl = normalizeLinkedInProfileUrl(args.profileUrl);
+    const database = getPool();
+    const client = await database.connect();
+    try {
+      await client.query("BEGIN");
+      const assignment = await client.query(
+        `SELECT status,
+                connection_requested_at::STRING AS requested_at,
+                connection_request_reserved_on::STRING AS reserved_on,
+                current_date::STRING AS usage_date
+           FROM lead_assignments
+          WHERE lead_id = $1::UUID AND operator_id = $2
+          FOR UPDATE`,
+        [args.leadId, scout.operatorId],
+      );
+      const row = assignment.rows[0];
+      if (!row) throw new Error("This lead is not assigned to you.");
+
+      const currentStatus = String(row.status || "");
+      if (currentStatus === "connection_requested") {
+        await client.query("COMMIT");
+        return {
+          status: "connection_requested",
+          alreadyRecorded: true,
+          countedToday: false,
+        };
+      }
+      if (
+        !["assigned", "viewed", "engaged", "failed"].includes(
+          currentStatus,
+        )
+      ) {
+        throw new Error("This lead is already past the connection-request step.");
+      }
+
+      await ensureDailyUsageRow(client, scout.operatorId);
+      const slotAlreadyCounted =
+        String(row.reserved_on || "") === String(row.usage_date || "");
+      const shouldCountToday = !row.requested_at && !slotAlreadyCounted;
+      if (shouldCountToday) {
+        await client.query(
+          `UPDATE operator_daily_usage
+              SET requests_sent = requests_sent + 1, updated_at = now()
+            WHERE operator_id = $1 AND usage_date = current_date`,
+          [scout.operatorId],
+        );
+      }
+
+      await client.query(
+        `UPDATE lead_assignments
+            SET status = 'connection_requested',
+                connection_requested_at = coalesce(connection_requested_at, now()),
+                resolved_linkedin_url = $3,
+                connection_request_reserved_on = NULL,
+                last_error = NULL,
+                last_error_at = NULL,
+                updated_at = now()
+          WHERE lead_id = $1::UUID AND operator_id = $2`,
+        [args.leadId, scout.operatorId, profileUrl],
+      );
+      await insertEvent(
+        client,
+        args.leadId,
+        scout.operatorId,
+        "connection_requested",
+        {
+          profileUrl,
+          source: "linkedin_profile_pending",
+          recoveredStatus: currentStatus,
+        },
+      );
+      await client.query("COMMIT");
+      return {
+        status: "connection_requested",
+        alreadyRecorded: false,
+        countedToday: shouldCountToday || slotAlreadyCounted,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+});
+
 export const recordPostActivity = action({
   args: {
     leadId: v.string(),

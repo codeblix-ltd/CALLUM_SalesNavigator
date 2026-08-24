@@ -175,7 +175,10 @@ async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
       "Wait for the accepted connection check to finish before starting today’s automation.",
     );
   }
-  if (workflowPromise) return workflowPromise;
+  if (workflowPromise) {
+    const state = await readAutoLeadRunState();
+    return { status: state.status, state };
+  }
 
   let previousState = await readAutoLeadRunState();
   previousState = await reconcileLocallyConfirmedConnectionRequests(
@@ -278,15 +281,16 @@ async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
         const state = await finalizeControlledRun(runContext, control);
         return { status: control === "pause" ? "paused" : "stopped", state };
       }
-      await updateActiveRunState(runContext, {
+      const state = await updateActiveRunState(runContext, {
         status: "failed",
         phase: "failed",
-        message: cleanError(error),
+        message: friendlyWorkflowError(error),
         currentLead: null,
         completedAt: Date.now(),
         error: cleanError(error),
       });
-      throw error;
+      console.warn("Callum Scout run stopped:", cleanError(error));
+      return { status: "failed", error: cleanError(error), state };
     })
     .finally(() => {
       workflowPromise = null;
@@ -295,11 +299,18 @@ async function startDailyWorkflow(specificLeadId, { resume = false } = {}) {
       activeWorkflowTabId = null;
       activeAutomationWindowId = null;
     });
-  return workflowPromise;
+  const state = await readAutoLeadRunState();
+  return { status: state.status, state };
 }
 
 async function resumeDailyWorkflow() {
-  if (workflowPromise) await workflowPromise.catch(() => {});
+  if (workflowPromise) {
+    const activeState = await getAutoLeadRunState();
+    if (ACTIVE_RUN_STATUSES.has(activeState.status)) {
+      return { status: activeState.status, state: activeState };
+    }
+    await workflowPromise;
+  }
   const state = await getAutoLeadRunState();
   if (!['paused', 'failed'].includes(state.status)) {
     throw new Error("This run is not paused or failed, so there is nothing to resume.");
@@ -401,6 +412,11 @@ async function runDailyWorkflow(specificLeadId, runContext) {
   dashboard = await ScoutApi.authenticatedAction("scouts:getDashboard");
   if (progress.targetRequests === null) {
     progress.targetRequests = specificLeadId ? 1 : dashboard.usage.requestRemaining;
+  } else if (!specificLeadId) {
+    progress.targetRequests = Math.min(
+      progress.targetRequests,
+      progress.requestsSent + dashboard.usage.requestRemaining,
+    );
   }
   const availableRequestSlots = progress.targetRequests;
   const results = progress.results;
@@ -1181,9 +1197,28 @@ async function waitForAutomationContentScript(runContext, tabId) {
   return page;
 }
 
-async function sendAutomationMessageToTab(runContext, tabId, message) {
+async function sendAutomationMessageToTab(
+  runContext,
+  tabId,
+  message,
+  { retryOnClosedChannel = false, recoveryMessage = null } = {},
+) {
   await assertAutomationTab(runContext, tabId);
-  return sendMessageToTab(tabId, message);
+  let response = await sendMessageToTab(tabId, message);
+  if (
+    retryOnClosedChannel &&
+    isClosedMessageChannelError(response?.error)
+  ) {
+    await updateActiveRunState(runContext, {
+      message:
+        recoveryMessage ||
+        "LinkedIn refreshed while Callum Scout was checking the page. Reconnecting safely...",
+    });
+    await waitForAutomationContentScript(runContext, tabId);
+    await assertAutomationTab(runContext, tabId);
+    response = await sendMessageToTab(tabId, message);
+  }
+  return response;
 }
 
 async function sendStatusToProtectedActiveTab(state, status) {
@@ -1601,6 +1636,191 @@ async function collectKnownConnectionContact(
   }
 }
 
+async function inspectConnectionStatus(runContext, tabId, lead, profileUrl) {
+  return sendAutomationMessageToTab(
+    runContext,
+    tabId,
+    {
+      type: "INSPECT_CONNECTION_STATUS",
+      options: {
+        expectedProfileName: lead.fullName,
+        expectedProfileUrl: profileUrl,
+      },
+    },
+    {
+      retryOnClosedChannel: true,
+      recoveryMessage: `LinkedIn refreshed while checking ${lead.fullName}. Reconnecting safely...`,
+    },
+  );
+}
+
+async function recordPendingConnectionRequest(
+  lead,
+  profileUrl,
+  runContext,
+  progress,
+  engagedCount = 0,
+) {
+  await ScoutApi.authenticatedAction("scouts:recordPendingConnectionRequest", {
+    leadId: lead.id,
+    profileUrl,
+  });
+  await updateRunProgress(runContext, progress, {
+    phase: "working_leads",
+    message: `A connection request to ${lead.fullName} was already pending. It was synced without sending a duplicate.`,
+    currentLead: {
+      id: lead.id,
+      fullName: lead.fullName,
+      status: "connection_requested",
+    },
+  });
+  return {
+    leadId: lead.id,
+    leadName: lead.fullName,
+    status: "connection_requested",
+    profileUrl,
+    engagedCount,
+    requestAlreadyPending: true,
+  };
+}
+
+async function runPostEngagementWithRecovery(
+  runContext,
+  tabId,
+  lead,
+  profileUrl,
+  automationOptions,
+  progress,
+) {
+  const message = {
+    type: "EXECUTE_POST_ENGAGEMENT",
+    options: { ...automationOptions, profileUrl },
+  };
+  let response = await sendAutomationMessageToTab(runContext, tabId, message);
+  if (!isClosedMessageChannelError(response?.error)) return response;
+
+  const checkpoint = await ScoutApi.authenticatedAction(
+    "scouts:getLeadAutomationCheckpoint",
+    { leadId: lead.id },
+  );
+  if (Number(checkpoint?.engagedCount || 0) > 0) {
+    const engagedCount = Math.min(
+      Number(checkpoint.engagedCount),
+      Number(automationOptions.postEngagements || checkpoint.engagedCount),
+    );
+    await updateRunProgress(runContext, progress, {
+      phase: "engaging",
+      message: `LinkedIn refreshed after ${engagedCount} post${engagedCount === 1 ? "" : "s"}. Continuing from the saved result...`,
+    });
+    return {
+      ok: true,
+      result: {
+        engagedCount,
+        totalProcessed: Number(automationOptions.postEngagements || engagedCount),
+        partial: engagedCount < Number(automationOptions.postEngagements || engagedCount),
+        recoveredAfterRefresh: true,
+      },
+    };
+  }
+
+  await updateRunProgress(runContext, progress, {
+    phase: "engaging",
+    message: `LinkedIn refreshed before any post was saved for ${lead.fullName}. Retrying once...`,
+  });
+  await waitForAutomationContentScript(runContext, tabId);
+  response = await sendAutomationMessageToTab(runContext, tabId, message);
+  if (isClosedMessageChannelError(response?.error)) {
+    return {
+      ok: false,
+      error:
+        "LinkedIn refreshed twice before any post could be confirmed. This lead was skipped safely.",
+    };
+  }
+  return response;
+}
+
+async function executeConnectionRequestWithRecovery(
+  runContext,
+  tabId,
+  lead,
+  profileUrl,
+  requestOptions,
+  progress,
+  engagedCount,
+) {
+  const message = {
+    type: "EXECUTE_CONNECTION_REQUEST",
+    options: requestOptions,
+  };
+  let response = await sendAutomationMessageToTab(runContext, tabId, message);
+  if (!isClosedMessageChannelError(response?.error)) {
+    return { response, pendingResult: null };
+  }
+
+  for (let recoveryAttempt = 0; recoveryAttempt < 2; recoveryAttempt++) {
+    await updateRunProgress(runContext, progress, {
+      phase: "connecting",
+      message: `LinkedIn refreshed while connecting to ${lead.fullName}. Checking for a sent request before retrying...`,
+    });
+    await waitForAutomationContentScript(runContext, tabId);
+    const inspection = await inspectConnectionStatus(
+      runContext,
+      tabId,
+      lead,
+      profileUrl,
+    );
+    if (!inspection?.ok) {
+      return {
+        response: {
+          ok: false,
+          error:
+            "LinkedIn refreshed before the connection request could be confirmed. This lead was skipped safely.",
+        },
+        pendingResult: null,
+      };
+    }
+
+    const state = inspection.result?.connectionState;
+    if (state === "pending") {
+      const pendingResult = await recordPendingConnectionRequest(
+        lead,
+        profileUrl,
+        runContext,
+        progress,
+        engagedCount,
+      );
+      return { response: { ok: true }, pendingResult };
+    }
+    if (!inspection.result?.connectAvailable) {
+      return {
+        response: {
+          ok: false,
+          error:
+            state === "connected"
+              ? "This lead is already connected. No duplicate request was sent."
+              : "The connection state could not be confirmed. Nothing was sent.",
+        },
+        pendingResult: null,
+      };
+    }
+    if (recoveryAttempt === 0) {
+      response = await sendAutomationMessageToTab(runContext, tabId, message);
+      if (!isClosedMessageChannelError(response?.error)) {
+        return { response, pendingResult: null };
+      }
+    }
+  }
+
+  return {
+    response: {
+      ok: false,
+      error:
+        "LinkedIn refreshed twice before the connection request could be confirmed. This lead was skipped safely.",
+    },
+    pendingResult: null,
+  };
+}
+
 async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
   let workflowTabId = null;
   let connectionReserved = false;
@@ -1665,16 +1885,11 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
     throwIfWorkflowControlled(runContext);
 
     await waitForAutomationContentScript(runContext, tab.id);
-    const connectionInspection = await sendAutomationMessageToTab(
+    const connectionInspection = await inspectConnectionStatus(
       runContext,
       tab.id,
-      {
-        type: "INSPECT_CONNECTION_STATUS",
-        options: {
-          expectedProfileName: lead.fullName,
-          expectedProfileUrl: profileUrl,
-        },
-      },
+      lead,
+      profileUrl,
     );
     throwIfWorkflowControlled(runContext);
     if (!connectionInspection?.ok) {
@@ -1687,6 +1902,20 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
       throw new Error("We couldn’t confirm this lead’s LinkedIn connection status.");
     }
     if (!connectionInspection.result.connectAvailable) {
+      if (connectionInspection.result.connectionState === "pending") {
+        return recordPendingConnectionRequest(
+          lead,
+          profileUrl,
+          runContext,
+          progress,
+          0,
+        );
+      }
+      if (connectionInspection.result.connectionState !== "connected") {
+        throw new Error(
+          "The connection state could not be confirmed. Nothing was sent for this lead.",
+        );
+      }
       const fallback = await collectKnownConnectionContact(
         lead,
         profileUrl,
@@ -1722,10 +1951,14 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
       });
       throwIfWorkflowControlled(runContext);
       await waitForAutomationContentScript(runContext, tab.id);
-      engagementResponse = await sendAutomationMessageToTab(runContext, tab.id, {
-        type: "EXECUTE_POST_ENGAGEMENT",
-        options: { ...automationOptions, profileUrl },
-      });
+      engagementResponse = await runPostEngagementWithRecovery(
+        runContext,
+        tab.id,
+        lead,
+        profileUrl,
+        automationOptions,
+        progress,
+      );
       if (!engagementResponse?.ok) {
         throwIfWorkflowControlled(runContext);
         throw new Error(
@@ -1767,15 +2000,26 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
     });
     connectionReserved = true;
     throwIfWorkflowControlled(runContext);
-    const connectResponse = await sendAutomationMessageToTab(runContext, tab.id, {
-      type: "EXECUTE_CONNECTION_REQUEST",
-      options: {
+    const connectionAttempt = await executeConnectionRequestWithRecovery(
+      runContext,
+      tab.id,
+      lead,
+      profileUrl,
+      {
         expectedProfileName: lead.fullName,
         expectedProfileUrl: profileUrl,
         includeNote,
         invitationNote: automationOptions.invitationNote,
       },
-    });
+      progress,
+      completedEngagementCount,
+    );
+    if (connectionAttempt.pendingResult) {
+      requestSubmitted = true;
+      connectionReserved = false;
+      return connectionAttempt.pendingResult;
+    }
+    const connectResponse = connectionAttempt.response;
     if (!connectResponse?.ok) {
       throwIfWorkflowControlled(runContext);
       throw new Error(
@@ -2180,6 +2424,19 @@ function cleanError(error) {
   return String(error instanceof Error ? error.message : error || "Something went wrong. Try again.")
     .replace(/^Error:\s*/i, "")
     .split("\n")[0];
+}
+
+function isClosedMessageChannelError(error) {
+  return /(?:message channel|message port).*(?:closed|disconnected).*before.*response|asynchronous response.*channel closed/i.test(
+    cleanError(error),
+  );
+}
+
+function friendlyWorkflowError(error) {
+  if (isClosedMessageChannelError(error)) {
+    return "LinkedIn refreshed before Callum Scout could confirm the step. The saved run can be resumed safely.";
+  }
+  return cleanError(error);
 }
 
 function sleep(ms) {

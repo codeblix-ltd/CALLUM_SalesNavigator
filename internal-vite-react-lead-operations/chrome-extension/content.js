@@ -403,14 +403,32 @@
       await sleep(2000);
     }
 
-    if (engagedCount !== countToEngage) {
+    if (engagedCount < 1) {
       throw new Error(
         `Finished ${engagedCount} of ${countToEngage} posts. No connection request was sent for this lead.`,
       );
     }
 
-    updateStatus(`Finished ${engagedCount} post${engagedCount === 1 ? "" : "s"}.`);
-    return { engagedCount, totalProcessed: countToEngage, activities };
+    const partial = engagedCount < countToEngage;
+    if (partial) {
+      addLog(
+        "Continued safely",
+        `Finished ${engagedCount} of ${countToEngage} posts. Continuing to the connection check.`,
+      );
+      updateStatus(
+        `Finished ${engagedCount} of ${countToEngage} posts. Continuing safely...`,
+      );
+    } else {
+      updateStatus(
+        `Finished ${engagedCount} post${engagedCount === 1 ? "" : "s"}.`,
+      );
+    }
+    return {
+      engagedCount,
+      totalProcessed: countToEngage,
+      activities,
+      partial,
+    };
   }
 
   async function runConnectionRequest(options = {}) {
@@ -632,13 +650,29 @@
     }
 
     const connectionState = findVisibleConnectionState();
+    if (connectionState === "pending") {
+      addLog(
+        "Connection",
+        "A connection request is already pending. No duplicate will be sent.",
+      );
+      updateStatus("Connection request already pending. Syncing it safely...");
+      return {
+        checked: true,
+        connectAvailable: false,
+        connectionState,
+      };
+    }
     addLog(
       "Connection",
       connectionState === "connected"
         ? "This profile is already connected. Posts were skipped."
-        : "Connect is not available. Posts were skipped safely.",
+        : "The connection state could not be confirmed. Nothing was sent.",
     );
-    updateStatus("Already connected. Checking contact info instead.");
+    updateStatus(
+      connectionState === "connected"
+        ? "Already connected. Checking contact info instead."
+        : "Connection state could not be confirmed. Skipping safely.",
+    );
     return {
       checked: true,
       connectAvailable: false,
