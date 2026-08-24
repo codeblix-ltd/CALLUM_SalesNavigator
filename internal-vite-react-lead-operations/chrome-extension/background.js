@@ -1637,21 +1637,44 @@ async function collectKnownConnectionContact(
 }
 
 async function inspectConnectionStatus(runContext, tabId, lead, profileUrl) {
-  return sendAutomationMessageToTab(
+  const message = {
+    type: "INSPECT_CONNECTION_STATUS",
+    options: {
+      expectedProfileName: lead.fullName,
+      expectedProfileUrl: profileUrl,
+    },
+  };
+  let response = await sendAutomationMessageToTab(
     runContext,
     tabId,
-    {
-      type: "INSPECT_CONNECTION_STATUS",
-      options: {
-        expectedProfileName: lead.fullName,
-        expectedProfileUrl: profileUrl,
-      },
-    },
+    message,
     {
       retryOnClosedChannel: true,
       recoveryMessage: `LinkedIn refreshed while checking ${lead.fullName}. Reconnecting safely...`,
     },
   );
+  if (
+    response?.ok &&
+    response.result?.checked &&
+    response.result?.connectionState === "unavailable"
+  ) {
+    await updateActiveRunState(runContext, {
+      message: `LinkedIn's profile actions did not finish loading for ${lead.fullName}. Refreshing once before skipping...`,
+    });
+    throwIfWorkflowControlled(runContext);
+    await chrome.tabs.reload(tabId);
+    await waitForTabComplete(tabId, {
+      expectedUrl: profileUrl,
+      stage: `${lead.fullName || "This lead"}'s connection actions`,
+    });
+    await waitForAutomationContentScript(runContext, tabId);
+    throwIfWorkflowControlled(runContext);
+    response = await sendAutomationMessageToTab(runContext, tabId, message, {
+      retryOnClosedChannel: true,
+      recoveryMessage: `LinkedIn refreshed again while checking ${lead.fullName}. Reconnecting safely...`,
+    });
+  }
+  return response;
 }
 
 async function recordPendingConnectionRequest(

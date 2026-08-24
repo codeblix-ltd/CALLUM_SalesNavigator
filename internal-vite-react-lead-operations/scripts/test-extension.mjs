@@ -54,7 +54,7 @@ const manifest = JSON.parse(manifestSource);
 const helpSource = await readExtensionFile("help.html");
 const helpStyles = await readExtensionFile("help.css");
 
-assert.equal(manifest.version, "0.10.14");
+assert.equal(manifest.version, "0.10.15");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -329,6 +329,9 @@ assert.match(scoutSource, /export const recordPendingConnectionRequest/);
 assert.match(scoutSource, /source: "linkedin_profile_pending"/);
 assert.match(scoutSource, /export const getLeadAutomationCheckpoint/);
 assert.match(scoutSource, /\["assigned", "viewed", "engaged", "failed"\]/);
+assert.match(scoutSource, /Sent Invitations is the source of truth/);
+assert.match(scoutSource, /connection_requested_at >= current_date/);
+assert.match(scoutSource, /requests_sent = greatest/);
 assert.match(scoutSource, /linkedin_sent_invitations_sync/);
 assert.match(scoutSource, /connection_detected/);
 assert.match(contentSource, /if \(engagedCount < 1\)/);
@@ -336,10 +339,23 @@ assert.doesNotMatch(contentSource, /engagedCount !== countToEngage/);
 assert.match(contentSource, /Finished \$\{engagedCount\} of \$\{countToEngage\} posts\. Continuing safely/);
 assert.match(contentSource, /connectionState === "pending"/);
 assert.match(contentSource, /No duplicate will be sent/);
+assert.match(contentSource, /openConnectionInvitation/);
+assert.match(contentSource, /the direct Connect button/);
+assert.match(contentSource, /Connect in the More menu/);
+assert.match(contentSource, /scroll: method !== "Connect in the More menu"/);
+assert.match(contentSource, /stateBeforeClick = findVisibleConnectionState/);
+assert.match(contentSource, /requestAlreadyPending: true/);
+assert.match(
+  contentSource,
+  /\[data-test-modal-id='send-invite-modal'\], \[role='dialog'\], dialog/,
+);
+assert.match(contentSource, /Details: \$\{skippedReasons\.join\("; "\)\}/);
 assert.match(backgroundSource, /runPostEngagementWithRecovery/);
 assert.match(backgroundSource, /executeConnectionRequestWithRecovery/);
 assert.match(backgroundSource, /isClosedMessageChannelError/);
 assert.match(backgroundSource, /retryOnClosedChannel: true/);
+assert.match(backgroundSource, /chrome\.tabs\.reload\(tabId\)/);
+assert.match(backgroundSource, /profile actions did not finish loading/);
 assert.match(backgroundSource, /recordPendingConnectionRequest/);
 assert.match(backgroundSource, /progress\.requestsSent \+ dashboard\.usage\.requestRemaining/);
 assert.match(backgroundSource, /return \{ status: state\.status, state \};/);

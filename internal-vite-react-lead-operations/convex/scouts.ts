@@ -1593,6 +1593,31 @@ export const recordSentInvitationReview = action({
           );
         }
       }
+      // Sent Invitations is the source of truth for requests placed outside
+      // Callum Scout too. Keep today's safety quota aligned with every tracked
+      // request so a manual send cannot be followed by too many automated ones.
+      await ensureDailyUsageRow(client, scout.operatorId);
+      await client.query(
+        `UPDATE operator_daily_usage
+            SET requests_sent = greatest(
+                  requests_sent,
+                  (
+                    SELECT count(*)::INT
+                     FROM lead_assignments
+                     WHERE operator_id = $1
+                       AND (
+                         (
+                           connection_requested_at >= current_date
+                           AND connection_requested_at < current_date + INTERVAL '1 day'
+                         )
+                         OR connection_request_reserved_on = current_date
+                       )
+                  )
+                ),
+                updated_at = now()
+          WHERE operator_id = $1 AND usage_date = current_date`,
+        [scout.operatorId],
+      );
       await client.query("COMMIT");
       return { matched, updated };
     } catch (error) {

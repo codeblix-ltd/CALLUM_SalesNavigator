@@ -297,6 +297,7 @@
 
     let engagedCount = 0;
     const activities = [];
+    const skippedReasons = [];
 
     for (let i = 0; i < countToEngage; i++) {
       const postEl = posts[i];
@@ -310,6 +311,7 @@
       const likeResult = await handleLikeButton(postEl);
       if (!likeResult.success) {
         addLog("Problem", `Couldn’t like post ${i + 1}`);
+        skippedReasons.push(`post ${i + 1}: Like was unavailable`);
         continue;
       }
       addLog(
@@ -326,6 +328,7 @@
 
       if (!postText || postText.length < 30) {
         addLog("Skipped", `Post ${i + 1} did not have enough text for a comment`);
+        skippedReasons.push(`post ${i + 1}: not enough readable text`);
         continue;
       }
       if (!postUrl) {
@@ -352,6 +355,7 @@
         const userApprovedText = await promptValidationUI(postText, draftText, i + 1);
         if (!userApprovedText) {
           addLog("Skipped", `You skipped the comment for post ${i + 1}`);
+          skippedReasons.push(`post ${i + 1}: comment was skipped during review`);
           continue;
         }
         draftText = userApprovedText;
@@ -362,6 +366,7 @@
       const commentBoxOpened = await openCommentBox(postEl);
       if (!commentBoxOpened) {
         addLog("Problem", `Couldn’t open the comment box for post ${i + 1}`);
+        skippedReasons.push(`post ${i + 1}: comment box did not open`);
         continue;
       }
 
@@ -372,6 +377,7 @@
       const typed = await typeCommentInQuill(postEl, draftText);
       if (!typed) {
         addLog("Problem", `Couldn’t add the comment to post ${i + 1}`);
+        skippedReasons.push(`post ${i + 1}: comment text could not be entered`);
         continue;
       }
 
@@ -398,14 +404,18 @@
         addLog("Commented", `Posted a comment on post ${i + 1}`);
       } else {
         addLog("Problem", `Couldn’t post the comment on post ${i + 1}`);
+        skippedReasons.push(`post ${i + 1}: LinkedIn did not confirm the comment`);
       }
 
       await sleep(2000);
     }
 
     if (engagedCount < 1) {
+      const details = skippedReasons.length
+        ? ` Details: ${skippedReasons.join("; ")}.`
+        : "";
       throw new Error(
-        `Finished ${engagedCount} of ${countToEngage} posts. No connection request was sent for this lead.`,
+        `Finished ${engagedCount} of ${countToEngage} posts. No connection request was sent for this lead.${details}`,
       );
     }
 
@@ -467,46 +477,44 @@
 
     await sleep(1500);
 
-    // 1. Click 'More' button on profile
-    updateStatus("Looking for the More button...");
-    const moreBtn = await findMoreButton(targetProfileName);
-    if (!moreBtn) {
-      throw new Error("We couldn’t find the More button on this profile.");
-    }
-
-    if (moreBtn.getAttribute("aria-expanded") === "true") {
-      addLog("Menu", "The More menu is already open");
-    } else {
-      clickElement(moreBtn);
-      addLog("Opened", "More menu");
-      await sleep(1200);
-    }
-
-    // 2. Click 'Connect' in the dropdown menu / popover
-    updateStatus("Looking for Connect...");
-    const connectEl = await findConnectOption({
+    // LinkedIn alternates between a direct Connect action and a Connect item in
+    // More. Try both, but check for Pending before every retry so a delayed UI
+    // response can never cause a duplicate invitation.
+    const invitation = await openConnectionInvitation({
       targetProfileName,
       targetProfileSlug: currentProfileSlug,
     });
-    if (!connectEl) {
-      throw new Error("We couldn’t find Connect in the More menu.");
+    if (invitation.connectionState === "pending") {
+      addLog(
+        "Connection",
+        "LinkedIn shows this request as pending. No duplicate was sent.",
+      );
+      updateStatus("Connection request is pending. Syncing it safely...");
+      return {
+        success: true,
+        confirmationPending: false,
+        requestAlreadyPending: true,
+      };
     }
-
-    clickElement(connectEl);
-    addLog("Opened", "Connection request");
-    await sleep(1500);
-
-    // 3. Verify the modal belongs to the profile before sending anything.
-    updateStatus(`Checking that this request is for ${targetProfileName}...`);
-    const invitationDialog = await waitForMatch(
-      findActiveInvitationDialog,
-      20_000,
-    );
+    if (invitation.connectionState === "connected") {
+      throw new Error(
+        "LinkedIn now shows this profile as connected. No request was sent.",
+      );
+    }
+    const invitationDialog = invitation.dialog;
     if (!invitationDialog) {
-      throw new Error("LinkedIn did not open the connection request.");
+      const methods = invitation.attemptedMethods.join(" and ") || "Connect";
+      throw new Error(
+        `LinkedIn did not open the connection request after ${methods}. Nothing was sent.`,
+      );
     }
 
-    const invitationRecipient = getInvitationRecipient(invitationDialog);
+    // Verify the modal belongs to the profile before sending anything.
+    updateStatus(`Checking that this request is for ${targetProfileName}...`);
+    const invitationRecipient = getInvitationRecipient(
+      invitationDialog,
+      targetProfileName,
+    );
     if (
       !invitationRecipient ||
       !personNamesMatch(invitationRecipient, targetProfileName)
@@ -649,7 +657,7 @@
       }
     }
 
-    const connectionState = findVisibleConnectionState();
+    const connectionState = findVisibleConnectionState(targetProfileName);
     if (connectionState === "pending") {
       addLog(
         "Connection",
@@ -1541,6 +1549,87 @@
     }, timeoutMs);
   }
 
+  async function openConnectionInvitation({
+    targetProfileName,
+    targetProfileSlug,
+  }) {
+    const attemptedMethods = [];
+    let directAttempted = false;
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const stateBeforeClick = findVisibleConnectionState(targetProfileName);
+      if (["pending", "connected"].includes(stateBeforeClick)) {
+        return {
+          dialog: null,
+          connectionState: stateBeforeClick,
+          attemptedMethods,
+        };
+      }
+
+      let trigger = null;
+      let method = "";
+      if (!directAttempted) {
+        const directConnect = await waitForMatch(
+          () => findDirectConnectButton(targetProfileName),
+          attempt === 0 ? 5_000 : 2_000,
+        );
+        directAttempted = true;
+        if (directConnect) {
+          trigger = directConnect;
+          method = "the direct Connect button";
+        }
+      }
+
+      if (!trigger) {
+        updateStatus("Looking for Connect in More...");
+        const moreBtn = await findMoreButton(targetProfileName, 8_000);
+        if (moreBtn) {
+          if (moreBtn.getAttribute("aria-expanded") !== "true") {
+            clickElement(moreBtn);
+            addLog("Opened", "More menu");
+            await sleep(900);
+          }
+          trigger = await findConnectOption({
+            targetProfileName,
+            targetProfileSlug,
+            timeoutMs: 8_000,
+          });
+          if (trigger) method = "Connect in the More menu";
+        }
+      }
+
+      if (!trigger) continue;
+      attemptedMethods.push(method);
+      updateStatus(`Opening the request using ${method}...`);
+      // Scrolling a popover item can dismiss LinkedIn's More menu before its
+      // Connect action receives the click.
+      clickElement(trigger, { scroll: method !== "Connect in the More menu" });
+      addLog("Opened", method);
+
+      const outcome = await waitForMatch(() => {
+        const dialog = findActiveInvitationDialog();
+        if (dialog) return { dialog, connectionState: "not_connected" };
+        const connectionState = findVisibleConnectionState(targetProfileName);
+        return ["pending", "connected"].includes(connectionState)
+          ? { dialog: null, connectionState }
+          : null;
+      }, 12_000);
+      if (outcome) return { ...outcome, attemptedMethods };
+
+      addLog(
+        "Retry",
+        `${method} did not open the request. Rechecking before one safe retry.`,
+      );
+      await sleep(750);
+    }
+
+    return {
+      dialog: null,
+      connectionState: findVisibleConnectionState(targetProfileName),
+      attemptedMethods,
+    };
+  }
+
   function isProfileMoreButton(button) {
     const label = button.getAttribute("aria-label")?.trim() || "";
     const text = button.textContent?.trim() || "";
@@ -1748,10 +1837,16 @@
   }
 
   function findActiveInvitationDialog() {
-    const dialogs = getLinkedInModalRoots().flatMap((root) =>
-      Array.from(
-        root.querySelectorAll(
-          "div[data-test-modal][role='dialog'], div.send-invite[role='dialog'], div[role='dialog'][aria-labelledby='send-invite-modal']",
+    const dialogs = uniqueElements(
+      getLinkedInModalRoots().flatMap((root) =>
+        Array.from(
+          root.querySelectorAll(
+            "[data-test-modal-id='send-invite-modal'], [role='dialog'], dialog",
+          ),
+        ).map((candidate) =>
+          candidate.matches("[role='dialog'], dialog")
+            ? candidate
+            : candidate.querySelector("[role='dialog'], dialog") || candidate,
         ),
       ),
     );
@@ -1759,27 +1854,63 @@
     return (
       dialogs.find((dialog) => {
         if (!isElementActive(dialog)) return false;
-        const heading = dialog.querySelector("h2")?.textContent?.trim() || "";
+        const heading =
+          dialog.querySelector("h1, h2, h3")?.textContent?.trim() || "";
+        const text = dialog.textContent?.replace(/\s+/g, " ").trim() || "";
+        const hasInvitationControls = Array.from(
+          dialog.querySelectorAll("button, textarea"),
+        ).some((element) => {
+          const label =
+            element.getAttribute("aria-label")?.trim() ||
+            element.textContent?.replace(/\s+/g, " ").trim() ||
+            "";
+          return (
+            /^(?:Add a note|Send without a note|Send invitation|Send)$/i.test(
+              label,
+            ) ||
+            element.matches(
+              "textarea#custom-message, textarea[name='message']",
+            )
+          );
+        });
         return (
           dialog.classList.contains("send-invite") ||
           dialog.getAttribute("aria-labelledby") === "send-invite-modal" ||
-          /add a note to your invitation/i.test(heading)
+          dialog.getAttribute("data-test-modal-id") === "send-invite-modal" ||
+          /(?:invitation|connect)/i.test(heading) ||
+          hasInvitationControls ||
+          /(?:add a note|send without a note).{0,80}(?:invitation|connect)/i.test(
+            text,
+          )
         );
       }) || null
     );
   }
 
-  function getInvitationRecipient(dialog) {
+  function getInvitationRecipient(dialog, targetProfileName = "") {
     const content =
       dialog.querySelector(".artdeco-modal__content") || dialog;
-    const emphasizedName = Array.from(content.querySelectorAll("strong")).find(
-      (element) => element.textContent?.trim(),
+    const emphasizedNames = Array.from(
+      content.querySelectorAll("strong"),
+    ).filter((element) => element.textContent?.trim());
+    const exactTarget = emphasizedNames.find((element) =>
+      personNamesMatch(element.textContent, targetProfileName),
     );
-    if (emphasizedName) return emphasizedName.textContent.trim();
+    if (exactTarget) return exactTarget.textContent.trim();
 
     const text = content.textContent?.replace(/\s+/g, " ").trim() || "";
+    if (
+      targetProfileName &&
+      normalizePersonName(text).includes(normalizePersonName(targetProfileName))
+    ) {
+      return targetProfileName;
+    }
+    const emphasizedName = emphasizedNames[0];
+    if (emphasizedName) return emphasizedName.textContent.trim();
     return (
-      text.match(/Personalize your invitation to (.+?) by adding a note/i)?.[1]
+      text.match(
+        /(?:personalize|customize)(?:\s+your)?\s+invitation\s+to\s+(.+?)(?:\s+by|\s+with|[.!?]|$)/i,
+      )?.[1]
         ?.trim() || ""
     );
   }
@@ -1845,12 +1976,45 @@
     );
   }
 
-  function findVisibleConnectionState() {
+  function findVisibleConnectionState(targetProfileName = "") {
     const main = document.querySelector("main");
     if (!main) return "unavailable";
-    const text = main.innerText?.replace(/\s+/g, " ").trim() || "";
-    if (/\bConnected\b/i.test(text)) return "connected";
-    if (/\bPending\b|\bSent\b/i.test(text)) return "pending";
+
+    const actions = Array.from(
+      main.querySelectorAll("button, a[role='button'], [role='button']"),
+    ).filter((element) => isElementVisible(element) && !element.closest("aside"));
+    const labels = actions.map(
+      (element) =>
+        element.getAttribute("aria-label")?.replace(/\s+/g, " ").trim() ||
+        element.textContent?.replace(/\s+/g, " ").trim() ||
+        "",
+    );
+    if (
+      labels.some((label) =>
+        /^(?:Pending|Sent|Invitation sent|Request sent)$/i.test(label),
+      )
+    ) {
+      return "pending";
+    }
+    if (labels.some((label) => /^Connected$/i.test(label))) return "connected";
+
+    const targetHeading = Array.from(main.querySelectorAll("h1, h2, h3")).find(
+      (heading) =>
+        personNamesMatch(heading.textContent, targetProfileName) &&
+        isElementVisible(heading),
+    );
+    if (targetHeading) {
+      let scope = targetHeading.parentElement;
+      while (scope && scope !== main) {
+        const scopedActions = actions.filter((element) => scope.contains(element));
+        if (scopedActions.length > 0) {
+          const text = scope.innerText?.replace(/\s+/g, " ").trim() || "";
+          if (/\bPending\b|\bInvitation sent\b/i.test(text)) return "pending";
+          if (/\bConnected\b|\b1st\b/i.test(text)) return "connected";
+        }
+        scope = scope.parentElement;
+      }
+    }
     return "unavailable";
   }
 
@@ -1976,9 +2140,11 @@
 
   // --- Utility Functions ---
 
-  function clickElement(el) {
+  function clickElement(el, { scroll = true } = {}) {
     if (!el) return;
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (scroll) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
     el.focus();
     const opts = { bubbles: true, cancelable: true, view: window };
     el.dispatchEvent(new MouseEvent("mouseover", opts));
