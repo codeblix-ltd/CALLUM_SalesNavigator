@@ -6,6 +6,7 @@
 
   let overlayContainer = null;
   let automationContext = null;
+  const MAX_POST_AGE_DAYS = 92;
 
   // Listen for messages from background script or popup
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -39,6 +40,13 @@
     if (message?.type === "SCAN_RECENT_CONNECTIONS") {
       return runVisibleWorkflow(
         () => runRecentConnectionsScan(message.options || {}),
+        sendResponse,
+      );
+    }
+
+    if (message?.type === "EXTRACT_FIRST_DM_PROFILE") {
+      return runVisibleWorkflow(
+        () => runFirstDmProfileExtraction(message.options || {}),
         sendResponse,
       );
     }
@@ -264,10 +272,29 @@
     const posts = await findPostElements({
       timeoutMs: 30_000,
       minimumCount: maxPosts,
-      predicate: (post) => !isRepostPost(post),
+      predicate: (post) =>
+        !isRepostPost(post) && isPostWithinAgeLimit(post),
     });
     if (!posts || posts.length === 0) {
-      const repostCount = queryPostElements().filter(isRepostPost).length;
+      const candidates = queryPostElements();
+      const repostCount = candidates.filter(isRepostPost).length;
+      const oldPostCount = candidates.filter(
+        (post) =>
+          !isRepostPost(post) && extractPostAgeDays(post) > MAX_POST_AGE_DAYS,
+      ).length;
+      const unknownPostCount = candidates.filter(
+        (post) =>
+          !isRepostPost(post) && extractPostAgeDays(post) === null,
+      ).length;
+      if (oldPostCount > 0 || unknownPostCount > 0) {
+        addLog(
+          "Skipped",
+          `${oldPostCount} post${oldPostCount === 1 ? "" : "s"} older than 3 months and ${unknownPostCount} with no readable date.`,
+        );
+        throw new Error(
+          "We couldn’t find any recent posts from the last 3 months. Older posts and posts with no readable date were skipped.",
+        );
+      }
       if (repostCount > 0) {
         addLog(
           "Skipped",
@@ -282,11 +309,25 @@
       );
     }
 
-    const repostCount = queryPostElements().filter(isRepostPost).length;
+    const candidates = queryPostElements();
+    const repostCount = candidates.filter(isRepostPost).length;
+    const oldPostCount = candidates.filter(
+      (post) =>
+        !isRepostPost(post) && extractPostAgeDays(post) > MAX_POST_AGE_DAYS,
+    ).length;
+    const unknownPostCount = candidates.filter(
+      (post) => !isRepostPost(post) && extractPostAgeDays(post) === null,
+    ).length;
     if (repostCount > 0) {
       addLog(
         "Skipped",
         `${repostCount} repost${repostCount === 1 ? "" : "s"}; no like or comment was added.`,
+      );
+    }
+    if (oldPostCount > 0 || unknownPostCount > 0) {
+      addLog(
+        "Date check",
+        `${oldPostCount} older than 3 months and ${unknownPostCount} with no readable date were skipped.`,
       );
     }
     const countToEngage = Math.min(posts.length, maxPosts);
@@ -686,6 +727,90 @@
       connectAvailable: false,
       connectionState,
     };
+  }
+
+  async function runFirstDmProfileExtraction(options = {}) {
+    initOverlay();
+    if (overlayContainer) overlayContainer.style.display = "block";
+    const currentProfileUrl = normalizeLinkedInProfileHref(window.location.href);
+    const expectedProfileUrl = normalizeLinkedInProfileHref(
+      options.expectedProfileUrl,
+    );
+    if (!currentProfileUrl || currentProfileUrl !== expectedProfileUrl) {
+      throw new Error("LinkedIn opened the wrong profile. No First DM was drafted.");
+    }
+
+    updateStatus("Reading this accepted connection’s profile...");
+    const main = await waitForMatch(
+      () => document.querySelector("main") || null,
+      20_000,
+    );
+    if (!main) throw new Error("LinkedIn did not finish loading this profile.");
+
+    const fullName =
+      getCurrentProfileName(options.expectedProfileName) ||
+      cleanProfileText(options.expectedProfileName, 200);
+    const profileSection =
+      Array.from(main.querySelectorAll("section")).find(
+        (section) =>
+          section.querySelector("a[href*='/messaging/compose/']") ||
+          Array.from(section.querySelectorAll("a")).some((link) =>
+            /^Contact info$/i.test(link.textContent?.trim() || ""),
+          ),
+      ) || main.querySelector("section");
+    const topParagraphs = profileSection
+      ? uniqueProfileTexts(profileSection.querySelectorAll("p"), 500)
+      : [];
+    const headline =
+      topParagraphs.find(
+        (text) =>
+          text !== fullName &&
+          !/^(contact info|message|connect|follow)$/i.test(text) &&
+          !/\b(connections?|followers?|mutual)\b/i.test(text),
+      ) || null;
+    const location =
+      topParagraphs.find(
+        (text) => text !== headline && text !== fullName && text.length <= 200,
+      ) || null;
+
+    const aboutSection = findProfileSection(main, "About");
+    const experienceSection = findProfileSection(main, "Experience");
+    const activitySection = findProfileSection(main, "Activity");
+    const experienceItem = experienceSection?.querySelector(
+      "[data-testid^='profile_ExperienceTopLevelSection_'], li",
+    );
+    const experienceTexts = uniqueProfileTexts(
+      experienceItem?.querySelectorAll("p") || [],
+      500,
+    );
+    const profile = {
+      fullName: fullName || null,
+      headline,
+      location,
+      about: extractProfileSectionText(aboutSection, "About", 3_000),
+      currentRole: experienceTexts[0] || null,
+      currentCompany: experienceTexts[1] || null,
+      recentActivity: extractProfileSectionText(
+        activitySection,
+        "Activity",
+        2_000,
+      ),
+      messageUrl: normalizeLinkedInMessageHref(
+        profileSection?.querySelector("a[href*='/messaging/compose/']")?.href,
+      ),
+    };
+    if (
+      !profile.headline &&
+      !profile.about &&
+      !profile.currentRole &&
+      !profile.currentCompany &&
+      !profile.recentActivity
+    ) {
+      throw new Error("We couldn’t read enough profile detail for a personal First DM.");
+    }
+    addLog("Profile read", fullName || "Accepted connection");
+    updateStatus("Profile read. Creating a personal First DM...");
+    return profile;
   }
 
   async function runRecentConnectionsScan(options = {}) {
@@ -1251,6 +1376,53 @@
         /\breposted this\b/i.test(header.textContent?.trim() || ""),
       ),
     );
+  }
+
+  function isPostWithinAgeLimit(postEl) {
+    const ageDays = extractPostAgeDays(postEl);
+    return ageDays !== null && ageDays <= MAX_POST_AGE_DAYS;
+  }
+
+  function extractPostAgeDays(postEl) {
+    const selectors = [
+      ".update-components-actor__sub-description",
+      ".feed-shared-actor__sub-description",
+      "[data-view-name='feed-actor-sub-description']",
+      "time",
+    ];
+    const values = selectors.flatMap((selector) =>
+      Array.from(postEl.querySelectorAll(selector)).map(
+        (element) => element.textContent?.trim() || "",
+      ),
+    );
+    for (const value of values) {
+      const ageDays = parseLinkedInRelativeAgeDays(value);
+      if (ageDays !== null) return ageDays;
+    }
+    return null;
+  }
+
+  function parseLinkedInRelativeAgeDays(value) {
+    const text = String(value || "").toLowerCase();
+    if (/\b(now|just now)\b/.test(text)) return 0;
+    const longMatch = text.match(
+      /\b(\d+)\s+(minute|hour|day|week|month|year)s?\s+ago\b/,
+    );
+    if (longMatch) {
+      return relativeAgeUnitToDays(Number(longMatch[1]), longMatch[2]);
+    }
+    const shortMatch = text.match(/\b(\d+)\s*(mo|yr|w|d|h|m)\b/);
+    if (!shortMatch) return null;
+    return relativeAgeUnitToDays(Number(shortMatch[1]), shortMatch[2]);
+  }
+
+  function relativeAgeUnitToDays(amount, unit) {
+    if (["m", "minute", "h", "hour"].includes(unit)) return 0;
+    if (["d", "day"].includes(unit)) return amount;
+    if (["w", "week"].includes(unit)) return amount * 7;
+    if (["mo", "month"].includes(unit)) return amount * 30.4375;
+    if (["yr", "year"].includes(unit)) return amount * 365;
+    return null;
   }
 
   function hasPostActions(element) {
@@ -2060,6 +2232,56 @@
     } catch {
       return null;
     }
+  }
+
+  function normalizeLinkedInMessageHref(value) {
+    try {
+      const url = new URL(String(value || ""), window.location.origin);
+      if (!/(^|\.)linkedin\.com$/i.test(url.hostname)) return null;
+      if (!/^\/messaging\/compose\/$/i.test(url.pathname)) return null;
+      return `https://www.linkedin.com${url.pathname}${url.search}`;
+    } catch {
+      return null;
+    }
+  }
+
+  function findProfileSection(main, title) {
+    const heading = Array.from(
+      main.querySelectorAll("h1, h2, h3, [role='heading']"),
+    ).find(
+      (element) =>
+        element.textContent?.trim() === title && isElementVisible(element),
+    );
+    return heading?.closest("section") || null;
+  }
+
+  function extractProfileSectionText(section, heading, maximumLength) {
+    if (!section) return null;
+    const preferred = section.querySelector(
+      "[data-testid='expandable-text-box'], .update-components-text",
+    );
+    const value = cleanProfileText(preferred?.textContent, maximumLength);
+    if (value) return value;
+    const texts = uniqueProfileTexts(section.querySelectorAll("p"), maximumLength)
+      .filter((text) => text !== heading);
+    return cleanProfileText(texts.join(" "), maximumLength) || null;
+  }
+
+  function uniqueProfileTexts(elements, maximumLength) {
+    return [
+      ...new Set(
+        Array.from(elements)
+          .map((element) => cleanProfileText(element.textContent, maximumLength))
+          .filter(Boolean),
+      ),
+    ];
+  }
+
+  function cleanProfileText(value, maximumLength) {
+    return String(value || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, maximumLength);
   }
 
   function normalizeLinkedInPostHref(value) {

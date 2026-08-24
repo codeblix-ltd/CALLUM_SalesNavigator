@@ -4,10 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import {
   COMMUNITY_MATCH_OUTPUT_SCHEMA,
+  FIRST_DM_SYSTEM_PROMPT,
   FLIPPA_SYSTEM_PROMPT,
   LUNA_SYSTEM_PROMPT,
   VEBLEN_MATCH_SYSTEM_PROMPT,
   normalizeFlippaDraft,
+  normalizeFirstDmDraft,
   normalizeLunaDraft,
 } from "./app-server-client.mjs";
 
@@ -35,6 +37,22 @@ if (FLIPPA_SYSTEM_PROMPT.includes("\u2014")) {
 }
 if (normalizeFlippaDraft('```text\n"Clear\u2014direct"\n```') !== "Clear, direct") {
   throw new Error("The Flippa output guard did not normalize wrapper text.");
+}
+if (
+  !FIRST_DM_SYSTEM_PROMPT.includes("after a connection has accepted") ||
+  !FIRST_DM_SYSTEM_PROMPT.includes("exactly one useful") ||
+  !FIRST_DM_SYSTEM_PROMPT.includes("Do not hard-sell")
+) {
+  throw new Error("The First DM prompt is missing an acceptance or safety rule.");
+}
+if (FIRST_DM_SYSTEM_PROMPT.includes("\u2014")) {
+  throw new Error("The First DM prompt contains an em dash.");
+}
+if (
+  normalizeFirstDmDraft('Draft: "Hi Sam, thanks for connecting.\nHow is your team growing?"') !==
+  "Hi Sam, thanks for connecting. How is your team growing?"
+) {
+  throw new Error("The First DM output guard did not normalize wrapper text.");
 }
 if (
   !VEBLEN_MATCH_SYSTEM_PROMPT.includes("admin-review pilot") ||

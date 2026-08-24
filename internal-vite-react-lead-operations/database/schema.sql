@@ -479,6 +479,7 @@ CREATE TABLE IF NOT EXISTS lead_followup_tasks (
   status STRING NOT NULL DEFAULT 'pending'
     CHECK (status IN ('pending', 'sent', 'skipped', 'cancelled')),
   message_text STRING NOT NULL,
+  personalized_at TIMESTAMPTZ NULL,
   completed_at TIMESTAMPTZ NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -487,6 +488,9 @@ CREATE TABLE IF NOT EXISTS lead_followup_tasks (
 
 CREATE INDEX IF NOT EXISTS lead_followup_tasks_by_operator_and_due_at
   ON lead_followup_tasks (operator_id, status, due_at, id);
+
+ALTER TABLE lead_followup_tasks
+  ADD COLUMN IF NOT EXISTS personalized_at TIMESTAMPTZ NULL;
 
 -- Daily tasks are created lazily when a scout opens the extension. The keys
 -- keep the checklist idempotent if the extension is refreshed many times.

@@ -86,6 +86,8 @@ const elements = {
   invitationNote: document.querySelector("#invitation-note"),
   checklistCount: document.querySelector("#checklist-count"),
   dailyChecklist: document.querySelector("#daily-checklist"),
+  firstDmCount: document.querySelector("#first-dm-count"),
+  firstDmList: document.querySelector("#first-dm-list"),
   followupCount: document.querySelector("#followup-count"),
   followupList: document.querySelector("#followup-list"),
   leadCheckCount: document.querySelector("#lead-check-count"),
@@ -149,6 +151,7 @@ elements.toggleSettings.addEventListener("click", () => {
 elements.toggleAdvanced.addEventListener("click", toggleAdvancedPanel);
 elements.settingsForm.addEventListener("submit", saveSettings);
 elements.dailyChecklist.addEventListener("change", updateDailyTask);
+elements.firstDmList.addEventListener("click", handleFirstDmClick);
 elements.followupList.addEventListener("click", handleFollowupClick);
 elements.leadCheckList.addEventListener("click", handleLeadCheckClick);
 elements.oldRequestList.addEventListener("click", handleOldRequestClick);
@@ -533,6 +536,55 @@ async function startAutoLead(specificLeadId = null, leadName = null) {
   } finally {
     elements.startAutoLead.disabled = false;
     await refreshAutoLeadRunState().catch(() => {});
+  }
+}
+
+async function handleFirstDmClick(event) {
+  const button = event.target.closest("button[data-first-dm-action]");
+  if (!button) return;
+  clearMessages();
+  setBusy(button, true);
+  try {
+    const actionName = button.dataset.firstDmAction;
+    if (actionName === "open") {
+      await chrome.tabs.create({ url: button.dataset.profileUrl, active: true });
+      return;
+    }
+    if (actionName === "copy") {
+      await navigator.clipboard.writeText(button.dataset.message || "");
+      showSuccess("First DM copied. Send it on LinkedIn, then mark it sent.");
+      return;
+    }
+    if (actionName === "draft") {
+      const response = await chrome.runtime.sendMessage({
+        type: "DRAFT_FIRST_DM",
+        leadId: button.dataset.leadId,
+        profileUrl: button.dataset.profileUrl,
+        fullName: button.dataset.fullName,
+      });
+      if (!response?.ok) {
+        throw new Error(response?.error || "The First DM could not be created.");
+      }
+      showSuccess("Personal First DM created. Read it before you copy and send it.");
+      await refreshScoutOperations();
+      return;
+    }
+    await ScoutApi.authenticatedAction("scouts:completeFollowupTask", {
+      taskId: button.dataset.taskId,
+      outcome: actionName,
+    });
+    showSuccess(
+      actionName === "replied"
+        ? "Reply saved. The later follow-ups were closed."
+        : actionName === "sent"
+          ? "First DM marked as sent."
+          : "First DM skipped.",
+    );
+    await refreshScoutOperations();
+  } catch (error) {
+    showError(error);
+  } finally {
+    setBusy(button, false);
   }
 }
 
@@ -962,12 +1014,15 @@ function renderDashboard(value, updatedAt) {
 function renderScoutOperations(value) {
   const dailyDone = value.dailyTasks.filter((task) => task.completed).length;
   const followupsDue = value.followups.filter((task) => task.isDue).length;
+  const firstDms = value.firstDms || [];
   elements.checklistCount.textContent = `${dailyDone} / ${value.dailyTasks.length}`;
+  elements.firstDmCount.textContent = `${firstDms.length} ready`;
   elements.followupCount.textContent = `${followupsDue} due`;
   elements.leadCheckCount.textContent = `${value.leadsToCheck.length} waiting`;
   elements.oldRequestCount.textContent = `${value.oldRequests.length} waiting`;
   elements.openQuestionCount.textContent = `${value.openEscalations} ${value.openEscalations === 1 ? "question" : "questions"} open`;
   renderDailyChecklist(value.dailyTasks);
+  renderFirstDms(firstDms);
   renderFollowups(value.followups);
   renderLeadChecks(value.leadsToCheck);
   renderOldRequests(value.oldRequests);
@@ -1440,6 +1495,72 @@ function showLogin() {
   elements.signOut.hidden = true;
   closeManualLeadPicker();
   elements.updated.textContent = "Sign in to see your leads";
+}
+
+function renderFirstDms(tasks) {
+  elements.firstDmList.replaceChildren();
+  if (tasks.length === 0) {
+    elements.firstDmList.append(
+      emptyToolMessage("No accepted leads are waiting for a First DM."),
+    );
+    return;
+  }
+  for (const task of tasks) {
+    const role = [task.currentTitle, task.companyName]
+      .filter(Boolean)
+      .join(" · ");
+    const item = toolItem(
+      task.fullName || "Unnamed lead",
+      task.acceptedAt
+        ? `Accepted ${relativeTime(task.acceptedAt)}`
+        : "Accepted connection",
+      role || "Open the profile to review their details.",
+    );
+    const draft = document.createElement("p");
+    draft.className = task.personalizedAt
+      ? "first-dm-draft personalized"
+      : "first-dm-draft";
+    draft.textContent = task.personalizedAt
+      ? task.messageText
+      : "Choose Personalize with AI to read this profile and create a unique First DM.";
+    item.insertBefore(draft, item.querySelector(".tool-actions"));
+    const actions = item.querySelector(".tool-actions");
+    actions.append(
+      toolButton("Open profile", {
+        firstDmAction: "open",
+        profileUrl: task.profileUrl,
+      }),
+      toolButton(task.personalizedAt ? "Rewrite with AI" : "Personalize with AI", {
+        firstDmAction: "draft",
+        leadId: task.leadId,
+        profileUrl: task.profileUrl,
+        fullName: task.fullName || "",
+      }, "good"),
+    );
+    if (task.personalizedAt) {
+      actions.append(
+        toolButton("Copy DM", {
+          firstDmAction: "copy",
+          message: task.messageText,
+        }),
+      );
+    }
+    actions.append(
+      toolButton("Mark sent", {
+        firstDmAction: "sent",
+        taskId: task.id,
+      }, "good"),
+      toolButton("They replied", {
+        firstDmAction: "replied",
+        taskId: task.id,
+      }),
+      toolButton("Skip", {
+        firstDmAction: "skipped",
+        taskId: task.id,
+      }, "warn"),
+    );
+    elements.firstDmList.append(item);
+  }
 }
 
 function showError(error, report = false) {

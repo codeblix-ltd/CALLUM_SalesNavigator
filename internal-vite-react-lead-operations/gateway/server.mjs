@@ -168,6 +168,23 @@ async function route(request, response) {
 
   if (
     request.method === "POST" &&
+    url.pathname === "/v1/linkedin/first-dm"
+  ) {
+    requireScope(accessScope, "admin");
+    const body = await readJson(request);
+    const requestId = requiredString(body.requestId, "requestId", 200);
+    const scoutId = requiredString(body.scoutId, "scoutId", 200);
+    const profile = readFirstDmProfile(body.profile);
+    sendJson(
+      response,
+      200,
+      await codex.enqueueFirstDmDraft({ requestId, scoutId, profile }),
+    );
+    return;
+  }
+
+  if (
+    request.method === "POST" &&
     url.pathname === "/v1/veblen/community-matches"
   ) {
     requireAnyScope(accessScope, ["admin", "veblen"]);
@@ -323,6 +340,30 @@ function optionalString(value, name, maximumLength) {
     );
   }
   return normalized;
+}
+
+function readFirstDmProfile(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new GatewayError(400, "profile must be an object.");
+  }
+  return {
+    firstName: requiredString(value.firstName, "profile.firstName", 100),
+    fullName: requiredString(value.fullName, "profile.fullName", 200),
+    headline: optionalString(value.headline, "profile.headline", 500),
+    location: optionalString(value.location, "profile.location", 200),
+    about: optionalString(value.about, "profile.about", 3_000),
+    currentRole: optionalString(value.currentRole, "profile.currentRole", 300),
+    currentCompany: optionalString(
+      value.currentCompany,
+      "profile.currentCompany",
+      300,
+    ),
+    recentActivity: optionalString(
+      value.recentActivity,
+      "profile.recentActivity",
+      2_000,
+    ),
+  };
 }
 
 function readPreviousComments(value) {

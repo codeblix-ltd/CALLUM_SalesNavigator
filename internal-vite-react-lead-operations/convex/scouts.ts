@@ -118,6 +118,20 @@ type ScoutOperations = {
     requestedAt: string;
     ageDays: number;
   }>;
+  firstDms: Array<{
+    id: string;
+    leadId: string;
+    fullName: string | null;
+    currentTitle: string | null;
+    companyName: string | null;
+    profileUrl: string;
+    acceptedAt: string | null;
+    dueAt: string;
+    status: string;
+    messageText: string;
+    personalizedAt: string | null;
+    isDue: boolean;
+  }>;
   followups: Array<{
     id: string;
     leadId: string;
@@ -274,6 +288,21 @@ const followupTaskValidator = v.object({
   isDue: v.boolean(),
 });
 
+const firstDmTaskValidator = v.object({
+  id: v.string(),
+  leadId: v.string(),
+  fullName: optionalText,
+  currentTitle: optionalText,
+  companyName: optionalText,
+  profileUrl: v.string(),
+  acceptedAt: optionalText,
+  dueAt: v.string(),
+  status: v.string(),
+  messageText: v.string(),
+  personalizedAt: optionalText,
+  isDue: v.boolean(),
+});
+
 const dailyTaskValidator = v.object({
   taskKey: v.string(),
   label: v.string(),
@@ -297,6 +326,7 @@ const qualificationLeadValidator = v.object({
 const scoutOperationsValidator = v.object({
   generatedAt: v.string(),
   oldRequests: v.array(oldRequestValidator),
+  firstDms: v.array(firstDmTaskValidator),
   followups: v.array(followupTaskValidator),
   dailyTasks: v.array(dailyTaskValidator),
   leadsToCheck: v.array(qualificationLeadValidator),
@@ -1825,7 +1855,10 @@ export const getScoutOperations = action({
       {},
     );
     const database = getPool();
-    await ensureDailyTasks(scout.operatorId);
+    await Promise.all([
+      ensureDailyTasks(scout.operatorId),
+      ensureAcceptedFollowupTasks(scout.operatorId),
+    ]);
     const [oldResult, followupResult, taskResult, leadResult, escalationResult] =
       await Promise.all([
         database.query(
@@ -1849,17 +1882,30 @@ export const getScoutOperations = action({
              t.id::STRING AS id,
              t.lead_id::STRING AS lead_id,
              l.full_name,
+             l.current_title,
+             l.company_name,
              coalesce(a.resolved_linkedin_url, l.linkedin_url) AS profile_url,
+             a.accepted_at::STRING AS accepted_at,
              t.step::FLOAT8 AS step,
              t.due_at::STRING AS due_at,
              t.status,
              t.message_text,
+             t.personalized_at::STRING AS personalized_at,
              t.due_at <= now() AS is_due
            FROM lead_followup_tasks AS t
            INNER JOIN leads AS l ON l.id = t.lead_id
            INNER JOIN lead_assignments AS a
              ON a.lead_id = t.lead_id AND a.operator_id = t.operator_id
-           WHERE t.operator_id = $1 AND t.status = 'pending'
+           WHERE t.operator_id = $1
+             AND t.status = 'pending'
+             AND NOT EXISTS (
+               SELECT 1
+                 FROM lead_followup_tasks AS earlier
+                WHERE earlier.lead_id = t.lead_id
+                  AND earlier.operator_id = t.operator_id
+                  AND earlier.step < t.step
+                  AND earlier.status = 'pending'
+             )
            ORDER BY t.due_at, t.step, t.id
            LIMIT 50`,
           [scout.operatorId],
@@ -1900,6 +1946,22 @@ export const getScoutOperations = action({
         ),
       ]);
 
+    const followupTasks = followupResult.rows.map((row) => ({
+      id: String(row.id),
+      leadId: String(row.lead_id),
+      fullName: nullableString(row.full_name),
+      currentTitle: nullableString(row.current_title),
+      companyName: nullableString(row.company_name),
+      profileUrl: normalizeLinkedInProfileUrl(row.profile_url),
+      acceptedAt: nullableString(row.accepted_at),
+      step: Number(row.step),
+      dueAt: String(row.due_at),
+      status: String(row.status),
+      messageText: String(row.message_text),
+      personalizedAt: nullableString(row.personalized_at),
+      isDue: Boolean(row.is_due),
+    }));
+
     return {
       generatedAt: new Date().toISOString(),
       oldRequests: oldResult.rows.map((row) => ({
@@ -1909,17 +1971,22 @@ export const getScoutOperations = action({
         requestedAt: String(row.requested_at),
         ageDays: Number(row.age_days ?? 30),
       })),
-      followups: followupResult.rows.map((row) => ({
-        id: String(row.id),
-        leadId: String(row.lead_id),
-        fullName: nullableString(row.full_name),
-        profileUrl: normalizeLinkedInProfileUrl(row.profile_url),
-        step: Number(row.step),
-        dueAt: String(row.due_at),
-        status: String(row.status),
-        messageText: String(row.message_text),
-        isDue: Boolean(row.is_due),
-      })),
+      firstDms: followupTasks
+        .filter((task) => task.step === 1)
+        .map(({ step: _step, ...task }) => task),
+      followups: followupTasks
+        .filter((task) => task.step > 1)
+        .map((task) => ({
+          id: task.id,
+          leadId: task.leadId,
+          fullName: task.fullName,
+          profileUrl: task.profileUrl,
+          step: task.step,
+          dueAt: task.dueAt,
+          status: task.status,
+          messageText: task.messageText,
+          isDue: task.isDue,
+        })),
       dailyTasks: taskResult.rows.map((row) => ({
         taskKey: String(row.task_key),
         label: String(row.label),
@@ -2377,6 +2444,127 @@ export const draftComment = action({
   },
 });
 
+export const draftFirstDm = action({
+  args: {
+    leadId: v.string(),
+    profile: v.object({
+      fullName: optionalText,
+      headline: optionalText,
+      location: optionalText,
+      about: optionalText,
+      currentRole: optionalText,
+      currentCompany: optionalText,
+      recentActivity: optionalText,
+    }),
+  },
+  returns: v.object({
+    draft: v.string(),
+    threadId: v.string(),
+    model: v.string(),
+  }),
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ draft: string; threadId: string; model: string }> => {
+    const scout: ScoutIdentity = await ctx.runQuery(
+      internal.scoutIdentity.requireScout,
+      {},
+    );
+    const database = getPool();
+    const taskResult = await database.query(
+      `SELECT
+         t.id::STRING AS task_id,
+         l.first_name,
+         l.full_name,
+         l.current_title,
+         l.company_name,
+         a.status AS assignment_status,
+         a.accepted_at::STRING AS accepted_at
+       FROM lead_followup_tasks AS t
+       INNER JOIN leads AS l ON l.id = t.lead_id
+       INNER JOIN lead_assignments AS a
+         ON a.lead_id = t.lead_id AND a.operator_id = t.operator_id
+       WHERE t.lead_id = $1::UUID
+         AND t.operator_id = $2
+         AND t.step = 1
+         AND t.status = 'pending'
+       LIMIT 1`,
+      [args.leadId, scout.operatorId],
+    );
+    const task = taskResult.rows[0];
+    if (!task) throw new Error("This First DM is no longer waiting.");
+    if (
+      !task.accepted_at &&
+      !["accepted", "email_collected"].includes(String(task.assignment_status))
+    ) {
+      throw new Error("This lead has not accepted the connection request yet.");
+    }
+
+    const fullName =
+      nullableString(args.profile.fullName) ||
+      nullableString(task.full_name) ||
+      "LinkedIn connection";
+    const result = await requestCodexGateway<{
+      draft: string;
+      threadId: string;
+      model: string;
+    }>("/v1/linkedin/first-dm", {
+      method: "POST",
+      timeoutMs: 125_000,
+      body: {
+        requestId: randomUUID(),
+        scoutId: scout.userId,
+        profile: {
+          firstName:
+            nullableString(task.first_name) || firstNameFrom(fullName) || "there",
+          fullName,
+          headline: nullableString(args.profile.headline),
+          location: nullableString(args.profile.location),
+          about: nullableString(args.profile.about),
+          currentRole:
+            nullableString(args.profile.currentRole) ||
+            nullableString(task.current_title),
+          currentCompany:
+            nullableString(args.profile.currentCompany) ||
+            nullableString(task.company_name),
+          recentActivity: nullableString(args.profile.recentActivity),
+        },
+      },
+    });
+    const draft = result.draft.trim();
+    if (!draft || draft.length > 700) {
+      throw new Error("The personalized First DM was empty or too long.");
+    }
+
+    const client = await database.connect();
+    try {
+      await client.query("BEGIN");
+      const updateResult = await client.query(
+        `UPDATE lead_followup_tasks
+            SET message_text = $3,
+                personalized_at = now(),
+                updated_at = now()
+          WHERE id = $1::UUID AND operator_id = $2 AND status = 'pending'
+        RETURNING id`,
+        [task.task_id, scout.operatorId, draft],
+      );
+      if (!updateResult.rows[0]) {
+        throw new Error("This First DM was completed while the draft was being made.");
+      }
+      await insertEvent(client, args.leadId, scout.operatorId, "first_dm_drafted", {
+        model: result.model,
+      });
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+    return { ...result, draft };
+  },
+});
+
 const DAILY_TASKS = [
   {
     key: "01_leads",
@@ -2442,6 +2630,39 @@ async function createFollowupTasks(
      ON CONFLICT (lead_id, operator_id, step) DO NOTHING`,
     [leadId, operatorId, ...messages],
   );
+}
+
+async function ensureAcceptedFollowupTasks(operatorId: string) {
+  const database = getPool();
+  const missing = await database.query(
+    `SELECT a.lead_id::STRING AS lead_id, l.first_name
+      FROM lead_assignments AS a
+      INNER JOIN leads AS l ON l.id = a.lead_id
+      WHERE a.operator_id = $1
+        AND a.accepted_at >= now() - INTERVAL '30 days'
+        AND NOT EXISTS (
+          SELECT 1
+            FROM lead_followup_tasks AS t
+           WHERE t.lead_id = a.lead_id AND t.operator_id = a.operator_id
+        )
+      ORDER BY a.accepted_at, a.lead_id
+      LIMIT 250`,
+    [operatorId],
+  );
+  if (missing.rows.length === 0) return;
+  const client = await database.connect();
+  try {
+    for (const row of missing.rows) {
+      await createFollowupTasks(
+        client,
+        String(row.lead_id),
+        operatorId,
+        nullableString(row.first_name),
+      );
+    }
+  } finally {
+    client.release();
+  }
 }
 
 function firstNameFrom(value: unknown) {

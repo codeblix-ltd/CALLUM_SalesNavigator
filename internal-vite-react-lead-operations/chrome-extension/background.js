@@ -16,6 +16,7 @@ const ACTIVE_RUN_STATUSES = new Set(["running", "pausing"]);
 const CONNECTION_COMPLETION_RETRY_DELAYS_MS = [0, 750, 2_000];
 const LINKEDIN_TAB_LOAD_TIMEOUT_MS = 90_000;
 const LINKEDIN_TAB_READY_PROBE_MS = 1_000;
+const PREMIUM_CHECK_TTL_MS = 24 * 60 * 60 * 1_000;
 
 let premiumCheckPromise = null;
 let workflowPromise = null;
@@ -136,8 +137,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "CHECK_LINKEDIN_PREMIUM") {
-    verifyLinkedInPremium()
+    verifyLinkedInPremium(null, { force: true })
       .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: cleanError(error) }));
+    return true;
+  }
+
+  if (message?.type === "DRAFT_FIRST_DM") {
+    draftFirstDmFromProfile(message)
+      .then((result) => sendResponse({ ok: true, result }))
       .catch((error) => sendResponse({ ok: false, error: cleanError(error) }));
     return true;
   }
@@ -1376,6 +1384,50 @@ function checkAcceptedConnectionsManually() {
   return manualConnectionReviewPromise;
 }
 
+async function draftFirstDmFromProfile({ leadId, profileUrl, fullName }) {
+  if (!isLeadId(leadId)) throw new Error("This First DM has an invalid lead ID.");
+  if (workflowPromise || manualConnectionReviewPromise) {
+    throw new Error(
+      "Pause today’s automation or accepted-connection check before creating a First DM.",
+    );
+  }
+  const expectedProfileUrl = normalizeLinkedInProfileUrl(profileUrl);
+  const tab = await chrome.tabs.create({ url: expectedProfileUrl, active: false });
+  if (!tab?.id) throw new Error("We couldn’t open this accepted connection.");
+  try {
+    await waitForTabComplete(tab.id, {
+      expectedUrl: expectedProfileUrl,
+      stage: `${String(fullName || "This connection").trim()}'s LinkedIn profile`,
+    });
+    await waitForContentScript(tab.id);
+    const extraction = await sendMessageToTab(tab.id, {
+      type: "EXTRACT_FIRST_DM_PROFILE",
+      options: {
+        expectedProfileUrl,
+        expectedProfileName: String(fullName || "").trim(),
+      },
+    });
+    if (!extraction?.ok) {
+      throw new Error(extraction?.error || "We couldn’t read this profile.");
+    }
+    const profile = extraction.result || {};
+    return ScoutApi.authenticatedAction("scouts:draftFirstDm", {
+      leadId,
+      profile: {
+        fullName: profile.fullName || null,
+        headline: profile.headline || null,
+        location: profile.location || null,
+        about: profile.about || null,
+        currentRole: profile.currentRole || null,
+        currentCompany: profile.currentCompany || null,
+        recentActivity: profile.recentActivity || null,
+      },
+    });
+  } finally {
+    await chrome.tabs.remove(tab.id).catch(() => {});
+  }
+}
+
 async function runManualAcceptedConnectionReview() {
   if (workflowPromise) {
     throw new Error(
@@ -2166,10 +2218,33 @@ function sendMessageToTab(tabId, message) {
   });
 }
 
-function verifyLinkedInPremium(runContext = null) {
-  if (runContext) return inspectLinkedInPremium(runContext);
+async function verifyLinkedInPremium(
+  runContext = null,
+  { force = false } = {},
+) {
+  if (!force) {
+    const stored = await chrome.storage.local.get([
+      "linkedInPremium",
+      "linkedInPremiumCheckedAt",
+      "linkedInPremiumEvidence",
+    ]);
+    const checkedAt = Number(stored.linkedInPremiumCheckedAt || 0);
+    if (
+      typeof stored.linkedInPremium === "boolean" &&
+      checkedAt > 0 &&
+      Date.now() - checkedAt < PREMIUM_CHECK_TTL_MS
+    ) {
+      return {
+        premium: stored.linkedInPremium,
+        evidence:
+          stored.linkedInPremiumEvidence ||
+          "LinkedIn Premium was checked earlier today.",
+        cached: true,
+      };
+    }
+  }
   if (premiumCheckPromise) return premiumCheckPromise;
-  premiumCheckPromise = inspectLinkedInPremium(null).finally(() => {
+  premiumCheckPromise = inspectLinkedInPremium(runContext).finally(() => {
     premiumCheckPromise = null;
   });
   return premiumCheckPromise;
