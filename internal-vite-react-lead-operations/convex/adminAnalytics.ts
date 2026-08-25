@@ -82,6 +82,43 @@ const postActivityValidator = v.object({
   at: v.string(),
 });
 
+const weeklyKpiValidator = v.object({
+  label: v.string(),
+  value: v.number(),
+});
+
+const weeklyScoutValidator = v.object({
+  rank: v.number(),
+  username: v.string(),
+  operatorId: v.string(),
+  active: v.boolean(),
+  workedLeads: v.number(),
+  comments: v.number(),
+  likes: v.number(),
+  requests: v.number(),
+  accepted: v.number(),
+  trackedEmails: v.number(),
+  additionalEmails: v.number(),
+  totalEmails: v.number(),
+  managerPoints: v.number(),
+  extraKpis: v.array(weeklyKpiValidator),
+  note: v.union(v.string(), v.null()),
+  evidenceUrl: v.union(v.string(), v.null()),
+  evidenceFileName: v.union(v.string(), v.null()),
+  lastActive: v.union(v.string(), v.null()),
+  score: v.number(),
+});
+
+const weeklyCommentValidator = v.object({
+  id: v.string(),
+  operatorId: v.string(),
+  username: v.string(),
+  leadName: v.union(v.string(), v.null()),
+  commentText: v.string(),
+  postUrl: v.string(),
+  at: v.string(),
+});
+
 const scoutAssignedLeadValidator = v.object({
   id: v.string(),
   fullName: v.union(v.string(), v.null()),
@@ -239,6 +276,18 @@ type EventRow = {
   operator_id: unknown;
   activity_count: unknown;
   last_active: unknown;
+};
+
+type WeeklyReview = {
+  operatorId: string;
+  additionalEmails: number;
+  managerPoints: number;
+  extraKpis: Array<{ label: string; value: number }>;
+  note: string | null;
+  evidenceUrl: string | null;
+  evidenceFileName: string | null;
+  updatedBy: string;
+  updatedAt: number;
 };
 
 export const getOverview = action({
@@ -552,6 +601,170 @@ export const getOverview = action({
         postUrl: String(row.post_url),
         commentText: String(row.comment_text),
         liked: Boolean(row.liked),
+        at: String(row.at),
+      })),
+    };
+  },
+});
+
+export const getWeeklyPerformance = action({
+  args: { weekStart: v.string() },
+  returns: v.object({
+    weekStart: v.string(),
+    weekEnd: v.string(),
+    weekLabel: v.string(),
+    generatedAt: v.string(),
+    scoreFormula: v.string(),
+    scouts: v.array(weeklyScoutValidator),
+    comments: v.array(weeklyCommentValidator),
+  }),
+  handler: async (ctx, args) => {
+    await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
+    const scoutAccounts: { scouts: ScoutAccount[]; truncated: boolean } = await ctx.runQuery(
+      internal.adminIdentity.listScouts,
+      {},
+    );
+    const weekStart = normalizeWeekStart(args.weekStart);
+    const weekEndDate = new Date(`${weekStart}T00:00:00.000Z`);
+    weekEndDate.setUTCDate(weekEndDate.getUTCDate() + 7);
+    const weekEnd = weekEndDate.toISOString().slice(0, 10);
+    const weekStartAt = `${weekStart}T00:00:00+04:00`;
+    const weekEndAt = `${weekEnd}T00:00:00+04:00`;
+    const reviews: WeeklyReview[] = await ctx.runQuery(
+      internal.weeklyPerformance.listForWeek,
+      { weekStart },
+    );
+    const database = getPool();
+    const [leadResult, postResult, commentResult, activityResult] = await Promise.all([
+      database.query(
+        `SELECT
+           operator_id,
+           count(*) FILTER (
+             WHERE viewed_at >= $1::TIMESTAMPTZ AND viewed_at < $2::TIMESTAMPTZ
+                OR engaged_at >= $1::TIMESTAMPTZ AND engaged_at < $2::TIMESTAMPTZ
+                OR connection_requested_at >= $1::TIMESTAMPTZ AND connection_requested_at < $2::TIMESTAMPTZ
+                OR accepted_at >= $1::TIMESTAMPTZ AND accepted_at < $2::TIMESTAMPTZ
+                OR email_collected_at >= $1::TIMESTAMPTZ AND email_collected_at < $2::TIMESTAMPTZ
+           )::FLOAT8 AS worked_leads,
+           count(*) FILTER (
+             WHERE connection_requested_at >= $1::TIMESTAMPTZ
+               AND connection_requested_at < $2::TIMESTAMPTZ
+           )::FLOAT8 AS requests,
+           count(*) FILTER (
+             WHERE accepted_at >= $1::TIMESTAMPTZ
+               AND accepted_at < $2::TIMESTAMPTZ
+           )::FLOAT8 AS accepted,
+           count(*) FILTER (
+             WHERE email_collected_at >= $1::TIMESTAMPTZ
+               AND email_collected_at < $2::TIMESTAMPTZ
+           )::FLOAT8 AS emails
+         FROM lead_assignments
+         GROUP BY operator_id`,
+        [weekStartAt, weekEndAt],
+      ),
+      database.query(
+        `SELECT
+           operator_id,
+           count(*) FILTER (
+             WHERE commented_at >= $1::TIMESTAMPTZ AND commented_at < $2::TIMESTAMPTZ
+           )::FLOAT8 AS comments,
+           count(*) FILTER (
+             WHERE liked AND liked_at >= $1::TIMESTAMPTZ AND liked_at < $2::TIMESTAMPTZ
+           )::FLOAT8 AS likes
+         FROM lead_post_activities
+         GROUP BY operator_id`,
+        [weekStartAt, weekEndAt],
+      ),
+      database.query(
+        `SELECT
+           p.id::STRING AS id,
+           p.operator_id,
+           l.full_name,
+           p.comment_text,
+           p.post_url,
+           p.commented_at::STRING AS at
+         FROM lead_post_activities AS p
+         INNER JOIN leads AS l ON l.id = p.lead_id
+         WHERE p.commented_at >= $1::TIMESTAMPTZ
+           AND p.commented_at < $2::TIMESTAMPTZ
+         ORDER BY p.commented_at DESC
+         LIMIT 500`,
+        [weekStartAt, weekEndAt],
+      ),
+      database.query(
+        `SELECT operator_id, max(created_at)::STRING AS last_active
+         FROM lead_assignment_events
+         WHERE created_at >= $1::TIMESTAMPTZ AND created_at < $2::TIMESTAMPTZ
+         GROUP BY operator_id`,
+        [weekStartAt, weekEndAt],
+      ),
+    ]);
+    const leadByOperator = new Map(leadResult.rows.map((row) => [String(row.operator_id), row]));
+    const postByOperator = new Map(postResult.rows.map((row) => [String(row.operator_id), row]));
+    const activityByOperator = new Map(activityResult.rows.map((row) => [String(row.operator_id), row]));
+    const reviewByOperator = new Map(reviews.map((review) => [review.operatorId, review]));
+    const usernameByOperator = new Map(
+      scoutAccounts.scouts.map((scout) => [scout.operatorId, scout.username]),
+    );
+    const scouts = scoutAccounts.scouts.map((scout) => {
+      const lead = leadByOperator.get(scout.operatorId) ?? {};
+      const post = postByOperator.get(scout.operatorId) ?? {};
+      const activity = activityByOperator.get(scout.operatorId) ?? {};
+      const review = reviewByOperator.get(scout.operatorId);
+      const comments = toNumber(post.comments);
+      const likes = toNumber(post.likes);
+      const requests = toNumber(lead.requests);
+      const accepted = toNumber(lead.accepted);
+      const trackedEmails = toNumber(lead.emails);
+      const additionalEmails = review?.additionalEmails ?? 0;
+      const totalEmails = trackedEmails + additionalEmails;
+      const managerPoints = review?.managerPoints ?? 0;
+      return {
+        rank: 0,
+        username: scout.username,
+        operatorId: scout.operatorId,
+        active: scout.active,
+        workedLeads: toNumber(lead.worked_leads),
+        comments,
+        likes,
+        requests,
+        accepted,
+        trackedEmails,
+        additionalEmails,
+        totalEmails,
+        managerPoints,
+        extraKpis: review?.extraKpis ?? [],
+        note: review?.note ?? null,
+        evidenceUrl: review?.evidenceUrl ?? null,
+        evidenceFileName: review?.evidenceFileName ?? null,
+        lastActive: nullableString(activity.last_active),
+        score: Math.max(0, comments + likes + requests * 2 + accepted * 4 + totalEmails * 5 + managerPoints),
+      };
+    });
+    scouts.sort((left, right) =>
+      right.score - left.score
+      || right.totalEmails - left.totalEmails
+      || right.accepted - left.accepted
+      || right.comments - left.comments
+      || left.username.localeCompare(right.username),
+    );
+    scouts.forEach((scout, index) => {
+      scout.rank = index + 1;
+    });
+    return {
+      weekStart,
+      weekEnd,
+      weekLabel: weekLabel(weekStart, weekEnd),
+      generatedAt: new Date().toISOString(),
+      scoreFormula: "1 point per comment or like, 2 per request, 4 per acceptance, 5 per email, plus manager points",
+      scouts,
+      comments: commentResult.rows.map((row) => ({
+        id: String(row.id),
+        operatorId: String(row.operator_id),
+        username: usernameByOperator.get(String(row.operator_id)) ?? String(row.operator_id),
+        leadName: nullableString(row.full_name),
+        commentText: String(row.comment_text),
+        postUrl: String(row.post_url),
         at: String(row.at),
       })),
     };
@@ -1031,6 +1244,28 @@ function labelForRange(range: Range) {
 function rate(numerator: number, denominator: number) {
   if (denominator <= 0) return 0;
   return Math.round(Math.min(100, (numerator / denominator) * 1000)) / 10;
+}
+
+function normalizeWeekStart(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new Error("Choose a valid week.");
+  const date = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(date.getTime())) throw new Error("Choose a valid week.");
+  const day = date.getUTCDay();
+  date.setUTCDate(date.getUTCDate() - (day === 0 ? 6 : day - 1));
+  return date.toISOString().slice(0, 10);
+}
+
+function weekLabel(start: string, endExclusive: string) {
+  const startDate = new Date(`${start}T00:00:00.000Z`);
+  const endDate = new Date(`${endExclusive}T00:00:00.000Z`);
+  endDate.setUTCDate(endDate.getUTCDate() - 1);
+  const formatter = new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+  return `${formatter.format(startDate)} – ${formatter.format(endDate)}`;
 }
 
 function toNumber(value: unknown) {

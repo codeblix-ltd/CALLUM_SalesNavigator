@@ -158,7 +158,7 @@ assignment. Status changes and extension errors are recorded in
 ## Internal admin analytics
 
 The React dashboard is private. Sign in with the internal administrator
-credentials (`callum2024` / `callum2024`) to view lead inventory and scout
+credentials configured as the server-only `ADMIN_USERNAME` and `ADMIN_PASSWORD` secrets to view lead inventory and scout
 analytics. The browser receives an authenticated Convex session; aggregate
 counts, per-scout activity, lead details, and Codex gateway controls all verify
 the admin role on the server. The former lead access token is no longer used.

@@ -4,8 +4,8 @@ import { ConvexError } from "convex/values";
 import type { DataModel } from "./_generated/dataModel";
 
 const usernamePattern = /^[a-z0-9][a-z0-9._-]{2,39}$/;
-const adminUsername = "callum2024";
-const adminPassword = "callum2024";
+const adminUsername = String(process.env.ADMIN_USERNAME ?? "").trim().toLowerCase();
+const adminPassword = String(process.env.ADMIN_PASSWORD ?? "");
 
 const ScoutPassword = Password<DataModel>({
   profile(params) {
@@ -46,7 +46,7 @@ const AdminPassword = Password<DataModel>({
   id: "admin",
   profile(params) {
     const username = normalizeUsername(params.username);
-    if (username !== adminUsername) {
+    if (!adminUsername || !adminPassword || username !== adminUsername) {
       throw new ConvexError("Invalid administrator credentials.");
     }
     return {
@@ -58,7 +58,7 @@ const AdminPassword = Password<DataModel>({
     };
   },
   validatePasswordRequirements(password) {
-    if (password !== adminPassword) {
+    if (!adminPassword || password !== adminPassword) {
       throw new ConvexError("Invalid administrator credentials.");
     }
   },

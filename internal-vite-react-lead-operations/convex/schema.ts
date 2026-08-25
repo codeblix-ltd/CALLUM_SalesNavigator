@@ -23,4 +23,21 @@ export default defineSchema({
     .index("phone", ["phone"])
     .index("by_operator_id", ["operatorId"])
     .index("by_role", ["role"]),
+  weeklyScoutReviews: defineTable({
+    weekStart: v.string(),
+    operatorId: v.string(),
+    additionalEmails: v.number(),
+    managerPoints: v.number(),
+    extraKpis: v.array(v.object({
+      label: v.string(),
+      value: v.number(),
+    })),
+    note: v.optional(v.string()),
+    evidenceStorageId: v.optional(v.id("_storage")),
+    evidenceFileName: v.optional(v.string()),
+    updatedBy: v.string(),
+    updatedAt: v.number(),
+  })
+    .index("by_week", ["weekStart"])
+    .index("by_week_operator", ["weekStart", "operatorId"]),
 });

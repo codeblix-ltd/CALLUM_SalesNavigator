@@ -36,10 +36,11 @@ import {
   X,
 } from "lucide-react";
 import { api } from "../convex/_generated/api";
+import { WeeklyPerformance } from "./WeeklyPerformance";
 import "./App.css";
 
 type Range = "7d" | "30d" | "90d" | "all";
-type View = "overview" | "scouts" | "operations" | "leads";
+type View = "overview" | "scouts" | "weekly" | "operations" | "leads";
 type ScoutSort = "activity" | "emails" | "accepted" | "assigned" | "name";
 type EmailAvailability = "present" | "missing";
 type EmailValidation = "validated" | "not_validated";
@@ -322,7 +323,7 @@ function App() {
 
 function LoginScreen() {
   const { signIn } = useAuthActions();
-  const [username, setUsername] = useState("callum2024");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -837,6 +838,12 @@ function Dashboard({ adminName }: { adminName: string }) {
         title: <>Manage your scout<br /><span>team and queues.</span></>,
         copy: "Create secure scout logins, see assignment capacity by niche, and place individual leads into the right scout’s queue.",
       }
+    : view === "weekly"
+      ? {
+          eyebrow: "Weekly scout results",
+          title: <>Recognise the strongest<br /><span>work this week.</span></>,
+          copy: "Review submitted comments, compare outcomes, add missing KPIs, and prepare a clean team screenshot.",
+        }
     : view === "operations"
       ? {
           eyebrow: "Daily operations",
@@ -865,6 +872,7 @@ function Dashboard({ adminName }: { adminName: string }) {
         <nav className="main-nav" aria-label="Workspace views">
           <button className={view === "overview" ? "active" : ""} onClick={() => setView("overview")}>Overview</button>
           <button className={view === "scouts" ? "active" : ""} onClick={() => setView("scouts")}>Scouts</button>
+          <button className={view === "weekly" ? "active" : ""} onClick={() => setView("weekly")}>Weekly board</button>
           <button className={view === "operations" ? "active" : ""} onClick={() => setView("operations")}>Daily work</button>
           <button className={view === "leads" ? "active" : ""} onClick={() => setView("leads")}>Lead directory</button>
         </nav>
@@ -949,6 +957,8 @@ function Dashboard({ adminName }: { adminName: string }) {
               await Promise.all([refreshOverview(), refreshNicheAssignments()]);
             }}
           />
+        ) : view === "weekly" ? (
+          <WeeklyPerformance />
         ) : view === "operations" ? (
           <OperationsCenter
             operations={operations}

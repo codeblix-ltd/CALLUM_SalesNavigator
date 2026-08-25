@@ -14,6 +14,7 @@ const getStats = makeFunctionReference("leads:getStats");
 const listLeads = makeFunctionReference("leads:list");
 const exportLeads = makeFunctionReference("leads:exportCsv");
 const getOverview = makeFunctionReference("adminAnalytics:getOverview");
+const getWeeklyPerformance = makeFunctionReference("adminAnalytics:getWeeklyPerformance");
 const getNicheAssignments = makeFunctionReference("adminScouts:getNicheAssignments");
 const listUnassignedLeads = makeFunctionReference("adminScouts:listUnassignedLeads");
 const createScout = makeFunctionReference("adminScouts:createScout");
@@ -23,9 +24,12 @@ const listWorkEmailNiches = makeFunctionReference("workEmails:listQueueNiches");
 const listWorkEmailQueue = makeFunctionReference("workEmails:listQueue");
 const saveWorkEmailResult = makeFunctionReference("workEmails:saveResult");
 const credentials = {
-  username: "callum2024",
-  password: "callum2024",
+  username: process.env.ADMIN_USERNAME,
+  password: process.env.ADMIN_PASSWORD,
 };
+if (!credentials.username || !credentials.password) {
+  throw new Error("ADMIN_USERNAME and ADMIN_PASSWORD are required for the authenticated smoke test.");
+}
 let authResult;
 try {
   authResult = await client.action(signIn, {
@@ -78,6 +82,12 @@ const filteredExport = await client.action(exportLeads, {
   workEmailValidationFilters: ["validated"],
 });
 const overview = await client.action(getOverview, { range: "all" });
+const smokeDate = new Date();
+const smokeDay = smokeDate.getUTCDay();
+smokeDate.setUTCDate(smokeDate.getUTCDate() - (smokeDay === 0 ? 6 : smokeDay - 1));
+const weeklyPerformance = await client.action(getWeeklyPerformance, {
+  weekStart: smokeDate.toISOString().slice(0, 10),
+});
 const nicheAssignments = await client.action(getNicheAssignments, {});
 const firstNiche = nicheAssignments.niches[0] ?? null;
 const unassignedLeads = firstNiche
@@ -143,6 +153,9 @@ if (
   filteredExport.rowCount > 25000 ||
   typeof filteredExport.truncated !== "boolean" ||
   overview.summary.totalLeads !== stats.total ||
+  !Array.isArray(weeklyPerformance.scouts) ||
+  !Array.isArray(weeklyPerformance.comments) ||
+  weeklyPerformance.scouts.some((scout, index) => scout.rank !== index + 1) ||
   !Array.isArray(nicheAssignments.niches) ||
   nicheAssignments.niches.some((niche) => niche.total !== niche.assigned + niche.unassigned) ||
   (unassignedLeads !== null && unassignedLeads.leads.length > 10) ||

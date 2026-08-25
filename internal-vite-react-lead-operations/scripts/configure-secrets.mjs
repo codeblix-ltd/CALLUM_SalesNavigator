@@ -34,6 +34,10 @@ const gatewaySharedSecret = values.get("CODEX_GATEWAY_SHARED_SECRET")
   ?? randomBytes(32).toString("base64url");
 const authEncryptionKey = values.get("CODEX_AUTH_ENCRYPTION_KEY")
   ?? randomBytes(32).toString("base64");
+const adminUsername = process.env.ADMIN_USERNAME?.trim()
+  || values.get("ADMIN_USERNAME")?.trim();
+const adminPassword = process.env.ADMIN_PASSWORD
+  || values.get("ADMIN_PASSWORD");
 const gatewayUrl = process.env.CODEX_GATEWAY_URL?.trim()
   || values.get("CODEX_GATEWAY_URL")?.trim();
 const hadLegacyOpenAiKey = values.delete("OPENAI_API_KEY");
@@ -43,6 +47,8 @@ values.set("COCKROACH_DATABASE_URL", databaseUrl);
 values.set("SCOUT_PROVISIONING_KEY", provisioningKey);
 values.set("CODEX_GATEWAY_SHARED_SECRET", gatewaySharedSecret);
 values.set("CODEX_AUTH_ENCRYPTION_KEY", authEncryptionKey);
+if (adminUsername) values.set("ADMIN_USERNAME", adminUsername);
+if (adminPassword) values.set("ADMIN_PASSWORD", adminPassword);
 if (gatewayUrl) values.set("CODEX_GATEWAY_URL", gatewayUrl.replace(/\/+$/, ""));
 
 const preservedComments = existing
@@ -61,6 +67,9 @@ for (const [name, value] of [
   ["COCKROACH_DATABASE_URL", databaseUrl],
   ["SCOUT_PROVISIONING_KEY", provisioningKey],
   ["CODEX_GATEWAY_SHARED_SECRET", gatewaySharedSecret],
+  ...(adminUsername && adminPassword
+    ? [["ADMIN_USERNAME", adminUsername], ["ADMIN_PASSWORD", adminPassword]]
+    : []),
   ...(gatewayUrl
     ? [["CODEX_GATEWAY_URL", gatewayUrl.replace(/\/+$/, "")]]
     : []),
