@@ -610,7 +610,9 @@ assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS scout_escalations/);
 assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS crm_delivery_outbox/);
 assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS veblen_members/);
 assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS veblen_lead_matches/);
-assert.match(adminAppSource, /Veblen exclusions/);
+assert.match(adminAppSource, /Protected member list/);
+assert.ok(!adminAppSource.includes(">Veblen exclusions</button>"));
+assert.ok(adminAppSource.includes("<VeblenExclusionsPage load={loadVeblenMatches} />"));
 assert.match(adminAppSource, /Veblen member · excluded/);
 
 const storedAuth = {

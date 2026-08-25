@@ -99,7 +99,7 @@ export const getMatches = action({
        INNER JOIN veblen_members AS vm ON vm.member_id = vx.member_id
        LEFT JOIN lead_assignments AS a ON a.lead_id = l.id
        WHERE true ${searchClause}
-        ORDER BY assigned_to IS NOT NULL DESC, lower(coalesce(lead_name, member_name)), lead_id
+        ORDER BY a.operator_id IS NOT NULL DESC, lower(coalesce(l.full_name, vm.name)), l.id
         LIMIT $2 OFFSET $3`,
       [searchValue, pageSize, (page - 1) * pageSize],
     );

@@ -40,7 +40,7 @@ import { WeeklyPerformance } from "./WeeklyPerformance";
 import "./App.css";
 
 type Range = "7d" | "30d" | "90d" | "all";
-type View = "overview" | "scouts" | "veblen" | "weekly" | "operations" | "leads";
+type View = "overview" | "scouts" | "weekly" | "operations" | "leads";
 type ScoutSort = "activity" | "emails" | "accepted" | "assigned" | "name";
 type EmailAvailability = "present" | "missing";
 type EmailValidation = "validated" | "not_validated";
@@ -871,12 +871,6 @@ function Dashboard({ adminName }: { adminName: string }) {
         title: <>Manage your scout<br /><span>team and queues.</span></>,
         copy: "Create secure scout logins, see assignment capacity by niche, and place individual leads into the right scout’s queue.",
       }
-    : view === "veblen"
-      ? {
-          eyebrow: "Protected member list",
-          title: <>Keep Veblen members<br /><span>out of every queue.</span></>,
-          copy: "Review directory coverage and every database lead matched by LinkedIn URL or public email.",
-        }
     : view === "weekly"
       ? {
           eyebrow: "Weekly scout results",
@@ -911,7 +905,6 @@ function Dashboard({ adminName }: { adminName: string }) {
         <nav className="main-nav" aria-label="Workspace views">
           <button className={view === "overview" ? "active" : ""} onClick={() => setView("overview")}>Overview</button>
           <button className={view === "scouts" ? "active" : ""} onClick={() => setView("scouts")}>Scouts</button>
-          <button className={view === "veblen" ? "active" : ""} onClick={() => setView("veblen")}>Veblen exclusions</button>
           <button className={view === "weekly" ? "active" : ""} onClick={() => setView("weekly")}>Weekly board</button>
           <button className={view === "operations" ? "active" : ""} onClick={() => setView("operations")}>Daily work</button>
           <button className={view === "leads" ? "active" : ""} onClick={() => setView("leads")}>Lead directory</button>
@@ -997,8 +990,6 @@ function Dashboard({ adminName }: { adminName: string }) {
               await Promise.all([refreshOverview(), refreshNicheAssignments()]);
             }}
           />
-        ) : view === "veblen" ? (
-          <VeblenExclusionsPage load={getVeblenMatches} />
         ) : view === "weekly" ? (
           <WeeklyPerformance />
         ) : view === "operations" ? (
@@ -1039,6 +1030,7 @@ function Dashboard({ adminName }: { adminName: string }) {
             canGoNext={hasMore && Boolean(nextCursor)}
             previousPage={previousPage}
             nextPage={nextPage}
+            loadVeblenMatches={getVeblenMatches}
           />
         )}
       </main>
@@ -1109,7 +1101,14 @@ function VeblenExclusionsPage({ load }: {
   }, [refresh]);
 
   return (
-    <div className="veblen-page">
+    <div className="veblen-page veblen-directory-section">
+      <div className="workspace-heading veblen-directory-heading">
+        <div>
+          <p className="eyebrow">Protected member list</p>
+          <h2>Keep Veblen members out of every queue.</h2>
+          <p>Review directory coverage and every database lead matched by LinkedIn URL or public email.</p>
+        </div>
+      </div>
       <section className="veblen-summary-grid" aria-label="Veblen exclusion summary">
         <article><span><Users size={17} /></span><div><strong>{formatNumber(data?.members ?? 0)}</strong><small>directory members</small></div></article>
         <article><span><ExternalLink size={17} /></span><div><strong>{formatNumber(data?.memberLinkedInUrls ?? 0)}</strong><small>LinkedIn identifiers</small></div></article>
@@ -2159,7 +2158,7 @@ function Inventory({ summary }: { summary: Summary }) {
   );
 }
 
-function LeadDirectory({ stats, niches, setNiches, search, setSearch, originalEmailFilters, setOriginalEmailFilters, workEmailFilters, setWorkEmailFilters, workEmailValidationFilters, setWorkEmailValidationFilters, onExport, exporting, notice, viewCount, leads, loading, error, onRefresh, currentPage, canGoPrevious, canGoNext, previousPage, nextPage }: {
+function LeadDirectory({ stats, niches, setNiches, search, setSearch, originalEmailFilters, setOriginalEmailFilters, workEmailFilters, setWorkEmailFilters, workEmailValidationFilters, setWorkEmailValidationFilters, onExport, exporting, notice, viewCount, leads, loading, error, onRefresh, currentPage, canGoPrevious, canGoNext, previousPage, nextPage, loadVeblenMatches }: {
   stats: Stats | null;
   niches: string[];
   setNiches: (value: string[]) => void;
@@ -2184,6 +2183,7 @@ function LeadDirectory({ stats, niches, setNiches, search, setSearch, originalEm
   canGoNext: boolean;
   previousPage: () => void;
   nextPage: () => void;
+  loadVeblenMatches: (args: { search: string | null; page: number; pageSize: number }) => Promise<VeblenMatchesPage>;
 }) {
   const directoryTitle = niches.length === 0
     ? "All leads"
@@ -2204,6 +2204,7 @@ function LeadDirectory({ stats, niches, setNiches, search, setSearch, originalEm
       {notice && <div className="directory-notice directory-success">{notice}</div>}
       {error ? <div className="directory-notice"><Notice message={error} onRetry={onRefresh} /></div> : <LeadTable leads={leads} loading={loading} />}
       {!error && <div className="pagination"><p>Page {currentPage} · Up to 50 leads per page</p><div><button onClick={previousPage} disabled={!canGoPrevious || loading}><ArrowLeft size={16} /> Previous</button><button onClick={nextPage} disabled={!canGoNext || loading}>Next <ArrowRight size={16} /></button></div></div>}
+      <VeblenExclusionsPage load={loadVeblenMatches} />
     </section>
   );
 }

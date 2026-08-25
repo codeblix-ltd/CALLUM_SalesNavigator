@@ -636,6 +636,8 @@ footer span { display: flex; align-items: center; gap: 6px; }
 .weekly-editor-error { margin: 12px 0 0; padding: 9px 10px; color: #9e424c; background: #fff2f3; border: 1px solid #efc8cd; border-radius: 8px; font-size: 9px; }
 .weekly-editor-actions { margin-top: 17px; display: flex; justify-content: flex-end; gap: 8px; }
 .veblen-page { display: grid; gap: 18px; }
+.veblen-directory-section { margin-top: 28px; padding: 28px; background: #f8f9fc; border-top: 1px solid #dfe4ed; }
+.veblen-directory-heading { padding: 0; }
 .veblen-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .veblen-summary-grid article { min-height: 90px; display: flex; align-items: center; gap: 12px; padding: 17px; background: white; border: 1px solid #e0e5ee; border-radius: 14px; box-shadow: 0 8px 24px rgba(45,55,83,.04); }
 .veblen-summary-grid article > span { width: 34px; height: 34px; display: grid; place-items: center; flex: 0 0 auto; color: #6548ca; background: #eeeafd; border-radius: 10px; }
