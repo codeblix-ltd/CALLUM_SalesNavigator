@@ -613,6 +613,9 @@ assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS veblen_lead_matches/);
 assert.match(adminAppSource, /Protected member list/);
 assert.ok(!adminAppSource.includes(">Veblen exclusions</button>"));
 assert.ok(adminAppSource.includes("<VeblenExclusionsPage load={loadVeblenMatches} />"));
+assert.match(adminAppSource, /className="sidebar"/);
+assert.match(adminAppSource, /Lead directory sections/);
+assert.match(adminAppSource, /setDirectorySection\("veblen"\)/);
 assert.match(adminAppSource, /Veblen member · excluded/);
 
 const storedAuth = {

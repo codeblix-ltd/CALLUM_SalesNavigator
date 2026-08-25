@@ -41,6 +41,7 @@ import "./App.css";
 
 type Range = "7d" | "30d" | "90d" | "all";
 type View = "overview" | "scouts" | "weekly" | "operations" | "leads";
+type DirectorySection = "leads" | "veblen";
 type ScoutSort = "activity" | "emails" | "accepted" | "assigned" | "name";
 type EmailAvailability = "present" | "missing";
 type EmailValidation = "validated" | "not_validated";
@@ -476,6 +477,7 @@ function Dashboard({ adminName }: { adminName: string }) {
   const setScoutActive = useAction(api.adminScouts.setScoutActive);
   const getVeblenMatches = useAction(api.adminVeblenMembers.getMatches);
   const [view, setView] = useState<View>("overview");
+  const [directorySection, setDirectorySection] = useState<DirectorySection>("leads");
   const [range, setRange] = useState<Range>("all");
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(true);
@@ -626,8 +628,8 @@ function Dashboard({ adminName }: { adminName: string }) {
   }, [niches, originalEmailFilters, workEmailFilters, workEmailValidationFilters]);
 
   useEffect(() => {
-    if (view === "leads") void loadLeads();
-  }, [loadLeads, view]);
+    if (view === "leads" && directorySection === "leads") void loadLeads();
+  }, [directorySection, loadLeads, view]);
 
   useEffect(() => {
     if (view === "operations") void refreshOperations();
@@ -865,6 +867,15 @@ function Dashboard({ adminName }: { adminName: string }) {
   }
 
   const connectionError = analyticsError || leadError || scoutAdminError;
+  const viewLabel = view === "overview"
+    ? "Overview"
+    : view === "scouts"
+      ? "Scout administration"
+      : view === "weekly"
+        ? "Weekly board"
+        : view === "operations"
+          ? "Daily work"
+          : "Lead directory";
   const heroContent = view === "scouts"
     ? {
         eyebrow: "Scout administration",
@@ -897,32 +908,47 @@ function Dashboard({ adminName }: { adminName: string }) {
 
   return (
     <div className="app-shell">
-      <header className="topbar">
+      <aside className="sidebar">
         <a className="brand" href="/" aria-label="Callum Leads home">
           <span className="brand-mark"><Sparkles size={18} /></span>
           <span>Callum<span className="brand-accent">Leads</span></span>
         </a>
+        <p className="sidebar-label">Workspace</p>
         <nav className="main-nav" aria-label="Workspace views">
-          <button className={view === "overview" ? "active" : ""} onClick={() => setView("overview")}>Overview</button>
-          <button className={view === "scouts" ? "active" : ""} onClick={() => setView("scouts")}>Scouts</button>
-          <button className={view === "weekly" ? "active" : ""} onClick={() => setView("weekly")}>Weekly board</button>
-          <button className={view === "operations" ? "active" : ""} onClick={() => setView("operations")}>Daily work</button>
-          <button className={view === "leads" ? "active" : ""} onClick={() => setView("leads")}>Lead directory</button>
+          <button className={view === "overview" ? "active" : ""} onClick={() => setView("overview")} aria-current={view === "overview" ? "page" : undefined}><BarChart3 size={17} /> Overview</button>
+          <button className={view === "scouts" ? "active" : ""} onClick={() => setView("scouts")} aria-current={view === "scouts" ? "page" : undefined}><Users size={17} /> Scouts</button>
+          <button className={view === "weekly" ? "active" : ""} onClick={() => setView("weekly")} aria-current={view === "weekly" ? "page" : undefined}><TrendingUp size={17} /> Weekly board</button>
+          <button className={view === "operations" ? "active" : ""} onClick={() => setView("operations")} aria-current={view === "operations" ? "page" : undefined}><Activity size={17} /> Daily work</button>
+          <button className={view === "leads" ? "active" : ""} onClick={() => { setDirectorySection("leads"); setView("leads"); }} aria-current={view === "leads" ? "page" : undefined}><Database size={17} /> Lead directory</button>
         </nav>
-        <div className="topbar-actions">
-          <button className="upload-leads-button" onClick={() => setUploadLeadsOpen(true)}>
-            <CloudUpload size={16} /> Upload leads
-          </button>
-          <span className={`connection-state ${connectionError ? "has-error" : ""}`}>
-            <span className="connection-dot" />
-            {connectionError ? "Data needs attention" : "Private workspace"}
-          </span>
-          <button className="admin-chip" onClick={() => setSettingsOpen(true)}>
-            <span>{initials(adminName)}</span>
-            <span><strong>{adminName}</strong><small>Administrator</small></span>
-          </button>
-        </div>
-      </header>
+        {view === "leads" && (
+          <div className="sidebar-subnav" aria-label="Lead directory sections">
+            <p>Lead directory</p>
+            <button className={directorySection === "leads" ? "active" : ""} onClick={() => setDirectorySection("leads")} aria-current={directorySection === "leads" ? "page" : undefined}><Database size={15} /> All leads</button>
+            <button className={directorySection === "veblen" ? "active" : ""} onClick={() => setDirectorySection("veblen")} aria-current={directorySection === "veblen" ? "page" : undefined}><ShieldCheck size={15} /> Veblen exclusions</button>
+          </div>
+        )}
+        <div className="sidebar-spacer" />
+        <div className="sidebar-footer"><LockKeyhole size={13} /> Private admin workspace</div>
+      </aside>
+
+      <div className="app-body">
+        <header className="topbar">
+          <div className="topbar-context"><span>Callum Leads</span><strong>{viewLabel}</strong></div>
+          <div className="topbar-actions">
+            <button className="upload-leads-button" onClick={() => setUploadLeadsOpen(true)}>
+              <CloudUpload size={16} /> Upload leads
+            </button>
+            <span className={`connection-state ${connectionError ? "has-error" : ""}`}>
+              <span className="connection-dot" />
+              {connectionError ? "Data needs attention" : "Private workspace"}
+            </span>
+            <button className="admin-chip" onClick={() => setSettingsOpen(true)}>
+              <span>{initials(adminName)}</span>
+              <span><strong>{adminName}</strong><small>Administrator</small></span>
+            </button>
+          </div>
+        </header>
 
       <main>
         <section className="hero hero-dashboard">
@@ -1031,6 +1057,7 @@ function Dashboard({ adminName }: { adminName: string }) {
             previousPage={previousPage}
             nextPage={nextPage}
             loadVeblenMatches={getVeblenMatches}
+            directorySection={directorySection}
           />
         )}
       </main>
@@ -1062,6 +1089,7 @@ function Dashboard({ adminName }: { adminName: string }) {
           }}
         />
       )}
+      </div>
     </div>
   );
 }
@@ -2158,7 +2186,7 @@ function Inventory({ summary }: { summary: Summary }) {
   );
 }
 
-function LeadDirectory({ stats, niches, setNiches, search, setSearch, originalEmailFilters, setOriginalEmailFilters, workEmailFilters, setWorkEmailFilters, workEmailValidationFilters, setWorkEmailValidationFilters, onExport, exporting, notice, viewCount, leads, loading, error, onRefresh, currentPage, canGoPrevious, canGoNext, previousPage, nextPage, loadVeblenMatches }: {
+function LeadDirectory({ stats, niches, setNiches, search, setSearch, originalEmailFilters, setOriginalEmailFilters, workEmailFilters, setWorkEmailFilters, workEmailValidationFilters, setWorkEmailValidationFilters, onExport, exporting, notice, viewCount, leads, loading, error, onRefresh, currentPage, canGoPrevious, canGoNext, previousPage, nextPage, loadVeblenMatches, directorySection }: {
   stats: Stats | null;
   niches: string[];
   setNiches: (value: string[]) => void;
@@ -2184,12 +2212,15 @@ function LeadDirectory({ stats, niches, setNiches, search, setSearch, originalEm
   previousPage: () => void;
   nextPage: () => void;
   loadVeblenMatches: (args: { search: string | null; page: number; pageSize: number }) => Promise<VeblenMatchesPage>;
+  directorySection: DirectorySection;
 }) {
   const directoryTitle = niches.length === 0
     ? "All leads"
     : niches.length === 1
       ? niches[0]
       : `${niches.length} niches selected`;
+
+  if (directorySection === "veblen") return <VeblenExclusionsPage load={loadVeblenMatches} />;
 
   return (
     <section className="workspace">
@@ -2204,7 +2235,6 @@ function LeadDirectory({ stats, niches, setNiches, search, setSearch, originalEm
       {notice && <div className="directory-notice directory-success">{notice}</div>}
       {error ? <div className="directory-notice"><Notice message={error} onRetry={onRefresh} /></div> : <LeadTable leads={leads} loading={loading} />}
       {!error && <div className="pagination"><p>Page {currentPage} · Up to 50 leads per page</p><div><button onClick={previousPage} disabled={!canGoPrevious || loading}><ArrowLeft size={16} /> Previous</button><button onClick={nextPage} disabled={!canGoNext || loading}>Next <ArrowRight size={16} /></button></div></div>}
-      <VeblenExclusionsPage load={loadVeblenMatches} />
     </section>
   );
 }
