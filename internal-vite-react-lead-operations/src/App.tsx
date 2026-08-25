@@ -456,14 +456,12 @@ function UnauthorizedScreen() {
   );
 }
 
-function SidebarSectionNav({ label, ariaLabel, items }: {
-  label: string;
+function SidebarSectionNav({ ariaLabel, items }: {
   ariaLabel: string;
   items: Array<{ label: string; icon: ReactNode; active: boolean; onClick: () => void }>;
 }) {
   return (
     <div className="sidebar-subnav" aria-label={ariaLabel}>
-      <p>{label}</p>
       {items.map((item) => (
         <button key={item.label} className={item.active ? "active" : ""} onClick={item.onClick} aria-current={item.active ? "page" : undefined}>
           {item.icon} {item.label}
@@ -950,36 +948,36 @@ function Dashboard({ adminName }: { adminName: string }) {
         <p className="sidebar-label">Workspace</p>
         <nav className="main-nav" aria-label="Workspace views">
           <button className={view === "overview" ? "active" : ""} onClick={() => setView("overview")} aria-current={view === "overview" ? "page" : undefined}><BarChart3 size={17} /> Overview</button>
+          <SidebarSectionNav ariaLabel="Overview sections" items={[
+            { label: "Summary", icon: <BarChart3 size={15} />, active: view === "overview" && overviewSection === "summary", onClick: () => { setOverviewSection("summary"); setView("overview"); } },
+            { label: "Trends", icon: <TrendingUp size={15} />, active: view === "overview" && overviewSection === "trends", onClick: () => { setOverviewSection("trends"); setView("overview"); } },
+            { label: "Scout performance", icon: <Users size={15} />, active: view === "overview" && overviewSection === "scouts", onClick: () => { setOverviewSection("scouts"); setView("overview"); } },
+            { label: "Activity & coverage", icon: <Activity size={15} />, active: view === "overview" && overviewSection === "activity", onClick: () => { setOverviewSection("activity"); setView("overview"); } },
+          ]} />
           <button className={view === "scouts" ? "active" : ""} onClick={() => setView("scouts")} aria-current={view === "scouts" ? "page" : undefined}><Users size={17} /> Scouts</button>
+          <SidebarSectionNav ariaLabel="Scout administration sections" items={[
+            { label: "Accounts & capacity", icon: <UserCheck size={15} />, active: view === "scouts" && scoutsSection === "accounts", onClick: () => { setScoutsSection("accounts"); setView("scouts"); } },
+            { label: "Lead allocation", icon: <Target size={15} />, active: view === "scouts" && scoutsSection === "allocation", onClick: () => { setScoutsSection("allocation"); setView("scouts"); } },
+            { label: "Scout directory", icon: <Users size={15} />, active: view === "scouts" && scoutsSection === "directory", onClick: () => { setScoutsSection("directory"); setView("scouts"); } },
+          ]} />
           <button className={view === "weekly" ? "active" : ""} onClick={() => setView("weekly")} aria-current={view === "weekly" ? "page" : undefined}><TrendingUp size={17} /> Weekly board</button>
+          <SidebarSectionNav ariaLabel="Weekly board sections" items={[
+            { label: "Leaderboard", icon: <TrendingUp size={15} />, active: view === "weekly" && weeklySection === "board", onClick: () => { setWeeklySection("board"); setView("weekly"); } },
+            { label: "Comments & posts", icon: <Send size={15} />, active: view === "weekly" && weeklySection === "comments", onClick: () => { setWeeklySection("comments"); setView("weekly"); } },
+          ]} />
           <button className={view === "operations" ? "active" : ""} onClick={() => setView("operations")} aria-current={view === "operations" ? "page" : undefined}><Activity size={17} /> Daily work</button>
+          <SidebarSectionNav ariaLabel="Daily work sections" items={[
+            { label: "Work summary", icon: <BarChart3 size={15} />, active: view === "operations" && operationsSection === "summary", onClick: () => { setOperationsSection("summary"); setView("operations"); } },
+            { label: "Scout questions", icon: <Users size={15} />, active: view === "operations" && operationsSection === "questions", onClick: () => { setOperationsSection("questions"); setView("operations"); } },
+            { label: "Old requests", icon: <Clock3 size={15} />, active: view === "operations" && operationsSection === "requests", onClick: () => { setOperationsSection("requests"); setView("operations"); } },
+            { label: "CRM queue", icon: <Database size={15} />, active: view === "operations" && operationsSection === "crm", onClick: () => { setOperationsSection("crm"); setView("operations"); } },
+          ]} />
           <button className={view === "leads" ? "active" : ""} onClick={() => { setDirectorySection("leads"); setView("leads"); }} aria-current={view === "leads" ? "page" : undefined}><Database size={17} /> Lead directory</button>
+          <SidebarSectionNav ariaLabel="Lead directory sections" items={[
+            { label: "All leads", icon: <Database size={15} />, active: view === "leads" && directorySection === "leads", onClick: () => { setDirectorySection("leads"); setView("leads"); } },
+            { label: "Veblen exclusions", icon: <ShieldCheck size={15} />, active: view === "leads" && directorySection === "veblen", onClick: () => { setDirectorySection("veblen"); setView("leads"); } },
+          ]} />
         </nav>
-        {view === "overview" && <SidebarSectionNav label="Overview" ariaLabel="Overview sections" items={[
-          { label: "Summary", icon: <BarChart3 size={15} />, active: overviewSection === "summary", onClick: () => setOverviewSection("summary") },
-          { label: "Trends", icon: <TrendingUp size={15} />, active: overviewSection === "trends", onClick: () => setOverviewSection("trends") },
-          { label: "Scout performance", icon: <Users size={15} />, active: overviewSection === "scouts", onClick: () => setOverviewSection("scouts") },
-          { label: "Activity & coverage", icon: <Activity size={15} />, active: overviewSection === "activity", onClick: () => setOverviewSection("activity") },
-        ]} />}
-        {view === "scouts" && <SidebarSectionNav label="Scouts" ariaLabel="Scout administration sections" items={[
-          { label: "Accounts & capacity", icon: <UserCheck size={15} />, active: scoutsSection === "accounts", onClick: () => setScoutsSection("accounts") },
-          { label: "Lead allocation", icon: <Target size={15} />, active: scoutsSection === "allocation", onClick: () => setScoutsSection("allocation") },
-          { label: "Scout directory", icon: <Users size={15} />, active: scoutsSection === "directory", onClick: () => setScoutsSection("directory") },
-        ]} />}
-        {view === "weekly" && <SidebarSectionNav label="Weekly board" ariaLabel="Weekly board sections" items={[
-          { label: "Leaderboard", icon: <TrendingUp size={15} />, active: weeklySection === "board", onClick: () => setWeeklySection("board") },
-          { label: "Comments & posts", icon: <Send size={15} />, active: weeklySection === "comments", onClick: () => setWeeklySection("comments") },
-        ]} />}
-        {view === "operations" && <SidebarSectionNav label="Daily work" ariaLabel="Daily work sections" items={[
-          { label: "Work summary", icon: <BarChart3 size={15} />, active: operationsSection === "summary", onClick: () => setOperationsSection("summary") },
-          { label: "Scout questions", icon: <Users size={15} />, active: operationsSection === "questions", onClick: () => setOperationsSection("questions") },
-          { label: "Old requests", icon: <Clock3 size={15} />, active: operationsSection === "requests", onClick: () => setOperationsSection("requests") },
-          { label: "CRM queue", icon: <Database size={15} />, active: operationsSection === "crm", onClick: () => setOperationsSection("crm") },
-        ]} />}
-        {view === "leads" && <SidebarSectionNav label="Lead directory" ariaLabel="Lead directory sections" items={[
-          { label: "All leads", icon: <Database size={15} />, active: directorySection === "leads", onClick: () => setDirectorySection("leads") },
-          { label: "Veblen exclusions", icon: <ShieldCheck size={15} />, active: directorySection === "veblen", onClick: () => setDirectorySection("veblen") },
-        ]} />}
         <div className="sidebar-spacer" />
         <div className="sidebar-footer"><LockKeyhole size={13} /> Private admin workspace</div>
       </aside>
