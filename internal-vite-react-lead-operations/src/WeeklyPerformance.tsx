@@ -70,7 +70,7 @@ type KpiDraft = { label: string; value: string };
 
 const MAX_EVIDENCE_BYTES = 5 * 1024 * 1024;
 
-export function WeeklyPerformance() {
+export function WeeklyPerformance({ section }: { section: "board" | "comments" }) {
   const getWeeklyPerformance = useAction(api.adminAnalytics.getWeeklyPerformance);
   const generateEvidenceUploadUrl = useMutation(api.weeklyPerformance.generateEvidenceUploadUrl);
   const saveReview = useMutation(api.weeklyPerformance.saveReview);
@@ -234,7 +234,7 @@ export function WeeklyPerformance() {
       {error && <div className="weekly-error"><strong>Weekly results could not be loaded.</strong><span>{error}</span><button onClick={() => void refresh()}>Try again</button></div>}
       {board && (
         <>
-          <section className="weekly-share-card">
+          {section === "board" && <section className="weekly-share-card">
             <div className="weekly-share-intro">
               <div>
                 <p>Callum Scout · Weekly performance</p>
@@ -291,9 +291,9 @@ export function WeeklyPerformance() {
               </table>
             </div>
             <div className="weekly-score-note"><CheckCircle2 size={13} /><span>Score: {board.scoreFormula}. Other KPI counts are included at 1 point each. Manager points should only represent results supported by notes or evidence.</span></div>
-          </section>
+          </section>}
 
-          <section className="panel weekly-comments-panel weekly-live-controls">
+          {section === "comments" && <section className="panel weekly-comments-panel weekly-live-controls">
             <div className="weekly-comments-head">
               <div><p>Comment tracking</p><h2>Submitted LinkedIn comments</h2><span>Open the exact post from the dashboard</span></div>
               <select value={commentScout} onChange={(event) => setCommentScout(event.target.value)}>
@@ -310,7 +310,7 @@ export function WeeklyPerformance() {
                 </article>
               ))}
             </div>
-          </section>
+          </section>}
         </>
       )}
 

@@ -42,6 +42,10 @@ import "./App.css";
 type Range = "7d" | "30d" | "90d" | "all";
 type View = "overview" | "scouts" | "weekly" | "operations" | "leads";
 type DirectorySection = "leads" | "veblen";
+type OverviewSection = "summary" | "trends" | "scouts" | "activity";
+type ScoutsSection = "accounts" | "allocation" | "directory";
+type WeeklySection = "board" | "comments";
+type OperationsSection = "summary" | "questions" | "requests" | "crm";
 type ScoutSort = "activity" | "emails" | "accepted" | "assigned" | "name";
 type EmailAvailability = "present" | "missing";
 type EmailValidation = "validated" | "not_validated";
@@ -452,6 +456,23 @@ function UnauthorizedScreen() {
   );
 }
 
+function SidebarSectionNav({ label, ariaLabel, items }: {
+  label: string;
+  ariaLabel: string;
+  items: Array<{ label: string; icon: ReactNode; active: boolean; onClick: () => void }>;
+}) {
+  return (
+    <div className="sidebar-subnav" aria-label={ariaLabel}>
+      <p>{label}</p>
+      {items.map((item) => (
+        <button key={item.label} className={item.active ? "active" : ""} onClick={item.onClick} aria-current={item.active ? "page" : undefined}>
+          {item.icon} {item.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function Dashboard({ adminName }: { adminName: string }) {
   const { signOut } = useAuthActions();
   const getOverview = useAction(api.adminAnalytics.getOverview);
@@ -477,6 +498,10 @@ function Dashboard({ adminName }: { adminName: string }) {
   const setScoutActive = useAction(api.adminScouts.setScoutActive);
   const getVeblenMatches = useAction(api.adminVeblenMembers.getMatches);
   const [view, setView] = useState<View>("overview");
+  const [overviewSection, setOverviewSection] = useState<OverviewSection>("summary");
+  const [scoutsSection, setScoutsSection] = useState<ScoutsSection>("accounts");
+  const [weeklySection, setWeeklySection] = useState<WeeklySection>("board");
+  const [operationsSection, setOperationsSection] = useState<OperationsSection>("summary");
   const [directorySection, setDirectorySection] = useState<DirectorySection>("leads");
   const [range, setRange] = useState<Range>("all");
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
@@ -876,6 +901,15 @@ function Dashboard({ adminName }: { adminName: string }) {
         : view === "operations"
           ? "Daily work"
           : "Lead directory";
+  const sectionLabel = view === "overview"
+    ? overviewSection === "summary" ? "Summary" : overviewSection === "trends" ? "Trends" : overviewSection === "scouts" ? "Scout performance" : "Activity & coverage"
+    : view === "scouts"
+      ? scoutsSection === "accounts" ? "Accounts & capacity" : scoutsSection === "allocation" ? "Lead allocation" : "Scout directory"
+      : view === "weekly"
+        ? weeklySection === "board" ? "Leaderboard" : "Comments & posts"
+        : view === "operations"
+          ? operationsSection === "summary" ? "Work summary" : operationsSection === "questions" ? "Scout questions" : operationsSection === "requests" ? "Old requests" : "CRM queue"
+          : directorySection === "leads" ? "All leads" : "Veblen exclusions";
   const heroContent = view === "scouts"
     ? {
         eyebrow: "Scout administration",
@@ -921,20 +955,38 @@ function Dashboard({ adminName }: { adminName: string }) {
           <button className={view === "operations" ? "active" : ""} onClick={() => setView("operations")} aria-current={view === "operations" ? "page" : undefined}><Activity size={17} /> Daily work</button>
           <button className={view === "leads" ? "active" : ""} onClick={() => { setDirectorySection("leads"); setView("leads"); }} aria-current={view === "leads" ? "page" : undefined}><Database size={17} /> Lead directory</button>
         </nav>
-        {view === "leads" && (
-          <div className="sidebar-subnav" aria-label="Lead directory sections">
-            <p>Lead directory</p>
-            <button className={directorySection === "leads" ? "active" : ""} onClick={() => setDirectorySection("leads")} aria-current={directorySection === "leads" ? "page" : undefined}><Database size={15} /> All leads</button>
-            <button className={directorySection === "veblen" ? "active" : ""} onClick={() => setDirectorySection("veblen")} aria-current={directorySection === "veblen" ? "page" : undefined}><ShieldCheck size={15} /> Veblen exclusions</button>
-          </div>
-        )}
+        {view === "overview" && <SidebarSectionNav label="Overview" ariaLabel="Overview sections" items={[
+          { label: "Summary", icon: <BarChart3 size={15} />, active: overviewSection === "summary", onClick: () => setOverviewSection("summary") },
+          { label: "Trends", icon: <TrendingUp size={15} />, active: overviewSection === "trends", onClick: () => setOverviewSection("trends") },
+          { label: "Scout performance", icon: <Users size={15} />, active: overviewSection === "scouts", onClick: () => setOverviewSection("scouts") },
+          { label: "Activity & coverage", icon: <Activity size={15} />, active: overviewSection === "activity", onClick: () => setOverviewSection("activity") },
+        ]} />}
+        {view === "scouts" && <SidebarSectionNav label="Scouts" ariaLabel="Scout administration sections" items={[
+          { label: "Accounts & capacity", icon: <UserCheck size={15} />, active: scoutsSection === "accounts", onClick: () => setScoutsSection("accounts") },
+          { label: "Lead allocation", icon: <Target size={15} />, active: scoutsSection === "allocation", onClick: () => setScoutsSection("allocation") },
+          { label: "Scout directory", icon: <Users size={15} />, active: scoutsSection === "directory", onClick: () => setScoutsSection("directory") },
+        ]} />}
+        {view === "weekly" && <SidebarSectionNav label="Weekly board" ariaLabel="Weekly board sections" items={[
+          { label: "Leaderboard", icon: <TrendingUp size={15} />, active: weeklySection === "board", onClick: () => setWeeklySection("board") },
+          { label: "Comments & posts", icon: <Send size={15} />, active: weeklySection === "comments", onClick: () => setWeeklySection("comments") },
+        ]} />}
+        {view === "operations" && <SidebarSectionNav label="Daily work" ariaLabel="Daily work sections" items={[
+          { label: "Work summary", icon: <BarChart3 size={15} />, active: operationsSection === "summary", onClick: () => setOperationsSection("summary") },
+          { label: "Scout questions", icon: <Users size={15} />, active: operationsSection === "questions", onClick: () => setOperationsSection("questions") },
+          { label: "Old requests", icon: <Clock3 size={15} />, active: operationsSection === "requests", onClick: () => setOperationsSection("requests") },
+          { label: "CRM queue", icon: <Database size={15} />, active: operationsSection === "crm", onClick: () => setOperationsSection("crm") },
+        ]} />}
+        {view === "leads" && <SidebarSectionNav label="Lead directory" ariaLabel="Lead directory sections" items={[
+          { label: "All leads", icon: <Database size={15} />, active: directorySection === "leads", onClick: () => setDirectorySection("leads") },
+          { label: "Veblen exclusions", icon: <ShieldCheck size={15} />, active: directorySection === "veblen", onClick: () => setDirectorySection("veblen") },
+        ]} />}
         <div className="sidebar-spacer" />
         <div className="sidebar-footer"><LockKeyhole size={13} /> Private admin workspace</div>
       </aside>
 
       <div className="app-body">
         <header className="topbar">
-          <div className="topbar-context"><span>Callum Leads</span><strong>{viewLabel}</strong></div>
+          <div className="topbar-context"><span>{viewLabel}</span><strong>{sectionLabel}</strong></div>
           <div className="topbar-actions">
             <button className="upload-leads-button" onClick={() => setUploadLeadsOpen(true)}>
               <CloudUpload size={16} /> Upload leads
@@ -988,6 +1040,7 @@ function Dashboard({ adminName }: { adminName: string }) {
             scoutAssignedLeadsLoading={scoutAssignedLeadsLoading}
             scoutAssignedLeadsError={scoutAssignedLeadsError}
             onScoutAssignedLeadsPageChange={setScoutAssignedLeadsPage}
+            section={overviewSection}
           />
         ) : view === "scouts" ? (
           <ScoutsPage
@@ -1015,9 +1068,10 @@ function Dashboard({ adminName }: { adminName: string }) {
             refresh={async () => {
               await Promise.all([refreshOverview(), refreshNicheAssignments()]);
             }}
+            section={scoutsSection}
           />
         ) : view === "weekly" ? (
-          <WeeklyPerformance />
+          <WeeklyPerformance section={weeklySection} />
         ) : view === "operations" ? (
           <OperationsCenter
             operations={operations}
@@ -1029,6 +1083,7 @@ function Dashboard({ adminName }: { adminName: string }) {
             download={downloadCleanExport}
             sendToCrm={sendWaitingCrmRows}
             closeEscalation={closeEscalation}
+            section={operationsSection}
           />
         ) : (
           <LeadDirectory
@@ -1215,6 +1270,7 @@ function ScoutsPage({
   assignLeadCount,
   setScoutActive,
   refresh,
+  section,
 }: {
   scouts: ScoutMetrics[];
   scoutSearch: string;
@@ -1238,6 +1294,7 @@ function ScoutsPage({
   assignLeadCount: (args: { operatorId: string; niche: string; count: number }) => Promise<{ requested: number; assigned: number; remaining: number }>;
   setScoutActive: (args: { operatorId: string; active: boolean }) => Promise<{ operatorId: string; username: string; active: boolean }>;
   refresh: () => Promise<void>;
+  section: ScoutsSection;
 }) {
   const [username, setUsername] = useState("");
   const [createdCredential, setCreatedCredential] = useState<{ username: string; password: string } | null>(null);
@@ -1409,8 +1466,9 @@ function ScoutsPage({
   }
 
   return (
-    <div className="scouts-workspace">
+      <div className="scouts-workspace">
       {error && <Notice message={error} onRetry={refresh} />}
+      {section === "accounts" && <>
       <section className="scout-admin-grid">
         <article className="panel create-scout-panel">
           <PanelHeading eyebrow="New account" title="Create a scout" description="Generate a login for a new team member" icon={<UserCheck size={18} />} />
@@ -1459,7 +1517,9 @@ function ScoutsPage({
           )}
         </article>
       </section>
+      </>}
 
+      {section === "allocation" && <>
       <section className={`panel manual-assignment-panel ${assignmentOpen ? "is-open" : "is-collapsed"}`}>
         <div className="manual-assignment-head">
           <div className="manual-assignment-title"><PanelHeading eyebrow="Manual allocation" title="Assign leads to a scout" description="Choose a niche, assign a quantity, or select individual leads" icon={<Target size={18} />} /><button className="scout-directory-toggle manual-assignment-toggle" type="button" onClick={() => setAssignmentOpen((open) => !open)} aria-expanded={assignmentOpen}><ChevronDown size={16} className={assignmentOpen ? "rotate-180" : ""} />{assignmentOpen ? "Collapse" : "Expand"}</button></div>
@@ -1499,7 +1559,9 @@ function ScoutsPage({
         )}
         </>}
       </section>
+      </>}
 
+      {section === "directory" && <>
       <section className={`panel scout-panel scout-directory-panel ${directoryOpen ? "is-open" : "is-collapsed"}`}>
         <div className="scout-panel-head">
           <div className="scout-directory-title"><PanelHeading eyebrow="Scout directory" title="Accounts and performance" description="Open a scout to review their full assigned queue" icon={<Users size={18} />} /><button className="scout-directory-toggle" type="button" onClick={() => setDirectoryOpen((open) => !open)} aria-expanded={directoryOpen}><ChevronDown size={16} className={directoryOpen ? "rotate-180" : ""} />{directoryOpen ? "Collapse" : "Expand"}</button></div>
@@ -1507,6 +1569,7 @@ function ScoutsPage({
         </div>
         {directoryOpen && <><ScoutTable scouts={scouts} selectedScout={selectedScout} setSelectedScout={setSelectedScout} onToggleActive={(scout) => void toggleScout(scout)} togglingScoutId={scoutToggleBusyId} />{activeScout && <ScoutDetail scout={activeScout} activity={scoutActivity} assignedLeads={scoutAssignedLeads} assignedLeadsLoading={scoutAssignedLeadsLoading} assignedLeadsError={scoutAssignedLeadsError} onAssignedLeadsPageChange={onScoutAssignedLeadsPageChange} close={() => setSelectedScout(null)} />}</>}
       </section>
+      </>}
     </div>
   );
 }
@@ -1530,6 +1593,7 @@ function Overview({
   scoutAssignedLeadsLoading,
   scoutAssignedLeadsError,
   onScoutAssignedLeadsPageChange,
+  section,
 }: {
   analytics: Analytics | null;
   loading: boolean;
@@ -1549,6 +1613,7 @@ function Overview({
   scoutAssignedLeadsLoading: boolean;
   scoutAssignedLeadsError: string;
   onScoutAssignedLeadsPageChange: (page: number) => void;
+  section: OverviewSection;
 }) {
   const [scoutPage, setScoutPage] = useState(1);
   const [activityPage, setActivityPage] = useState(1);
@@ -1614,6 +1679,7 @@ function Overview({
         </button>
       </div>
 
+      {section === "summary" && <>
       <section className="kpi-grid" aria-label="Team performance summary">
         <MetricCard
           label="Total scouts"
@@ -1651,7 +1717,9 @@ function Overview({
         <RibbonMetric label="Accepted" value={summary.acceptedLeads} icon={<UserCheck size={16} />} />
         <RibbonMetric label="Failed" value={summary.failedLeads} icon={<ShieldCheck size={16} />} danger={summary.failedLeads > 0} />
       </section>
+      </>}
 
+      {section === "trends" && <>
       <section className="analytics-grid">
         <article className="panel chart-panel">
           <PanelHeading
@@ -1672,7 +1740,9 @@ function Overview({
           <Funnel summary={summary} />
         </article>
       </section>
+      </>}
 
+      {section === "scouts" && <>
       <section className="panel scout-panel">
         <div className="scout-panel-head">
           <PanelHeading
@@ -1733,7 +1803,9 @@ function Overview({
         )}
         {analytics.scoutsTruncated && <p className="table-note">Only the first 500 scout accounts are included.</p>}
       </section>
+      </>}
 
+      {section === "activity" && <>
       <section className="activity-inventory-grid">
         <article className="panel activity-panel" ref={liveHistoryRef}>
           <PanelHeading
@@ -1805,6 +1877,7 @@ function Overview({
           <Inventory summary={summary} />
         </article>
       </section>
+      </>}
     </div>
   );
 }
@@ -1819,6 +1892,7 @@ function OperationsCenter({
   download,
   sendToCrm,
   closeEscalation,
+  section,
 }: {
   operations: Operations | null;
   loading: boolean;
@@ -1829,6 +1903,7 @@ function OperationsCenter({
   download: () => Promise<void>;
   sendToCrm: () => Promise<void>;
   closeEscalation: (id: string) => Promise<void>;
+  section: OperationsSection;
 }) {
   if (!operations && loading) {
     return <div className="overview-loading"><RefreshCw size={22} className="spin" /> Loading today’s work…</div>;
@@ -1860,16 +1935,17 @@ function OperationsCenter({
       {error && <Notice message={error} onRetry={refresh} />}
       {notice && <p className="operations-notice"><CheckCircle2 size={15} /> {notice}</p>}
 
-      <section className="operations-summary" aria-label="Work needing attention">
+      {section === "summary" && <section className="operations-summary" aria-label="Work needing attention">
         <article><Clock3 size={18} /><span>Follow-ups due</span><strong>{formatNumber(summary.followupsDue)}</strong><small>{summary.followupsPending} still open</small></article>
         <article><Target size={18} /><span>Old requests</span><strong>{formatNumber(summary.oldRequests)}</strong><small>30 days or older</small></article>
         <article><CheckCircle2 size={18} /><span>Checklist</span><strong>{summary.checklistDone} / {summary.checklistTotal}</strong><small>Finished today</small></article>
         <article><Users size={18} /><span>Leads to check</span><strong>{formatNumber(summary.leadsToCheck)}</strong><small>Role and recent post</small></article>
         <article><Mail size={18} /><span>CRM waiting</span><strong>{formatNumber(waitingForCrm)}</strong><small>{summary.crmSent} already sent</small></article>
         <article><ShieldCheck size={18} /><span>Scout questions</span><strong>{formatNumber(summary.openEscalations)}</strong><small>Waiting for the team</small></article>
-      </section>
+      </section>}
 
-      <section className="operations-grid">
+      {section !== "summary" && <section className="operations-grid">
+        {section === "questions" && <>
         <article className="panel operations-panel">
           <PanelHeading eyebrow="Scout questions" title="Needs an answer" description="Questions scouts sent from the extension" icon={<Users size={18} />} />
           <div className="operations-list">
@@ -1885,7 +1961,9 @@ function OperationsCenter({
             ))}
           </div>
         </article>
+        </>}
 
+        {section === "requests" && <>
         <article className="panel operations-panel">
           <PanelHeading eyebrow="30-day check" title="Old connection requests" description="Scouts withdraw these by hand on LinkedIn" icon={<Clock3 size={18} />} />
           <div className="operations-list compact-rows">
@@ -1899,7 +1977,9 @@ function OperationsCenter({
             ))}
           </div>
         </article>
+        </>}
 
+        {section === "crm" && <>
         <article className="panel operations-panel operations-wide">
           <PanelHeading eyebrow="CRM queue" title="Clean lead delivery" description="Only valid emails are queued; bad values never leave the app" icon={<Database size={18} />} />
           <div className="operations-list crm-rows">
@@ -1914,7 +1994,9 @@ function OperationsCenter({
             ))}
           </div>
         </article>
+        </>}
       </section>
+      }
     </div>
   );
 }
