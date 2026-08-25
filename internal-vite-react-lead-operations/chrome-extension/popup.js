@@ -52,15 +52,6 @@ const elements = {
   workflowStepMarker: document.querySelector("#workflow-step-marker"),
   onboardingFreePlan: document.querySelector("#onboarding-free-plan"),
   onboardingPremiumPlan: document.querySelector("#onboarding-premium-plan"),
-  onboardingPremiumCheck: document.querySelector(
-    "#onboarding-premium-check",
-  ),
-  onboardingVerifyPremium: document.querySelector(
-    "#onboarding-verify-premium",
-  ),
-  onboardingPremiumStatus: document.querySelector(
-    "#onboarding-premium-status",
-  ),
   onboardingNext: document.querySelector("#onboarding-next"),
   onboardingBack: document.querySelector("#onboarding-back"),
   onboardingPlanSummary: document.querySelector("#onboarding-plan-summary"),
@@ -77,12 +68,14 @@ const elements = {
   onboardingValidateComment: document.querySelector(
     "#onboarding-validate-comment",
   ),
+  onboardingNoteOption: document.querySelector("#onboarding-note-option"),
+  onboardingIncludeNote: document.querySelector("#onboarding-include-note"),
   validateComment: document.querySelector("#validate-comment"),
+  includeNote: document.querySelector("#include-note"),
   premiumNoteGate: document.querySelector("#premium-note-gate"),
   premiumNoteTitle: document.querySelector("#premium-note-title"),
   premiumNoteStatus: document.querySelector("#premium-note-status"),
   premiumNoteDescription: document.querySelector("#premium-note-description"),
-  verifyPremium: document.querySelector("#verify-premium"),
   checklistCount: document.querySelector("#checklist-count"),
   dailyChecklist: document.querySelector("#daily-checklist"),
   followupCount: document.querySelector("#followup-count"),
@@ -113,9 +106,7 @@ const PLAN_LIMITS = {
 
 let dashboard = null;
 let scoutOperations = null;
-let premiumVerified = false;
 let onboardingSelectedPlan = null;
-let savedPlanIsPremium = false;
 let manualLeadSearchTimer = null;
 let manualLeadRequestId = 0;
 
@@ -162,16 +153,11 @@ elements.checkAcceptedConnections.addEventListener(
   checkAcceptedConnections,
 );
 elements.questionForm.addEventListener("submit", sendQuestion);
-elements.verifyPremium.addEventListener("click", verifyPremiumForNotes);
 elements.onboardingFreePlan.addEventListener("click", () =>
   selectOnboardingPlan("free"),
 );
 elements.onboardingPremiumPlan.addEventListener("click", () =>
   selectOnboardingPlan("premium"),
-);
-elements.onboardingVerifyPremium.addEventListener(
-  "click",
-  verifyOnboardingPremium,
 );
 elements.onboardingNext.addEventListener("click", showOnboardingWorkflowStep);
 elements.onboardingBack.addEventListener("click", () => setOnboardingStep(1));
@@ -187,20 +173,13 @@ elements.connectionDailyLimit.addEventListener("input", () =>
 elements.postEngagements.addEventListener("input", () =>
   updateLimitControls("settings"),
 );
+elements.includeNote.addEventListener("change", syncPremiumNoteGate);
 elements.linkedinPlan.addEventListener("change", () => {
-  if (elements.linkedinPlan.value === "premium" && !savedPlanIsPremium) {
-    premiumVerified = false;
-  }
   applyRecommendedLimits("settings");
   syncPremiumNoteGate();
 });
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local") return;
-  if (changes.linkedInPremium) {
-    premiumVerified = changes.linkedInPremium.newValue === true;
-    syncPremiumNoteGate();
-    syncOnboardingPlanGate();
-  }
   if (changes.autoLeadRunState?.newValue) {
     renderAutoLeadRunState(changes.autoLeadRunState.newValue);
   }
@@ -215,7 +194,6 @@ void hydrate().catch((error) => {
 });
 
 async function hydrate() {
-  await loadPremiumNoteState();
   const auth = await ScoutApi.getAuth();
   if (!auth) {
     showLogin();
@@ -484,16 +462,9 @@ async function saveOnboarding(event) {
     if (!onboardingSelectedPlan) {
       throw new Error("Choose your LinkedIn plan first.");
     }
-    if (premium && !premiumVerified) {
-      setOnboardingStep(1);
-      throw new Error(
-        "Check your Premium plan before you continue.",
-      );
-    }
-    const includeNote = premium && premiumVerified;
+    const includeNote = premium && elements.onboardingIncludeNote.checked;
     const settings = await updateSettings({
       premium,
-      premiumVerified: premium && premiumVerified,
       connectionDailyLimit: Number(elements.onboardingConnectionLimit.value),
       postEngagements: Number(elements.onboardingPostsPerLead.value),
       onboardingCompleted: true,
@@ -924,16 +895,12 @@ async function restartOnboarding() {
       "scouts:resetOnboarding",
       {},
     );
-    await chrome.storage.local.set({
-      linkedInPremium: false,
-      validateBeforeCommenting: false,
-    });
+    await chrome.storage.local.set({ validateBeforeCommenting: false });
     await chrome.storage.local.remove([
+      "linkedInPremium",
       "linkedInPremiumCheckedAt",
       "linkedInPremiumEvidence",
     ]);
-    premiumVerified = false;
-    savedPlanIsPremium = false;
     dashboard = { ...dashboard, settings };
     renderDashboard(dashboard, Date.now());
     showSuccess("Setup reset. Choose your LinkedIn plan to begin.");
@@ -950,15 +917,9 @@ async function saveSettings(event) {
   setBusy(elements.settingsForm, true);
   try {
     const premium = elements.linkedinPlan.value === "premium";
-    if (premium && !premiumVerified) {
-      throw new Error(
-        "Check your Premium plan before you save.",
-      );
-    }
-    const includeNote = premium && premiumVerified;
+    const includeNote = premium && elements.includeNote.checked;
     const settings = await updateSettings({
       premium,
-      premiumVerified: premium && premiumVerified,
       connectionDailyLimit: Number(elements.connectionDailyLimit.value),
       postEngagements: Number(elements.postEngagements.value),
       onboardingCompleted: true,
@@ -984,7 +945,6 @@ function updateSettings(values) {
   return ScoutApi.authenticatedAction("scouts:updateSettings", {
     postEngagements: values.postEngagements,
     linkedinPremium: values.premium,
-    premiumVerified: values.premiumVerified,
     connectionDailyLimit: values.connectionDailyLimit,
     onboardingCompleted: values.onboardingCompleted,
     includeNote: values.includeNote,
@@ -1207,12 +1167,12 @@ function showOnboarding(settings) {
   elements.onboardingView.hidden = false;
   closeManualLeadPicker();
   onboardingSelectedPlan = null;
-  premiumVerified = false;
   elements.onboardingFreePlan.classList.remove("is-selected");
   elements.onboardingPremiumPlan.classList.remove("is-selected");
   elements.onboardingFreePlan.setAttribute("aria-pressed", "false");
   elements.onboardingPremiumPlan.setAttribute("aria-pressed", "false");
-  elements.onboardingPremiumCheck.hidden = true;
+  elements.onboardingNoteOption.hidden = true;
+  elements.onboardingIncludeNote.checked = true;
   elements.onboardingValidateComment.checked = false;
   setOnboardingStep(1);
   syncOnboardingPlanGate();
@@ -1223,9 +1183,8 @@ function showOnboarding(settings) {
 }
 
 function renderSettings(settings) {
-  savedPlanIsPremium = settings.linkedinPremium === true;
-  premiumVerified = settings.linkedinPremiumVerified === true || premiumVerified;
   elements.linkedinPlan.value = settings.linkedinPremium ? "premium" : "free";
+  elements.includeNote.checked = settings.includeNote === true;
   elements.connectionDailyLimit.value = settings.connectionDailyLimit;
   elements.postEngagements.value = settings.postEngagements;
   updateLimitControls("settings");
@@ -1317,7 +1276,6 @@ function clampNumber(value, minimum, maximum) {
 
 function selectOnboardingPlan(plan) {
   onboardingSelectedPlan = plan;
-  premiumVerified = false;
   elements.onboardingFreePlan.classList.toggle("is-selected", plan === "free");
   elements.onboardingPremiumPlan.classList.toggle(
     "is-selected",
@@ -1331,33 +1289,19 @@ function selectOnboardingPlan(plan) {
     "aria-pressed",
     String(plan === "premium"),
   );
-  elements.onboardingPremiumCheck.hidden = plan !== "premium";
-  elements.onboardingPremiumStatus.textContent =
-    plan === "premium" ? "Not checked" : "";
-  elements.onboardingPremiumStatus.classList.remove("is-verified", "is-error");
+  elements.onboardingNoteOption.hidden = plan !== "premium";
+  if (plan !== "premium") elements.onboardingIncludeNote.checked = false;
+  if (plan === "premium") elements.onboardingIncludeNote.checked = true;
   syncOnboardingPlanGate();
   applyRecommendedLimits("onboarding");
 }
 
 function syncOnboardingPlanGate() {
-  const premiumSelected = onboardingSelectedPlan === "premium";
-  const canContinue =
-    onboardingSelectedPlan === "free" || (premiumSelected && premiumVerified);
-  elements.onboardingNext.disabled = !canContinue;
-  if (premiumSelected && premiumVerified) {
-    elements.onboardingPremiumStatus.textContent = "Premium is active";
-    elements.onboardingPremiumStatus.classList.add("is-verified");
-    elements.onboardingPremiumStatus.classList.remove("is-error");
-  }
+  elements.onboardingNext.disabled = !onboardingSelectedPlan;
 }
 
 function showOnboardingWorkflowStep() {
-  if (
-    !onboardingSelectedPlan ||
-    (onboardingSelectedPlan === "premium" && !premiumVerified)
-  ) {
-    return;
-  }
+  if (!onboardingSelectedPlan) return;
   updateLimitControls("onboarding");
   setOnboardingStep(2);
 }
@@ -1370,119 +1314,14 @@ function setOnboardingStep(step) {
   elements.workflowStepMarker.classList.toggle("is-active", !showPlan);
 }
 
-async function verifyOnboardingPremium() {
-  clearMessages();
-  elements.onboardingVerifyPremium.disabled = true;
-  elements.onboardingVerifyPremium.textContent = "Checking LinkedIn...";
-  elements.onboardingPremiumStatus.textContent = "Checking your plan";
-  elements.onboardingPremiumStatus.classList.remove("is-verified", "is-error");
-  try {
-    const result = await checkPremiumEligibility();
-    if (!result.premium) {
-      premiumVerified = false;
-      elements.onboardingPremiumStatus.textContent = "Premium not found";
-      elements.onboardingPremiumStatus.classList.add("is-error");
-      throw new Error(
-        result.evidence ||
-          "Premium is not active on this LinkedIn account.",
-      );
-    }
-    premiumVerified = true;
-    syncOnboardingPlanGate();
-    showSuccess("Premium is active. You can continue.");
-  } catch (error) {
-    syncOnboardingPlanGate();
-    showError(error);
-  } finally {
-    elements.onboardingVerifyPremium.disabled = false;
-    elements.onboardingVerifyPremium.textContent = premiumVerified
-      ? "Check again"
-      : "Try again";
-  }
-}
-
-async function verifyPremiumForNotes() {
-  clearMessages();
-  setPremiumCheckPending(true);
-  try {
-    showSuccess("Checking your Premium plan...");
-    const result = await checkPremiumEligibility();
-    if (!result.premium) {
-      premiumVerified = false;
-      syncPremiumNoteGate();
-      throw new Error(
-        result.evidence ||
-          "Premium is not active on this LinkedIn account. Check the account and try again.",
-      );
-    }
-    premiumVerified = true;
-    syncPremiumNoteGate();
-    showSuccess("Premium is active. Personal connection notes are on.");
-  } catch (error) {
-    showError(error);
-  } finally {
-    setPremiumCheckPending(false);
-  }
-}
-
 function syncPremiumNoteGate() {
   const premiumSelected = elements.linkedinPlan.value === "premium";
-  const unlocked = premiumSelected && premiumVerified;
-  elements.premiumNoteGate.classList.toggle("is-verified", unlocked);
-  elements.verifyPremium.hidden = !premiumSelected;
-  elements.premiumNoteStatus.textContent = unlocked
-    ? "On"
-    : premiumSelected
-      ? "Not checked"
-      : "Off";
-  elements.premiumNoteTitle.textContent = unlocked
-    ? "Personal AI notes are on"
-    : premiumSelected
-      ? "Check your Premium plan"
-      : "Premium only";
-  elements.premiumNoteDescription.textContent = unlocked
-    ? "Each lead’s profile will be read and a unique note will be created before the request is sent."
-    : premiumSelected
-      ? "We need to check that Premium is active before personal notes can be used."
-      : "Choose LinkedIn Premium above to create a personal note for each connection request.";
-  elements.verifyPremium.textContent = premiumVerified
-    ? "Check again"
-    : "Check Premium";
-  elements.saveSettings.disabled = premiumSelected && !premiumVerified;
-}
-
-function setPremiumCheckPending(pending) {
-  elements.verifyPremium.disabled = pending;
-  elements.premiumNoteGate.classList.toggle("is-checking", pending);
-  if (!pending) {
-    syncPremiumNoteGate();
-    return;
-  }
-  elements.premiumNoteStatus.textContent = "Checking";
-  elements.premiumNoteTitle.textContent = "Checking your plan...";
-  elements.premiumNoteDescription.textContent =
-    "This may take a few seconds.";
-  elements.verifyPremium.textContent = "Checking...";
-}
-
-async function loadPremiumNoteState() {
-  const stored = await chrome.storage.local.get(["linkedInPremium"]);
-  premiumVerified = stored.linkedInPremium === true;
-}
-
-async function checkPremiumEligibility() {
-  const response = await chrome.runtime.sendMessage({
-    type: "CHECK_LINKEDIN_PREMIUM",
-  });
-  if (!response?.ok) {
-    throw new Error(
-      response?.error || "We couldn’t check your Premium plan. Try again.",
-    );
-  }
-  return {
-    premium: response.premium === true,
-    evidence: String(response.evidence || "").trim(),
-  };
+  elements.premiumNoteGate.hidden = !premiumSelected;
+  elements.includeNote.disabled = !premiumSelected;
+  if (!premiumSelected) elements.includeNote.checked = false;
+  const noteEnabled = premiumSelected && elements.includeNote.checked;
+  elements.premiumNoteGate.classList.toggle("is-verified", noteEnabled);
+  elements.premiumNoteStatus.textContent = noteEnabled ? "On" : "Off";
 }
 
 function showLogin() {

@@ -196,9 +196,6 @@ const ScoutApi = (() => {
     if (/sign in is required/i.test(message)) {
       return "Please sign in.";
     }
-    if (/premium.*(?:verified|signed-in account)/i.test(message)) {
-      return "Check your Premium plan first.";
-    }
     if (/engagement limit/i.test(message)) {
       return "You’ve used all your likes for today.";
     }

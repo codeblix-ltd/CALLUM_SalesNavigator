@@ -2,7 +2,6 @@ importScripts("config.js");
 importScripts("convex-client.js");
 
 const REFRESH_ALARM = "refresh-lead-total";
-const PREMIUM_URL = "https://www.linkedin.com/premium/my-premium/";
 const CONNECTIONS_URL =
   "https://www.linkedin.com/mynetwork/invite-connect/connections/";
 const SENT_INVITATIONS_URL =
@@ -18,9 +17,7 @@ const CONNECTION_NOTE_MAX_ATTEMPTS = 2;
 const CONNECTION_NOTE_RETRY_DELAY_MS = 1_500;
 const LINKEDIN_TAB_LOAD_TIMEOUT_MS = 90_000;
 const LINKEDIN_TAB_READY_PROBE_MS = 1_000;
-const PREMIUM_CHECK_TTL_MS = 24 * 60 * 60 * 1_000;
 
-let premiumCheckPromise = null;
 let workflowPromise = null;
 let manualConnectionReviewPromise = null;
 let workflowControlRequest = null;
@@ -145,13 +142,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
-  if (message?.type === "CHECK_LINKEDIN_PREMIUM") {
-    verifyLinkedInPremium(null, { force: true })
-      .then((result) => sendResponse({ ok: true, ...result }))
-      .catch((error) => sendResponse({ ok: false, error: cleanError(error) }));
-    return true;
-  }
-
   if (message?.type === "AUTO_WITHDRAW_OLD_REQUESTS") {
     autoWithdrawOldRequests()
       .then((result) => sendResponse({ ok: true, result }))
@@ -163,17 +153,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 async function initializeExtensionDefaults() {
-  const current = await chrome.storage.local.get([
-    "validateBeforeCommenting",
-    "linkedInPremium",
-  ]);
+  const current = await chrome.storage.local.get(["validateBeforeCommenting"]);
   const defaults = {};
   if (current.validateBeforeCommenting === undefined) {
     defaults.validateBeforeCommenting = false;
   }
-  if (current.linkedInPremium === undefined) defaults.linkedInPremium = false;
   if (Object.keys(defaults).length > 0) await chrome.storage.local.set(defaults);
   await chrome.storage.local.remove(["temporaryLeadTest", "invitationNote"]);
+  await chrome.storage.local.remove([
+    "linkedInPremium",
+    "linkedInPremiumCheckedAt",
+    "linkedInPremiumEvidence",
+  ]);
 }
 
 async function startDailyWorkflow(
@@ -2050,15 +2041,6 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
   try {
     throwIfWorkflowControlled(runContext);
     let includeNote = Boolean(settings.includeNote && settings.linkedinPremium);
-    let noteDisabledForEligibility = false;
-    if (includeNote) {
-      const eligibility = await verifyLinkedInPremium(runContext);
-      if (!eligibility.premium) {
-        includeNote = false;
-        noteDisabledForEligibility = true;
-        await disableInvitationNoteSetting(settings).catch(() => {});
-      }
-    }
     throwIfWorkflowControlled(runContext);
 
     const requestedProfileUrl = normalizeLinkedInProfileUrl(lead.linkedinUrl);
@@ -2224,14 +2206,6 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
     });
     throwIfWorkflowControlled(runContext);
     await waitForAutomationContentScript(runContext, tab.id);
-    if (noteDisabledForEligibility) {
-      await sendAutomationMessageToTab(runContext, tab.id, {
-        type: "SHOW_AUTOMATION_STATUS",
-        status:
-          "Premium is not active, so no note will be added.",
-      });
-    }
-
     await ScoutApi.authenticatedAction("scouts:reserveConnectionRequest", {
       leadId: lead.id,
     });
@@ -2382,111 +2356,6 @@ function sendMessageToTab(tabId, message) {
         resolve(response);
       }
     });
-  });
-}
-
-async function verifyLinkedInPremium(
-  runContext = null,
-  { force = false } = {},
-) {
-  if (!force) {
-    const stored = await chrome.storage.local.get([
-      "linkedInPremium",
-      "linkedInPremiumCheckedAt",
-      "linkedInPremiumEvidence",
-    ]);
-    const checkedAt = Number(stored.linkedInPremiumCheckedAt || 0);
-    if (
-      typeof stored.linkedInPremium === "boolean" &&
-      checkedAt > 0 &&
-      Date.now() - checkedAt < PREMIUM_CHECK_TTL_MS
-    ) {
-      return {
-        premium: stored.linkedInPremium,
-        evidence:
-          stored.linkedInPremiumEvidence ||
-          "LinkedIn Premium was checked earlier today.",
-        cached: true,
-      };
-    }
-  }
-  if (premiumCheckPromise) return premiumCheckPromise;
-  premiumCheckPromise = inspectLinkedInPremium(runContext).finally(() => {
-    premiumCheckPromise = null;
-  });
-  return premiumCheckPromise;
-}
-
-async function inspectLinkedInPremium(runContext = null) {
-  const tab = runContext
-    ? await createAutomationTab(runContext, PREMIUM_URL, { active: false })
-    : await chrome.tabs.create({ url: PREMIUM_URL, active: false });
-  if (!tab?.id) throw new Error("We couldn’t open LinkedIn to check Premium.");
-  try {
-    const finalUrl = await waitForStableTabUrl(tab.id);
-    let inspection = {
-      premium: false,
-      evidence: "LinkedIn did not open the Premium page. Try again.",
-    };
-    if (isLinkedInPremiumUrl(finalUrl)) {
-      inspection = {
-        premium: true,
-        evidence:
-          "LinkedIn kept the Premium page open; Premium is active on this account.",
-      };
-    }
-    await chrome.storage.local.set({
-      linkedInPremium: inspection.premium,
-      linkedInPremiumCheckedAt: Date.now(),
-      linkedInPremiumEvidence: inspection.evidence,
-    });
-    return inspection;
-  } finally {
-    if (runContext) clearActiveWorkflowTab(tab.id);
-    await chrome.tabs.remove(tab.id).catch(() => {});
-  }
-}
-
-async function waitForStableTabUrl(tabId, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs;
-  let lastUrl = "";
-  let stableSince = Date.now();
-  while (Date.now() < deadline) {
-    const tab = await chrome.tabs.get(tabId);
-    const currentUrl = tab.pendingUrl || tab.url || "";
-    if (currentUrl !== lastUrl) {
-      lastUrl = currentUrl;
-      stableSince = Date.now();
-    }
-    if (lastUrl && tab.status === "complete" && Date.now() - stableSince >= 2_500) {
-      return lastUrl;
-    }
-    await sleep(250);
-  }
-  if (lastUrl) return lastUrl;
-  throw new Error("LinkedIn didn’t finish the Premium check. Try again.");
-}
-
-function isLinkedInPremiumUrl(value) {
-  try {
-    const url = new URL(String(value));
-    return (
-      /(^|\.)linkedin\.com$/i.test(url.hostname) &&
-      url.pathname.replace(/\/+$/, "") === "/premium/my-premium"
-    );
-  } catch {
-    return false;
-  }
-}
-
-async function disableInvitationNoteSetting(settings) {
-  await ScoutApi.authenticatedAction("scouts:updateSettings", {
-    postEngagements: Number(settings.postEngagements ?? 3),
-    linkedinPremium: Boolean(settings.linkedinPremium),
-    premiumVerified: Boolean(settings.linkedinPremiumVerified),
-    connectionDailyLimit: Number(settings.connectionDailyLimit ?? 20),
-    onboardingCompleted: Boolean(settings.onboardingCompleted),
-    includeNote: false,
   });
 }
 

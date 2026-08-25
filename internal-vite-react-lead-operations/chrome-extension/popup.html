@@ -62,16 +62,6 @@
                 <span><strong>Yes, I use Premium</strong><small>Up to 40 requests and 250 likes a day</small></span>
               </button>
             </div>
-            <section id="onboarding-premium-check" class="premium-validation" hidden>
-              <div>
-                <strong>Check your Premium plan</strong>
-                <p>
-                  We’ll open LinkedIn for a moment to check that Premium is active.
-                </p>
-              </div>
-              <button id="onboarding-verify-premium" class="secondary" type="button">Check my plan</button>
-              <span id="onboarding-premium-status" class="validation-status">Not checked</span>
-            </section>
             <button id="onboarding-next" class="primary" type="button" disabled>Next: daily limits</button>
           </div>
 
@@ -103,6 +93,13 @@
               <span>
                 Let me check each comment before it is posted
                 <small>You can edit or skip the comment.</small>
+              </span>
+            </label>
+            <label id="onboarding-note-option" class="check-row premium-note-option" hidden>
+              <input id="onboarding-include-note" type="checkbox" checked />
+              <span>
+                Add a personal AI note to each request
+                <small>Callum Scout reads the lead’s profile and creates a different note for each lead.</small>
               </span>
             </label>
             <button class="primary" type="submit">Save and continue</button>
@@ -243,20 +240,24 @@
               <small>You can edit or skip the comment.</small>
             </span>
           </label>
-          <section id="premium-note-gate" class="premium-note-gate" aria-labelledby="premium-note-title">
+          <section id="premium-note-gate" class="premium-note-gate" aria-labelledby="premium-note-title" hidden>
             <div class="premium-note-heading">
               <div>
                 <span class="premium-note-kicker">Connection request note</span>
-                <strong id="premium-note-title">Premium only</strong>
+                <strong id="premium-note-title">Personal AI note</strong>
               </div>
-              <span id="premium-note-status" class="premium-note-status">Off</span>
+              <span id="premium-note-status" class="premium-note-status">On</span>
             </div>
             <p id="premium-note-description" class="premium-note-description">
-              Choose LinkedIn Premium above to create a personal note for each connection request.
+              Callum Scout reads each lead’s profile and creates a different note before sending the request.
             </p>
-            <button id="verify-premium" class="secondary premium-verify" type="button" hidden>
-              Check Premium
-            </button>
+            <label class="check-row note-toggle-row">
+              <input id="include-note" type="checkbox" />
+              <span>
+                Add the AI note
+                <small>Turn this off to send Premium requests without a note.</small>
+              </span>
+            </label>
           </section>
           <button id="save-settings" class="primary" type="submit">Save settings</button>
         </form>

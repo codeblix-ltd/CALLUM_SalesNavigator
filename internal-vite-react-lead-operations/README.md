@@ -146,8 +146,8 @@ update instructions.
 The popup shows fresh, engaged, connection-requested, accepted,
 email-collected, and failed counts. It also lets a scout:
 
-- configure daily request and engagement limits; Premium runs read each lead’s
-  visible profile and create a unique connection note automatically;
+- configure daily request and engagement limits; Premium scouts can turn unique
+  AI connection notes on or off without an account check;
 - run the assigned-lead engagement and connection workflow on LinkedIn;
 - open LinkedIn's sent-invitations page.
 
@@ -172,7 +172,7 @@ Run the extension's deterministic production checks without opening LinkedIn
 or making model calls:
 
 ```powershell
-npm run extension:test
+pnpm extension:test
 ```
 
 ## LinkedIn automation boundary
@@ -180,10 +180,12 @@ npm run extension:test
 The extension operates against the visible DOM in the scout's signed-in
 LinkedIn tabs and does not call private LinkedIn network endpoints. It verifies
 the selected profile and invitation recipient before posting comments or
-sending a request. Invitation notes are enabled only after the extension opens
-LinkedIn's Premium status page and confirms that it did not redirect. The note
-is generated from the current lead’s visible headline, role, company, location,
-and About text, then limited to LinkedIn’s 300-character invitation field.
+sending a request. A scout who selects Premium can turn AI invitation notes on
+or off directly. When enabled, the note is generated from the current lead’s
+visible headline, role, company, location, and About text, then limited to
+LinkedIn’s 300-character invitation field. Post engagement checks only the top
+three cards and verifies both the visible age and LinkedIn activity timestamp;
+anything older than 92 days or without a verifiable date is skipped.
 
 ## Import leads
 

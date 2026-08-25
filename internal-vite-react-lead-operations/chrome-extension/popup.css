@@ -181,29 +181,7 @@ input:focus, select:focus, textarea:focus {
 .plan-choice strong, .plan-choice small { display: block; }
 .plan-choice strong { font-size: 11px; }
 .plan-choice small { margin-top: 3px; color: #7f899c; font-size: 9px; line-height: 1.35; }
-.premium-validation {
-  display: grid;
-  gap: 9px;
-  padding: 12px;
-  color: #4d426f;
-  background: #f8f5ff;
-  border: 1px solid #dcd3fb;
-  border-radius: 12px;
-}
-.premium-validation[hidden], .setup-step[hidden] { display: none; }
-.premium-validation strong { font-size: 10px; }
-.premium-validation p { margin: 4px 0 0; color: #766b96; font-size: 9px; line-height: 1.45; }
-.premium-validation .secondary { width: 100%; }
-.validation-status {
-  color: #8a7698;
-  font-size: 8px;
-  font-weight: 900;
-  letter-spacing: .35px;
-  text-align: center;
-  text-transform: uppercase;
-}
-.validation-status.is-verified { color: #25704e; }
-.validation-status.is-error { color: #a44242; }
+.setup-step[hidden], .premium-note-option[hidden] { display: none; }
 .back-button {
   justify-self: start;
   min-height: auto;
@@ -477,6 +455,7 @@ input:focus, select:focus, textarea:focus {
   border: 1px solid #ddd6fa;
   border-radius: 12px;
 }
+.premium-note-gate[hidden] { display: none; }
 .premium-note-gate.is-verified {
   background: #f0faf5;
   border-color: #bfe6d2;
@@ -503,7 +482,7 @@ input:focus, select:focus, textarea:focus {
 }
 .is-verified .premium-note-status { color: #216947; background: #d9f1e5; }
 .premium-note-description { margin: 0; color: #737e93; font-size: 10px; line-height: 1.45; }
-.premium-verify { width: 100%; }
+.note-toggle-row { padding-top: 2px; }
 .field-help { color: #8a93a5; font-size: 9px; font-weight: 500; }
 
 .error, .success {

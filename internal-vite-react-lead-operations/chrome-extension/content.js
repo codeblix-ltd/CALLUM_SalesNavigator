@@ -78,15 +78,6 @@
       return false;
     }
 
-    if (message?.type === "INSPECT_PREMIUM_ACCOUNT") {
-      try {
-        sendResponse({ ok: true, ...inspectPremiumAccount() });
-      } catch (error) {
-        sendResponse({ ok: false, error: cleanError(error) });
-      }
-      return false;
-    }
-
     if (message?.type === "SHOW_AUTOMATION_ERROR") {
       showWorkflowError(message.error || "Something went wrong. Try again.");
       sendResponse({ ok: true });
@@ -106,23 +97,6 @@
     if (areaName !== "local" || !changes.autoLeadRunState?.newValue) return;
     renderAutomationRunSummary(changes.autoLeadRunState.newValue);
   });
-
-  function inspectPremiumAccount() {
-    const premiumRoute =
-      window.location.pathname.replace(/\/+$/, "") === "/premium/my-premium";
-    if (premiumRoute) {
-      return {
-        premium: true,
-        evidence:
-          "LinkedIn kept the Premium page open; Premium is active on this account.",
-      };
-    }
-
-    return {
-      premium: false,
-      evidence: "LinkedIn did not open the Premium page. Try again.",
-    };
-  }
 
   // Inject overlay widget automatically on LinkedIn pages
   if (window.location.hostname.includes("linkedin.com")) {
@@ -488,6 +462,23 @@
       // Scroll post into view
       postEl.scrollIntoView({ behavior: "smooth", block: "center" });
       await sleep(1000);
+
+      // Recheck immediately before any action. The activity ID itself contains
+      // the post creation time, so this remains safe even if LinkedIn changes or
+      // hides the visible timestamp while the feed card is loading.
+      const verifiedAgeDays = extractPostAgeDays(postEl);
+      if (verifiedAgeDays === null || verifiedAgeDays > MAX_POST_AGE_DAYS) {
+        addLog(
+          "Skipped",
+          verifiedAgeDays === null
+            ? `Post ${i + 1} has no date that can be verified`
+            : `Post ${i + 1} is older than 3 months`,
+        );
+        skippedReasons.push(
+          `post ${i + 1}: ${verifiedAgeDays === null ? "date could not be verified" : "older than 3 months"}`,
+        );
+        continue;
+      }
 
       // 1. Click 'Like' button
       const likeResult = await handleLikeButton(postEl);
@@ -1579,11 +1570,48 @@
         (element) => element.textContent?.trim() || "",
       ),
     );
+    const ages = [];
+    const activityAgeDays = extractLinkedInActivityAgeDays(postEl);
+    if (activityAgeDays !== null) ages.push(activityAgeDays);
     for (const value of values) {
       const ageDays = parseLinkedInRelativeAgeDays(value);
-      if (ageDays !== null) return ageDays;
+      if (ageDays !== null) ages.push(ageDays);
     }
-    return null;
+    // Shared cards can expose both an outer and embedded timestamp. Taking the
+    // oldest verified age prevents a recent-looking nested label from allowing
+    // an old activity through.
+    return ages.length > 0 ? Math.max(...ages) : null;
+  }
+
+  function extractLinkedInActivityAgeDays(postEl) {
+    const candidates = [
+      postEl.getAttribute("data-urn") || "",
+      ...Array.from(
+        postEl.querySelectorAll("[data-urn*='urn:li:activity:']"),
+      ).map((element) => element.getAttribute("data-urn") || ""),
+      ...Array.from(
+        postEl.querySelectorAll("a[href*='urn:li:activity:']"),
+      ).map((anchor) => anchor.getAttribute("href") || ""),
+    ];
+    const ages = [];
+    for (const candidate of candidates) {
+      const match = String(candidate).match(/urn:li:activity:(\d{16,})/i);
+      if (!match) continue;
+      try {
+        const createdAt = Number(BigInt(match[1]) >> 22n);
+        const ageDays = (Date.now() - createdAt) / 86_400_000;
+        if (
+          Number.isFinite(ageDays) &&
+          ageDays >= -1 &&
+          ageDays < 365 * 30
+        ) {
+          ages.push(Math.max(0, ageDays));
+        }
+      } catch {
+        // Keep looking for another readable activity ID or visible timestamp.
+      }
+    }
+    return ages.length > 0 ? Math.max(...ages) : null;
   }
 
   function parseLinkedInRelativeAgeDays(value) {
@@ -1595,17 +1623,19 @@
     if (longMatch) {
       return relativeAgeUnitToDays(Number(longMatch[1]), longMatch[2]);
     }
-    const shortMatch = text.match(/\b(\d+)\s*(mo|yr|w|d|h|m)\b/);
+    const shortMatch = text.match(
+      /\b(\d+)\s*(yrs?|years?|y|mos?|months?|mo|wks?|weeks?|w|days?|d|hrs?|hours?|h|mins?|minutes?|m|secs?|seconds?|s)\b/,
+    );
     if (!shortMatch) return null;
     return relativeAgeUnitToDays(Number(shortMatch[1]), shortMatch[2]);
   }
 
   function relativeAgeUnitToDays(amount, unit) {
-    if (["m", "minute", "h", "hour"].includes(unit)) return 0;
-    if (["d", "day"].includes(unit)) return amount;
-    if (["w", "week"].includes(unit)) return amount * 7;
-    if (["mo", "month"].includes(unit)) return amount * 30.4375;
-    if (["yr", "year"].includes(unit)) return amount * 365;
+    if (/^(m|min|mins|minute|minutes|s|sec|secs|second|seconds|h|hr|hrs|hour|hours)$/.test(unit)) return 0;
+    if (/^(d|day|days)$/.test(unit)) return amount;
+    if (/^(w|wk|wks|week|weeks)$/.test(unit)) return amount * 7;
+    if (/^(mo|mos|month|months)$/.test(unit)) return amount * 30.4375;
+    if (/^(y|yr|yrs|year|years)$/.test(unit)) return amount * 365;
     return null;
   }
 

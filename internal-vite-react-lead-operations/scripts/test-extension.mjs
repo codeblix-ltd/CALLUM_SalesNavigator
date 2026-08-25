@@ -54,7 +54,7 @@ const manifest = JSON.parse(manifestSource);
 const helpSource = await readExtensionFile("help.html");
 const helpStyles = await readExtensionFile("help.css");
 
-assert.equal(manifest.version, "0.10.22");
+assert.equal(manifest.version, "0.10.23");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -130,7 +130,7 @@ assert.match(dashboardScript, /originalEmailStatus/);
 assert.match(popupSource, /id="reset-onboarding"/);
 assert.match(popupSource, /id="onboarding-form"/);
 assert.match(popupSource, /Do you have LinkedIn Premium\?/);
-assert.match(popupSource, /Check your Premium plan/i);
+assert.doesNotMatch(popupSource, /Check your Premium plan|Check Premium/i);
 assert.match(popupSource, /id="onboarding-next"[\s\S]*disabled/);
 assert.match(popupSource, /id="connection-daily-limit"/);
 assert.doesNotMatch(popupSource, /id="engagement-daily-limit"/);
@@ -148,23 +148,24 @@ assert.doesNotMatch(
   /Review interval|Wait before connecting/i,
 );
 assert.doesNotMatch(popupSource, /id="invitation-note"/);
-assert.doesNotMatch(popupSource, /id="include-note"|Include a note when you send a request/);
-assert.match(popupSource, /id="verify-premium"/);
-assert.match(popupSource, /Premium only/);
-assert.match(popupSource, /create a personal note for each connection request/);
-assert.match(popupScript, /CHECK_LINKEDIN_PREMIUM/);
-assert.match(popupScript, /verifyPremiumForNotes/);
+assert.match(popupSource, /id="include-note"/);
+assert.match(popupSource, /id="onboarding-include-note"/);
+assert.match(popupSource, /reads the lead’s profile and creates a different note/i);
+assert.doesNotMatch(popupSource, /id="verify-premium"|Premium only/);
+assert.doesNotMatch(popupScript, /CHECK_LINKEDIN_PREMIUM|verifyPremiumForNotes/);
 assert.doesNotMatch(popupScript, /DEFAULT_INVITATION_NOTE/);
 assert.match(popupScript, /onboardingCompleted: true/);
 assert.match(popupScript, /connectionDailyLimit/);
 assert.doesNotMatch(popupScript, /values\.engagementDailyLimit/);
-assert.match(popupScript, /premiumVerified/);
+assert.doesNotMatch(popupScript, /premiumVerified/);
+assert.match(scoutSource, /premiumVerified: v\.optional\(v\.boolean\(\)\)/);
+assert.doesNotMatch(scoutSource, /if \([^\n]*premiumVerified/);
 assert.match(popupScript, /onboardingValidateComment\.checked/);
 const saveOnboardingSource = popupScript.slice(
   popupScript.indexOf("async function saveOnboarding"),
   popupScript.indexOf("async function startAutoLead"),
 );
-assert.match(saveOnboardingSource, /const includeNote = premium && premiumVerified/);
+assert.match(saveOnboardingSource, /const includeNote = premium && elements\.onboardingIncludeNote\.checked/);
 assert.match(saveOnboardingSource, /includeNote,/);
 assert.doesNotMatch(saveOnboardingSource, /includeNote:\s*false/);
 assert.match(popupScript, /stored\.validateBeforeCommenting \?\? false/);
@@ -306,6 +307,41 @@ assert.match(contentSource, /reposted this/);
 assert.match(contentSource, /isPostWithinAgeLimit\(post\)/);
 assert.match(contentSource, /MAX_POST_AGE_DAYS = 92/);
 assert.match(contentSource, /parseLinkedInRelativeAgeDays/);
+assert.match(contentSource, /extractLinkedInActivityAgeDays/);
+assert.match(contentSource, /BigInt\(match\[1\]\) >> 22n/);
+assert.match(contentSource, /verifiedAgeDays/);
+const postAgeContext = {};
+const postAgeHelpers = contentSource.slice(
+  contentSource.indexOf("function extractPostAgeDays"),
+  contentSource.indexOf("function hasPostActions"),
+);
+vm.runInNewContext(postAgeHelpers, postAgeContext);
+assert.equal(postAgeContext.parseLinkedInRelativeAgeDays("5y •"), 1825);
+assert.equal(postAgeContext.parseLinkedInRelativeAgeDays("1yr •"), 365);
+assert.equal(postAgeContext.parseLinkedInRelativeAgeDays("3mo •"), 91.3125);
+assert.equal(postAgeContext.parseLinkedInRelativeAgeDays("2 weeks ago"), 14);
+assert.equal(postAgeContext.parseLinkedInRelativeAgeDays("unknown"), null);
+const nestedAgePost = {
+  getAttribute() {
+    return "";
+  },
+  querySelectorAll(selector) {
+    return selector === ".update-components-actor__sub-description"
+      ? [{ textContent: "1d •" }, { textContent: "5y •" }]
+      : [];
+  },
+};
+assert.equal(postAgeContext.extractPostAgeDays(nestedAgePost), 1825);
+const oldActivityId = String(BigInt(Date.now() - 365 * 86_400_000) << 22n);
+const oldActivityPost = {
+  getAttribute(name) {
+    return name === "data-urn" ? `urn:li:activity:${oldActivityId}` : "";
+  },
+  querySelectorAll() {
+    return [];
+  },
+};
+assert.ok(postAgeContext.extractPostAgeDays(oldActivityPost) > 360);
 assert.match(contentSource, /EXTRACT_CONNECTION_NOTE_PROFILE/);
 assert.match(contentSource, /runConnectionNoteProfileExtraction/);
 assert.match(contentSource, /a\[href\*='\/messaging\/compose\/'\]/);
@@ -321,20 +357,17 @@ const findPostElementsSource = contentSource.slice(
 assert.doesNotMatch(findPostElementsSource, /scrollIntoView/);
 assert.match(contentSource, /CONNECTION_LOOKBACK_DAYS = 183/);
 assert.match(contentSource, /Checking connections from the last 6 months/);
-assert.match(contentSource, /INSPECT_PREMIUM_ACCOUNT/);
-assert.match(contentSource, /LinkedIn kept the Premium page open/);
+assert.doesNotMatch(contentSource, /INSPECT_PREMIUM_ACCOUNT|LinkedIn kept the Premium page open/);
 assert.match(contentSource, /SET_AUTOMATION_CONTEXT/);
 assert.match(contentSource, /markAutomationContext/);
 assert.match(contentStyles, /callum-automation-marker/);
 assert.match(contentStyles, /data-callum-automation/);
-assert.match(backgroundSource, /CHECK_LINKEDIN_PREMIUM/);
+assert.doesNotMatch(backgroundSource, /CHECK_LINKEDIN_PREMIUM/);
 assert.doesNotMatch(backgroundSource, /DRAFT_FIRST_DM|scouts:draftFirstDm/);
 assert.match(backgroundSource, /scouts:draftConnectionNote/);
 assert.match(backgroundSource, /CONNECTION_NOTE_MAX_ATTEMPTS = 2/);
 assert.match(backgroundSource, /The connection request will still continue without a note/);
-assert.match(backgroundSource, /PREMIUM_CHECK_TTL_MS/);
-assert.match(backgroundSource, /force: true/);
-assert.match(backgroundSource, /cached: true/);
+assert.doesNotMatch(backgroundSource, /PREMIUM_CHECK_TTL_MS|force: true|cached: true/);
 assert.match(backgroundSource, /maxProfiles: 1_000/);
 assert.match(backgroundSource, /recordCompletedLeadTiming/);
 assert.match(backgroundSource, /estimatedCompletionAt/);
@@ -356,9 +389,7 @@ assert.match(backgroundSource, /color: "purple"/);
 assert.match(backgroundSource, /assertAutomationTab/);
 assert.match(backgroundSource, /SET_AUTOMATION_CONTEXT/);
 assert.match(backgroundSource, /outside the protected window/);
-assert.match(backgroundSource, /premium\/my-premium/);
-assert.match(backgroundSource, /isLinkedInPremiumUrl\(finalUrl\)/);
-assert.match(backgroundSource, /premium: true/);
+assert.doesNotMatch(backgroundSource, /premium\/my-premium|isLinkedInPremiumUrl\(finalUrl\)/);
 assert.match(backgroundSource, /LINKEDIN_TAB_LOAD_TIMEOUT_MS = 90_000/);
 assert.match(backgroundSource, /type: "GET_PAGE_INFO"/);
 assert.match(backgroundSource, /isExpectedLinkedInPage/);
@@ -696,18 +727,6 @@ const backgroundContext = {
 };
 vm.runInNewContext(backgroundSource, backgroundContext);
 assert.equal(
-  backgroundContext.isLinkedInPremiumUrl(
-    "https://www.linkedin.com/premium/my-premium/?from=extension",
-  ),
-  true,
-);
-assert.equal(
-  backgroundContext.isLinkedInPremiumUrl(
-    "https://www.linkedin.com/premium/survey/?referenceId=test",
-  ),
-  false,
-);
-assert.equal(
   backgroundContext.normalizeLinkedInProfileUrl(
     "https://linkedin.com/in/taylor-example/recent-activity/all/?x=1",
   ),
@@ -916,5 +935,5 @@ assert.equal(stoppedRun.progress, null);
 assert.equal(stoppedRun.specificLeadId, null);
 
 console.log(
-  "Extension checks passed: repost skipping, successful-request reconciliation, isolated automation, resumable controls, Premium detection, and auth recovery are wired correctly.",
+  "Extension checks passed: old-post blocking, AI note controls, successful-request reconciliation, isolated automation, resumable controls, and auth recovery are wired correctly.",
 );

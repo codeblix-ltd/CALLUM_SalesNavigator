@@ -2290,7 +2290,9 @@ export const updateSettings = action({
   args: {
     postEngagements: v.number(),
     linkedinPremium: v.boolean(),
-    premiumVerified: v.boolean(),
+    // Accepted only so already-installed older extension builds can still save
+    // settings after this backend deploy. It is deliberately ignored.
+    premiumVerified: v.optional(v.boolean()),
     connectionDailyLimit: v.number(),
     onboardingCompleted: v.boolean(),
     includeNote: v.boolean(),
@@ -2300,11 +2302,6 @@ export const updateSettings = action({
     const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
     const connectionMaximum = args.linkedinPremium ? 40 : 20;
     const engagementMaximum = args.linkedinPremium ? 250 : 150;
-    if (args.linkedinPremium && !args.premiumVerified) {
-      throw new Error(
-        "LinkedIn Premium must be verified against the signed-in account before it can be selected.",
-      );
-    }
     const connectionDailyLimit = clampInteger(
       args.connectionDailyLimit,
       1,
@@ -2317,8 +2314,7 @@ export const updateSettings = action({
     const settings: ScoutSettings = {
       postEngagements: clampInteger(args.postEngagements, 1, postMaximum),
       linkedinPremium: args.linkedinPremium,
-      linkedinPremiumVerified:
-        args.linkedinPremium && args.premiumVerified,
+      linkedinPremiumVerified: false,
       connectionDailyLimit,
       engagementDailyLimit: engagementMaximum,
       onboardingCompleted: args.onboardingCompleted,
@@ -2336,7 +2332,7 @@ export const updateSettings = action({
          onboarding_completed,
          include_note,
          updated_at
-       ) VALUES ($1, $2, $3, CASE WHEN $3 THEN now() ELSE NULL END, $4, $5, $6, $7, now())`,
+       ) VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, now())`,
       [
         scout.operatorId,
         settings.postEngagements,
