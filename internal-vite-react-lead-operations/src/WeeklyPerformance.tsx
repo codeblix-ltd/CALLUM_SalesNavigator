@@ -3,7 +3,6 @@ import type { ChangeEvent, FormEvent } from "react";
 import { useAction, useMutation } from "convex/react";
 import type { Id } from "../convex/_generated/dataModel";
 import {
-  Camera,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -79,7 +78,6 @@ export function WeeklyPerformance() {
   const [board, setBoard] = useState<WeeklyBoard | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [presentationMode, setPresentationMode] = useState(false);
   const [commentScout, setCommentScout] = useState("all");
   const [editing, setEditing] = useState<WeeklyScout | null>(null);
   const [additionalEmails, setAdditionalEmails] = useState("0");
@@ -105,18 +103,6 @@ export function WeeklyPerformance() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
-
-  useEffect(() => {
-    document.body.classList.toggle("weekly-presentation", presentationMode);
-    const exitWithEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setPresentationMode(false);
-    };
-    window.addEventListener("keydown", exitWithEscape);
-    return () => {
-      document.body.classList.remove("weekly-presentation");
-      window.removeEventListener("keydown", exitWithEscape);
-    };
-  }, [presentationMode]);
 
   const visibleComments = useMemo(
     () => board?.comments.filter((comment) => commentScout === "all" || comment.operatorId === commentScout) ?? [],
@@ -222,7 +208,7 @@ export function WeeklyPerformance() {
   }
 
   return (
-    <div className={`weekly-workspace ${presentationMode ? "is-presenting" : ""}`}>
+    <div className="weekly-workspace">
       <section className="weekly-toolbar weekly-live-controls">
         <div className="week-picker">
           <button onClick={() => moveWeek(-7)} aria-label="Previous week"><ChevronLeft size={16} /></button>
@@ -236,9 +222,6 @@ export function WeeklyPerformance() {
         <div>
           <button className="secondary-button" onClick={() => void refresh()} disabled={loading}>
             <RefreshCw size={15} className={loading ? "spin" : ""} /> Refresh
-          </button>
-          <button className="primary-button" onClick={() => setPresentationMode(true)}>
-            <Camera size={15} /> Screenshot mode
           </button>
         </div>
       </section>
@@ -326,7 +309,6 @@ export function WeeklyPerformance() {
         </>
       )}
 
-      {presentationMode && <button className="exit-presentation" onClick={() => setPresentationMode(false)} aria-label="Exit screenshot mode"><X size={17} /> Exit screenshot mode</button>}
       {editing && (
         <div className="modal-backdrop weekly-live-controls" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !editorBusy) setEditing(null); }}>
           <form className="modal weekly-editor" onSubmit={submitReview}>
