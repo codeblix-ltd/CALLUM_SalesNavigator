@@ -54,7 +54,7 @@ const manifest = JSON.parse(manifestSource);
 const helpSource = await readExtensionFile("help.html");
 const helpStyles = await readExtensionFile("help.css");
 
-assert.equal(manifest.version, "0.10.20");
+assert.equal(manifest.version, "0.10.21");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -245,6 +245,8 @@ assert.match(contentSource, /EXTRACT_CONTACT_INFO/);
 assert.match(contentSource, /INSPECT_CONNECTION_STATUS/);
 assert.match(contentSource, /runConnectionStatusInspection/);
 assert.match(contentSource, /findDirectConnectButton/);
+assert.match(contentSource, /a\[href\*='\/preload\/custom-invite\/'\]/);
+assert.match(contentSource, /isConnectActionLabel\([\s\S]*targetProfileSlug/);
 assert.match(contentSource, /Connection state could not be confirmed\. Skipping safely/);
 assert.match(contentSource, /Waiting for the profile actions to finish loading/);
 assert.match(contentSource, /id="callum-run-summary"/);
@@ -257,6 +259,44 @@ assert.match(contentStyles, /\.callum-run-pause-note/);
 assert.match(contentSource, /a\[href\^='mailto:'\]/);
 assert.match(contentSource, /ContactInfoDetailSection/);
 assert.match(contentSource, /contactDetailsStartedAt/);
+const connectLabelContext = {};
+const personNameHelpers = contentSource.slice(
+  contentSource.indexOf("function normalizePersonName"),
+  contentSource.indexOf("function getLinkedInModalRoots"),
+);
+const connectLabelHelpers = contentSource.slice(
+  contentSource.indexOf("function connectActionLabelMatches"),
+  contentSource.indexOf("function findVisibleConnectionState"),
+);
+vm.runInNewContext(
+  `${personNameHelpers}\n${connectLabelHelpers}`,
+  connectLabelContext,
+);
+assert.equal(
+  connectLabelContext.connectActionLabelMatches("+ Connect", "Gerard Seng"),
+  true,
+);
+assert.equal(
+  connectLabelContext.connectActionLabelMatches(
+    "Connect with Gerard Seng",
+    "Gerard Seng",
+  ),
+  true,
+);
+assert.equal(
+  connectLabelContext.connectActionLabelMatches(
+    "Invite Gerard Seng to connect",
+    "Gerard Seng",
+  ),
+  true,
+);
+assert.equal(
+  connectLabelContext.connectActionLabelMatches(
+    "Connect with Another Person",
+    "Gerard Seng",
+  ),
+  false,
+);
 assert.match(contentSource, /recordPostActivity/);
 assert.match(contentSource, /options\.validateBeforeCommenting/);
 assert.match(contentSource, /feed\/update\/urn:li:activity/);

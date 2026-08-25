@@ -2269,13 +2269,17 @@
     if (!main) return null;
     const candidates = uniqueElements([
       ...main.querySelectorAll(
-        "button, a[role='button'], [role='button']",
+        "button, a[role='button'], [role='button'], a[href*='/preload/custom-invite/']",
       ),
     ]).filter(
       (element) =>
         isElementVisible(element) &&
         !element.closest("aside") &&
-        isConnectActionLabel(element),
+        isConnectActionLabel(
+          element,
+          targetProfileName,
+          getLinkedInProfileSlug(window.location.href),
+        ),
     );
 
     const targetHeading = Array.from(
@@ -2303,15 +2307,45 @@
     );
   }
 
-  function isConnectActionLabel(element) {
-    const label =
-      element.getAttribute("aria-label")?.trim() ||
-      element.textContent?.replace(/\s+/g, " ").trim() ||
+  function connectActionLabelMatches(label, targetProfileName = "") {
+    const normalizedLabel = String(label || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/^[+＋➕]\s*/, "");
+    if (/^connect$/i.test(normalizedLabel)) return true;
+
+    const namedTarget =
+      normalizedLabel.match(/^connect\s+(?:with|to)\s+(.+)$/i)?.[1] ||
+      normalizedLabel.match(/^invite\s+(.+?)\s+to\s+connect$/i)?.[1] ||
       "";
+    return Boolean(
+      targetProfileName &&
+      namedTarget &&
+      personNamesMatch(namedTarget, targetProfileName),
+    );
+  }
+
+  function isConnectActionLabel(
+    element,
+    targetProfileName = "",
+    targetProfileSlug = "",
+  ) {
+    const labels = [
+      element.getAttribute("aria-label"),
+      element.getAttribute("title"),
+      element.textContent,
+    ];
     const href = element.getAttribute("href") || "";
     return (
-      /^(?:connect|invite .+ to connect)$/i.test(label) ||
-      /\/preload\/custom-invite\//i.test(href)
+      labels.some((label) =>
+        connectActionLabelMatches(label, targetProfileName),
+      ) ||
+      (/\/preload\/custom-invite\//i.test(href) &&
+        connectOptionMatchesTarget(
+          element,
+          targetProfileName,
+          targetProfileSlug,
+        ))
     );
   }
 
