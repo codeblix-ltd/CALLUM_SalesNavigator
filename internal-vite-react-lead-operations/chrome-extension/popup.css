@@ -348,8 +348,6 @@ input:focus, select:focus, textarea:focus {
 .tool-item strong { color: #344058; font-size: 10px; }
 .tool-item small { color: #8b95a8; font-size: 8px; line-height: 1.35; }
 .tool-item p { margin: 7px 0; color: #657188; font-size: 9px; line-height: 1.45; }
-.tool-item .first-dm-draft { padding: 8px; border: 1px dashed #d8dfea; border-radius: 8px; background: #fff; }
-.tool-item .first-dm-draft.personalized { border-style: solid; border-color: #bfe5d1; background: #eff9f4; color: #344058; }
 .tool-actions { display: flex; flex-wrap: wrap; gap: 5px; }
 .tool-actions button { min-height: 27px; padding: 0 8px; border: 1px solid #d8dfea; color: #5a49a7; background: white; border-radius: 7px; font-size: 8px; font-weight: 800; }
 .tool-actions button.good { color: #23714f; border-color: #bfe5d1; background: #eff9f4; }
@@ -506,7 +504,6 @@ input:focus, select:focus, textarea:focus {
 .is-verified .premium-note-status { color: #216947; background: #d9f1e5; }
 .premium-note-description { margin: 0; color: #737e93; font-size: 10px; line-height: 1.45; }
 .premium-verify { width: 100%; }
-.invitation-note-field { padding-top: 2px; }
 .field-help { color: #8a93a5; font-size: 9px; font-weight: 500; }
 
 .error, .success {

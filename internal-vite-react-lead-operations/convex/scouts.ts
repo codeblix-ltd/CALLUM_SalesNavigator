@@ -118,20 +118,6 @@ type ScoutOperations = {
     requestedAt: string;
     ageDays: number;
   }>;
-  firstDms: Array<{
-    id: string;
-    leadId: string;
-    fullName: string | null;
-    currentTitle: string | null;
-    companyName: string | null;
-    profileUrl: string;
-    acceptedAt: string | null;
-    dueAt: string;
-    status: string;
-    messageText: string;
-    personalizedAt: string | null;
-    isDue: boolean;
-  }>;
   followups: Array<{
     id: string;
     leadId: string;
@@ -288,21 +274,6 @@ const followupTaskValidator = v.object({
   isDue: v.boolean(),
 });
 
-const firstDmTaskValidator = v.object({
-  id: v.string(),
-  leadId: v.string(),
-  fullName: optionalText,
-  currentTitle: optionalText,
-  companyName: optionalText,
-  profileUrl: v.string(),
-  acceptedAt: optionalText,
-  dueAt: v.string(),
-  status: v.string(),
-  messageText: v.string(),
-  personalizedAt: optionalText,
-  isDue: v.boolean(),
-});
-
 const dailyTaskValidator = v.object({
   taskKey: v.string(),
   label: v.string(),
@@ -326,7 +297,6 @@ const qualificationLeadValidator = v.object({
 const scoutOperationsValidator = v.object({
   generatedAt: v.string(),
   oldRequests: v.array(oldRequestValidator),
-  firstDms: v.array(firstDmTaskValidator),
   followups: v.array(followupTaskValidator),
   dailyTasks: v.array(dailyTaskValidator),
   leadsToCheck: v.array(qualificationLeadValidator),
@@ -1937,15 +1907,11 @@ export const getScoutOperations = action({
              t.id::STRING AS id,
              t.lead_id::STRING AS lead_id,
              l.full_name,
-             l.current_title,
-             l.company_name,
              coalesce(a.resolved_linkedin_url, l.linkedin_url) AS profile_url,
-             a.accepted_at::STRING AS accepted_at,
              t.step::FLOAT8 AS step,
              t.due_at::STRING AS due_at,
              t.status,
              t.message_text,
-             t.personalized_at::STRING AS personalized_at,
              t.due_at <= now() AS is_due
            FROM lead_followup_tasks AS t
            INNER JOIN leads AS l ON l.id = t.lead_id
@@ -2005,15 +1971,11 @@ export const getScoutOperations = action({
       id: String(row.id),
       leadId: String(row.lead_id),
       fullName: nullableString(row.full_name),
-      currentTitle: nullableString(row.current_title),
-      companyName: nullableString(row.company_name),
       profileUrl: normalizeLinkedInProfileUrl(row.profile_url),
-      acceptedAt: nullableString(row.accepted_at),
       step: Number(row.step),
       dueAt: String(row.due_at),
       status: String(row.status),
       messageText: String(row.message_text),
-      personalizedAt: nullableString(row.personalized_at),
       isDue: Boolean(row.is_due),
     }));
 
@@ -2026,22 +1988,7 @@ export const getScoutOperations = action({
         requestedAt: String(row.requested_at),
         ageDays: Number(row.age_days ?? 30),
       })),
-      firstDms: followupTasks
-        .filter((task) => task.step === 1)
-        .map(({ step: _step, ...task }) => task),
-      followups: followupTasks
-        .filter((task) => task.step > 1)
-        .map((task) => ({
-          id: task.id,
-          leadId: task.leadId,
-          fullName: task.fullName,
-          profileUrl: task.profileUrl,
-          step: task.step,
-          dueAt: task.dueAt,
-          status: task.status,
-          messageText: task.messageText,
-          isDue: task.isDue,
-        })),
+      followups: followupTasks,
       dailyTasks: taskResult.rows.map((row) => ({
         taskKey: String(row.task_key),
         label: String(row.label),
@@ -2499,7 +2446,7 @@ export const draftComment = action({
   },
 });
 
-export const draftFirstDm = action({
+export const draftConnectionNote = action({
   args: {
     leadId: v.string(),
     profile: v.object({
@@ -2509,114 +2456,86 @@ export const draftFirstDm = action({
       about: optionalText,
       currentRole: optionalText,
       currentCompany: optionalText,
-      recentActivity: optionalText,
     }),
   },
   returns: v.object({
-    draft: v.string(),
+    note: v.string(),
     threadId: v.string(),
     model: v.string(),
   }),
   handler: async (
     ctx,
     args,
-  ): Promise<{ draft: string; threadId: string; model: string }> => {
+  ): Promise<{ note: string; threadId: string; model: string }> => {
     const scout: ScoutIdentity = await ctx.runQuery(
       internal.scoutIdentity.requireScout,
       {},
     );
     const database = getPool();
-    const taskResult = await database.query(
-      `SELECT
-         t.id::STRING AS task_id,
-         l.first_name,
-         l.full_name,
-         l.current_title,
-         l.company_name,
-         a.status AS assignment_status,
-         a.accepted_at::STRING AS accepted_at
-       FROM lead_followup_tasks AS t
-       INNER JOIN leads AS l ON l.id = t.lead_id
-       INNER JOIN lead_assignments AS a
-         ON a.lead_id = t.lead_id AND a.operator_id = t.operator_id
-       WHERE t.lead_id = $1::UUID
-         AND t.operator_id = $2
-         AND t.step = 1
-         AND t.status = 'pending'
-       LIMIT 1`,
+    const leadResult = await database.query(
+      `SELECT l.first_name, l.full_name, l.current_title, l.company_name
+         FROM lead_assignments AS a
+         INNER JOIN leads AS l ON l.id = a.lead_id
+        WHERE a.lead_id = $1::UUID AND a.operator_id = $2
+        LIMIT 1`,
       [args.leadId, scout.operatorId],
     );
-    const task = taskResult.rows[0];
-    if (!task) throw new Error("This First DM is no longer waiting.");
-    if (
-      !task.accepted_at &&
-      !["accepted", "email_collected"].includes(String(task.assignment_status))
-    ) {
-      throw new Error("This lead has not accepted the connection request yet.");
-    }
+    const lead = leadResult.rows[0];
+    if (!lead) throw new Error("This lead is no longer assigned to this scout.");
 
     const fullName =
-      nullableString(args.profile.fullName) ||
-      nullableString(task.full_name) ||
-      "LinkedIn connection";
+      profileText(args.profile.fullName, 200) ||
+      nullableString(lead.full_name) ||
+      "LinkedIn member";
+    const profile = {
+      fullName,
+      headline: profileText(args.profile.headline, 500),
+      location: profileText(args.profile.location, 200),
+      about: profileText(args.profile.about, 2_000),
+      currentRole:
+        profileText(args.profile.currentRole, 500) ||
+        nullableString(lead.current_title),
+      currentCompany:
+        profileText(args.profile.currentCompany, 500) ||
+        nullableString(lead.company_name),
+    };
+    const profileLines = [
+      ["Name", profile.fullName],
+      ["Headline", profile.headline],
+      ["Location", profile.location],
+      ["Current role", profile.currentRole],
+      ["Current company", profile.currentCompany],
+      ["About", profile.about],
+    ].filter((entry): entry is [string, string] => Boolean(entry[1]));
+    if (profileLines.length < 2) {
+      throw new Error(
+        "There is not enough profile detail to create a personal connection note.",
+      );
+    }
+
     const result = await requestCodexGateway<{
       draft: string;
       threadId: string;
       model: string;
-    }>("/v1/linkedin/first-dm", {
+    }>("/v1/drafts", {
       method: "POST",
       timeoutMs: 125_000,
       body: {
         requestId: randomUUID(),
         scoutId: scout.userId,
-        profile: {
-          firstName:
-            nullableString(task.first_name) || firstNameFrom(fullName) || "there",
-          fullName,
-          headline: nullableString(args.profile.headline),
-          location: nullableString(args.profile.location),
-          about: nullableString(args.profile.about),
-          currentRole:
-            nullableString(args.profile.currentRole) ||
-            nullableString(task.current_title),
-          currentCompany:
-            nullableString(args.profile.currentCompany) ||
-            nullableString(task.company_name),
-          recentActivity: nullableString(args.profile.recentActivity),
-        },
+        postText:
+          "LinkedIn profile summary for a connection request:\n" +
+          profileLines.map(([label, value]) => `${label}: ${value}`).join("\n"),
       },
     });
-    const draft = result.draft.trim();
-    if (!draft || draft.length > 700) {
-      throw new Error("The personalized First DM was empty or too long.");
+    const note = composeConnectionNote(
+      nullableString(lead.first_name) || firstNameFrom(fullName) || "there",
+      result.draft,
+    );
+    if (!note || note.length > 300) {
+      throw new Error("The personal connection note was empty or too long.");
     }
-
-    const client = await database.connect();
-    try {
-      await client.query("BEGIN");
-      const updateResult = await client.query(
-        `UPDATE lead_followup_tasks
-            SET message_text = $3,
-                personalized_at = now(),
-                updated_at = now()
-          WHERE id = $1::UUID AND operator_id = $2 AND status = 'pending'
-        RETURNING id`,
-        [task.task_id, scout.operatorId, draft],
-      );
-      if (!updateResult.rows[0]) {
-        throw new Error("This First DM was completed while the draft was being made.");
-      }
-      await insertEvent(client, args.leadId, scout.operatorId, "first_dm_drafted", {
-        model: result.model,
-      });
-      await client.query("COMMIT");
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally {
-      client.release();
-    }
-    return { ...result, draft };
+    return { note, threadId: result.threadId, model: result.model };
   },
 });
 
@@ -2723,6 +2642,54 @@ async function ensureAcceptedFollowupTasks(operatorId: string) {
 function firstNameFrom(value: unknown) {
   const name = nullableString(value)?.trim();
   return name ? name.split(/\s+/)[0] : null;
+}
+
+function profileText(value: unknown, maximumLength: number) {
+  const text = nullableString(value)
+    ?.replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maximumLength);
+  return text || null;
+}
+
+function composeConnectionNote(firstNameValue: unknown, draftValue: unknown) {
+  const firstName =
+    profileText(firstNameValue, 40)?.replace(/[^\p{L}\p{M}'’-]/gu, "") ||
+    "there";
+  const prefix = `Hi ${firstName}, `;
+  const closing = "I would be glad to connect.";
+  const detailLimit = 300 - prefix.length - closing.length - 2;
+  let detail = String(draftValue ?? "")
+    .replace(/^```(?:text)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .replace(/^(?:comment|message|draft)\s*:\s*/i, "")
+    .replace(/^(["'])\s*/, "")
+    .replace(/\s*(["'])$/, "")
+    .replace(/^hi\s+[^,]+,?\s*/i, "")
+    .replace(/\b(?:thanks|thank you) for connecting\.?/gi, "")
+    .replace(/\b(?:I would|I'd) be (?:glad|happy) to connect\.?/gi, "")
+    .replace(/\s*—\s*/g, ", ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[.!?]+$/, "");
+  detail = detail.replace(
+    /^(Your|The|A|An|Leading|Building|Working|With|Bringing|Managing|Driving|Focusing|Helping|Combining|Developing|Growing|Overseeing)\b/,
+    (opening) => opening.toLowerCase(),
+  );
+  if (detail.length > detailLimit) {
+    const completeSentence = detail
+      .slice(0, detailLimit + 1)
+      .match(/^(.{20,}?[.!?])(?:\s|$)/)?.[1];
+    detail = completeSentence || detail.slice(0, detailLimit);
+    if (!completeSentence) {
+      detail = detail.replace(/\s+\S*$/, "").replace(/[,;:]+$/, "");
+    }
+    detail = detail.replace(/[.!?]+$/, "").trim();
+  }
+  if (!detail) {
+    throw new Error("The AI did not return a usable personal profile detail.");
+  }
+  return `${prefix}${detail}. ${closing}`;
 }
 
 function scoreIcp(titleValue: unknown, companySizeValue: unknown) {

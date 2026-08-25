@@ -146,8 +146,8 @@ update instructions.
 The popup shows fresh, engaged, connection-requested, accepted,
 email-collected, and failed counts. It also lets a scout:
 
-- configure engagement count, pacing, connection delay, and an editable
-  invitation note for LinkedIn Premium accounts;
+- configure daily request and engagement limits; Premium runs read each lead’s
+  visible profile and create a unique connection note automatically;
 - run the assigned-lead engagement and connection workflow on LinkedIn;
 - open LinkedIn's sent-invitations page.
 
@@ -181,7 +181,9 @@ The extension operates against the visible DOM in the scout's signed-in
 LinkedIn tabs and does not call private LinkedIn network endpoints. It verifies
 the selected profile and invitation recipient before posting comments or
 sending a request. Invitation notes are enabled only after the extension opens
-LinkedIn's Premium status page and confirms that it did not redirect.
+LinkedIn's Premium status page and confirms that it did not redirect. The note
+is generated from the current lead’s visible headline, role, company, location,
+and About text, then limited to LinkedIn’s 300-character invitation field.
 
 ## Import leads
 

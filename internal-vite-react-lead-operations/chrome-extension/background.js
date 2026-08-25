@@ -7,8 +7,6 @@ const CONNECTIONS_URL =
   "https://www.linkedin.com/mynetwork/invite-connect/connections/";
 const SENT_INVITATIONS_URL =
   "https://www.linkedin.com/mynetwork/invitation-manager/sent/";
-const DEFAULT_INVITATION_NOTE =
-  "Hi, I saw your profile and would like to connect.";
 const AUTO_LEAD_RUN_STATE_KEY = "autoLeadRunState";
 const AUTOMATION_HOME_URL = chrome.runtime.getURL("automation.html");
 const AUTOMATION_GROUP_TITLE = "CALLUM AUTOMATION";
@@ -16,6 +14,8 @@ const ACTIVE_RUN_STATUSES = new Set(["running", "pausing"]);
 const CONNECTION_COMPLETION_RETRY_DELAYS_MS = [0, 750, 2_000];
 const CONNECTION_STATE_MAX_ATTEMPTS = 3;
 const CONNECTION_STATE_RETRY_DELAYS_MS = [2_000, 4_000];
+const CONNECTION_NOTE_MAX_ATTEMPTS = 2;
+const CONNECTION_NOTE_RETRY_DELAY_MS = 1_500;
 const LINKEDIN_TAB_LOAD_TIMEOUT_MS = 90_000;
 const LINKEDIN_TAB_READY_PROBE_MS = 1_000;
 const PREMIUM_CHECK_TTL_MS = 24 * 60 * 60 * 1_000;
@@ -152,13 +152,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
-  if (message?.type === "DRAFT_FIRST_DM") {
-    draftFirstDmFromProfile(message)
-      .then((result) => sendResponse({ ok: true, result }))
-      .catch((error) => sendResponse({ ok: false, error: cleanError(error) }));
-    return true;
-  }
-
   if (message?.type === "AUTO_WITHDRAW_OLD_REQUESTS") {
     autoWithdrawOldRequests()
       .then((result) => sendResponse({ ok: true, result }))
@@ -172,17 +165,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 async function initializeExtensionDefaults() {
   const current = await chrome.storage.local.get([
     "validateBeforeCommenting",
-    "invitationNote",
     "linkedInPremium",
   ]);
   const defaults = {};
   if (current.validateBeforeCommenting === undefined) {
     defaults.validateBeforeCommenting = false;
   }
-  if (!current.invitationNote) defaults.invitationNote = DEFAULT_INVITATION_NOTE;
   if (current.linkedInPremium === undefined) defaults.linkedInPremium = false;
   if (Object.keys(defaults).length > 0) await chrome.storage.local.set(defaults);
-  await chrome.storage.local.remove("temporaryLeadTest");
+  await chrome.storage.local.remove(["temporaryLeadTest", "invitationNote"]);
 }
 
 async function startDailyWorkflow(
@@ -1486,50 +1477,6 @@ function checkAcceptedConnectionsManually() {
   return manualConnectionReviewPromise;
 }
 
-async function draftFirstDmFromProfile({ leadId, profileUrl, fullName }) {
-  if (!isLeadId(leadId)) throw new Error("This First DM has an invalid lead ID.");
-  if (workflowPromise || manualConnectionReviewPromise) {
-    throw new Error(
-      "Pause today’s automation or accepted-connection check before creating a First DM.",
-    );
-  }
-  const expectedProfileUrl = normalizeLinkedInProfileUrl(profileUrl);
-  const tab = await chrome.tabs.create({ url: expectedProfileUrl, active: false });
-  if (!tab?.id) throw new Error("We couldn’t open this accepted connection.");
-  try {
-    await waitForTabComplete(tab.id, {
-      expectedUrl: expectedProfileUrl,
-      stage: `${String(fullName || "This connection").trim()}'s LinkedIn profile`,
-    });
-    await waitForContentScript(tab.id);
-    const extraction = await sendMessageToTab(tab.id, {
-      type: "EXTRACT_FIRST_DM_PROFILE",
-      options: {
-        expectedProfileUrl,
-        expectedProfileName: String(fullName || "").trim(),
-      },
-    });
-    if (!extraction?.ok) {
-      throw new Error(extraction?.error || "We couldn’t read this profile.");
-    }
-    const profile = extraction.result || {};
-    return ScoutApi.authenticatedAction("scouts:draftFirstDm", {
-      leadId,
-      profile: {
-        fullName: profile.fullName || null,
-        headline: profile.headline || null,
-        location: profile.location || null,
-        about: profile.about || null,
-        currentRole: profile.currentRole || null,
-        currentCompany: profile.currentCompany || null,
-        recentActivity: profile.recentActivity || null,
-      },
-    });
-  } finally {
-    await chrome.tabs.remove(tab.id).catch(() => {});
-  }
-}
-
 async function runManualAcceptedConnectionReview() {
   if (workflowPromise) {
     throw new Error(
@@ -2031,6 +1978,65 @@ async function executeConnectionRequestWithRecovery(
   };
 }
 
+async function createPersonalizedConnectionNoteWithRetry(
+  runContext,
+  tabId,
+  lead,
+  profileUrl,
+) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= CONNECTION_NOTE_MAX_ATTEMPTS; attempt += 1) {
+    throwIfWorkflowControlled(runContext);
+    try {
+      const extraction = await sendAutomationMessageToTab(runContext, tabId, {
+        type: "EXTRACT_CONNECTION_NOTE_PROFILE",
+        options: {
+          expectedProfileUrl: profileUrl,
+          expectedProfileName: String(lead.fullName || "").trim(),
+        },
+      });
+      if (!extraction?.ok) {
+        throw new Error(extraction?.error || "We couldn’t read this profile.");
+      }
+      const profile = extraction.result || {};
+      const result = await ScoutApi.authenticatedAction(
+        "scouts:draftConnectionNote",
+        {
+          leadId: lead.id,
+          profile: {
+            fullName: profile.fullName || null,
+            headline: profile.headline || null,
+            location: profile.location || null,
+            about: profile.about || null,
+            currentRole: profile.currentRole || null,
+            currentCompany: profile.currentCompany || null,
+          },
+        },
+      );
+      const note = String(result?.note || "").trim();
+      if (!note || note.length > 300) {
+        throw new Error("The personal connection note was empty or too long.");
+      }
+      await sendAutomationMessageToTab(runContext, tabId, {
+        type: "SHOW_AUTOMATION_STATUS",
+        status: "Personal connection note ready. Continuing with this lead...",
+      }).catch(() => {});
+      return note;
+    } catch (error) {
+      if (isWorkflowControlError(error)) throw error;
+      lastError = error;
+      if (attempt < CONNECTION_NOTE_MAX_ATTEMPTS) {
+        await sendAutomationMessageToTab(runContext, tabId, {
+          type: "SHOW_AUTOMATION_STATUS",
+          status: "The personal note needs another try. Retrying now...",
+        }).catch(() => {});
+        await sleep(CONNECTION_NOTE_RETRY_DELAY_MS);
+      }
+    }
+  }
+  throw lastError || new Error("The personal connection note could not be created.");
+}
+
 async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
   let workflowTabId = null;
   let connectionReserved = false;
@@ -2058,7 +2064,6 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
     const requestedProfileUrl = normalizeLinkedInProfileUrl(lead.linkedinUrl);
     const localSettings = await chrome.storage.local.get([
       "validateBeforeCommenting",
-      "invitationNote",
     ]);
     const postEngagements = Math.min(
       clampInteger(settings.postEngagements ?? 3, 1, 10),
@@ -2070,12 +2075,8 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
       postEngagements,
       validateBeforeCommenting:
         localSettings.validateBeforeCommenting ?? false,
-      includeNote,
-      invitationNote: String(
-        localSettings.invitationNote || DEFAULT_INVITATION_NOTE,
-      )
-        .trim()
-        .slice(0, 300),
+      includeNote: false,
+      invitationNote: "",
     };
 
     const tab = await createAutomationTab(runContext, requestedProfileUrl);
@@ -2145,6 +2146,31 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
         connectionAlreadyPresent: true,
         engagedCount: 0,
       };
+    }
+    if (includeNote) {
+      try {
+        automationOptions.invitationNote =
+          await createPersonalizedConnectionNoteWithRetry(
+            runContext,
+            tab.id,
+            lead,
+            profileUrl,
+          );
+        automationOptions.includeNote = true;
+      } catch (error) {
+        if (isWorkflowControlError(error)) throw error;
+        includeNote = false;
+        automationOptions.includeNote = false;
+        console.warn(
+          `Personal connection note skipped for ${lead.fullName || lead.id}:`,
+          cleanError(error),
+        );
+        await sendAutomationMessageToTab(runContext, tab.id, {
+          type: "SHOW_AUTOMATION_STATUS",
+          status:
+            "A personal note could not be created after two tries. The connection request will still continue without a note.",
+        }).catch(() => {});
+      }
     }
     let engagementResponse = {
       ok: true,
@@ -2219,7 +2245,7 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
       {
         expectedProfileName: lead.fullName,
         expectedProfileUrl: profileUrl,
-        includeNote,
+        includeNote: automationOptions.includeNote,
         invitationNote: automationOptions.invitationNote,
       },
       progress,
@@ -2263,6 +2289,7 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
       engagedCount: completedEngagementCount,
       engagementSkipped,
       engagementSkipReason,
+      connectionNoteAdded: automationOptions.includeNote,
     };
   } catch (error) {
     const message = cleanError(error);

@@ -54,7 +54,7 @@ const manifest = JSON.parse(manifestSource);
 const helpSource = await readExtensionFile("help.html");
 const helpStyles = await readExtensionFile("help.css");
 
-assert.equal(manifest.version, "0.10.21");
+assert.equal(manifest.version, "0.10.22");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -147,13 +147,14 @@ assert.doesNotMatch(
   popupSource,
   /Review interval|Wait before connecting/i,
 );
-assert.match(popupSource, /id="invitation-note"[\s\S]*maxlength="300"/);
+assert.doesNotMatch(popupSource, /id="invitation-note"/);
 assert.doesNotMatch(popupSource, /id="include-note"|Include a note when you send a request/);
 assert.match(popupSource, /id="verify-premium"/);
 assert.match(popupSource, /Premium only/);
+assert.match(popupSource, /create a personal note for each connection request/);
 assert.match(popupScript, /CHECK_LINKEDIN_PREMIUM/);
-assert.match(popupScript, /verifyPremiumAndUnlockNote/);
-assert.match(popupScript, /invitationNote/);
+assert.match(popupScript, /verifyPremiumForNotes/);
+assert.doesNotMatch(popupScript, /DEFAULT_INVITATION_NOTE/);
 assert.match(popupScript, /onboardingCompleted: true/);
 assert.match(popupScript, /connectionDailyLimit/);
 assert.doesNotMatch(popupScript, /values\.engagementDailyLimit/);
@@ -169,10 +170,8 @@ assert.doesNotMatch(saveOnboardingSource, /includeNote:\s*false/);
 assert.match(popupScript, /stored\.validateBeforeCommenting \?\? false/);
 assert.match(popupScript, /scouts:resetOnboarding/);
 assert.match(popupSource, /id="daily-checklist"/);
-assert.match(popupSource, /id="first-dm-list"/);
-assert.match(popupSource, /Accepted leads ready for a personal first message/);
-assert.match(popupScript, /DRAFT_FIRST_DM/);
-assert.match(popupScript, /Personalize with AI/);
+assert.doesNotMatch(popupSource, /id="first-dm-list"|Accepted leads ready for a personal first message/);
+assert.doesNotMatch(popupScript, /DRAFT_FIRST_DM|Personalize with AI/);
 assert.match(popupSource, /id="followup-list"/);
 assert.match(popupSource, /id="lead-check-list"/);
 assert.match(popupSource, /id="old-request-list"/);
@@ -307,9 +306,11 @@ assert.match(contentSource, /reposted this/);
 assert.match(contentSource, /isPostWithinAgeLimit\(post\)/);
 assert.match(contentSource, /MAX_POST_AGE_DAYS = 92/);
 assert.match(contentSource, /parseLinkedInRelativeAgeDays/);
-assert.match(contentSource, /EXTRACT_FIRST_DM_PROFILE/);
-assert.match(contentSource, /runFirstDmProfileExtraction/);
+assert.match(contentSource, /EXTRACT_CONNECTION_NOTE_PROFILE/);
+assert.match(contentSource, /runConnectionNoteProfileExtraction/);
 assert.match(contentSource, /a\[href\*='\/messaging\/compose\/'\]/);
+assert.match(contentSource, /contactSections[\s\S]*textContent\?\.length/);
+assert.match(contentSource, /topAffiliations/);
 assert.match(contentSource, /no like or comment was added/i);
 assert.match(contentSource, /TOP_POST_SCAN_LIMIT = 3/);
 assert.match(contentSource, /\.slice\(0, TOP_POST_SCAN_LIMIT\)/);
@@ -327,8 +328,10 @@ assert.match(contentSource, /markAutomationContext/);
 assert.match(contentStyles, /callum-automation-marker/);
 assert.match(contentStyles, /data-callum-automation/);
 assert.match(backgroundSource, /CHECK_LINKEDIN_PREMIUM/);
-assert.match(backgroundSource, /DRAFT_FIRST_DM/);
-assert.match(backgroundSource, /scouts:draftFirstDm/);
+assert.doesNotMatch(backgroundSource, /DRAFT_FIRST_DM|scouts:draftFirstDm/);
+assert.match(backgroundSource, /scouts:draftConnectionNote/);
+assert.match(backgroundSource, /CONNECTION_NOTE_MAX_ATTEMPTS = 2/);
+assert.match(backgroundSource, /The connection request will still continue without a note/);
 assert.match(backgroundSource, /PREMIUM_CHECK_TTL_MS/);
 assert.match(backgroundSource, /force: true/);
 assert.match(backgroundSource, /cached: true/);
@@ -382,7 +385,7 @@ assert.match(backgroundSource, /\["paused", "failed"\]/);
 assert.match(backgroundSource, /The previous lead selection was invalid/);
 assert.match(backgroundSource, /The previous run failed before completion/);
 assert.doesNotMatch(backgroundSource, /TEMPORARY_LEAD_TEST_KEY|temporaryTestOnly|claimTemporaryTestLead/);
-assert.match(backgroundSource, /remove\("temporaryLeadTest"\)/);
+assert.match(backgroundSource, /remove\(\["temporaryLeadTest", "invitationNote"\]\)/);
 assert.doesNotMatch(backgroundSource, /if \(!dashboard\.hasSentConnectionRequest\) return empty/);
 assert.match(backgroundSource, /CHECK_ACCEPTED_CONNECTIONS/);
 assert.match(backgroundSource, /forceReview: true/);
@@ -491,9 +494,38 @@ assert.match(clientSource, /error\?\.status === 401/);
 assert.match(clientSource, /refreshOnce/);
 assert.match(clientSource, /clearAuthIfUnchanged/);
 assert.match(scoutSource, /export const getScoutOperations/);
-assert.match(scoutSource, /export const draftFirstDm/);
-assert.match(scoutSource, /firstDms/);
-assert.match(scoutSource, /first_dm_drafted/);
+assert.match(scoutSource, /export const draftConnectionNote/);
+assert.match(scoutSource, /composeConnectionNote/);
+assert.match(scoutSource, /const detailLimit = 300 - prefix\.length - closing\.length - 2/);
+assert.match(scoutSource, /I would be glad to connect\./);
+assert.match(scoutSource, /followups: followupTasks/);
+assert.doesNotMatch(scoutSource, /export const draftFirstDm|firstDms|first_dm_drafted/);
+const connectionNoteHelpers = scoutSource
+  .slice(
+    scoutSource.indexOf("function profileText"),
+    scoutSource.indexOf("function scoreIcp"),
+  )
+  .replace("value: unknown, maximumLength: number", "value, maximumLength")
+  .replace("firstNameValue: unknown, draftValue: unknown", "firstNameValue, draftValue");
+const connectionNoteContext = {
+  nullableString(value) {
+    return typeof value === "string" && value ? value : null;
+  },
+};
+vm.runInNewContext(connectionNoteHelpers, connectionNoteContext);
+const sampleConnectionNote = connectionNoteContext.composeConnectionNote(
+  "Shaun",
+  "Your experience across strategic HR consulting and organisation development gives you a broad view of effective organisations.",
+);
+assert.equal(
+  sampleConnectionNote,
+  "Hi Shaun, your experience across strategic HR consulting and organisation development gives you a broad view of effective organisations. I would be glad to connect.",
+);
+assert.ok(
+  connectionNoteContext.composeConnectionNote("Shaun", "Leadership ".repeat(80))
+    .length <= 300,
+  "Personal connection notes must stay within LinkedIn's 300-character limit",
+);
 assert.match(scoutSource, /a\.accepted_at >= now\(\) - INTERVAL '30 days'/);
 assert.match(scoutSource, /inspect at most 1,000 profiles/);
 assert.match(schemaSource, /personalized_at TIMESTAMPTZ NULL/);

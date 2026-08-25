@@ -48,9 +48,9 @@
       );
     }
 
-    if (message?.type === "EXTRACT_FIRST_DM_PROFILE") {
+    if (message?.type === "EXTRACT_CONNECTION_NOTE_PROFILE") {
       return runVisibleWorkflow(
-        () => runFirstDmProfileExtraction(message.options || {}),
+        () => runConnectionNoteProfileExtraction(message.options || {}),
         sendResponse,
       );
     }
@@ -896,7 +896,7 @@
     };
   }
 
-  async function runFirstDmProfileExtraction(options = {}) {
+  async function runConnectionNoteProfileExtraction(options = {}) {
     initOverlay();
     if (overlayContainer) overlayContainer.style.display = "block";
     const currentProfileUrl = normalizeLinkedInProfileHref(window.location.href);
@@ -904,10 +904,12 @@
       options.expectedProfileUrl,
     );
     if (!currentProfileUrl || currentProfileUrl !== expectedProfileUrl) {
-      throw new Error("LinkedIn opened the wrong profile. No First DM was drafted.");
+      throw new Error(
+        "LinkedIn opened the wrong profile. No connection note was created.",
+      );
     }
 
-    updateStatus("Reading this accepted connection’s profile...");
+    updateStatus("Reading this profile for a personal connection note...");
     const main = await waitForMatch(
       () => document.querySelector("main") || null,
       20_000,
@@ -917,32 +919,30 @@
     const fullName =
       getCurrentProfileName(options.expectedProfileName) ||
       cleanProfileText(options.expectedProfileName, 200);
+    const contactSections = Array.from(main.querySelectorAll("section"))
+      .filter((section) =>
+        Array.from(section.querySelectorAll("a")).some((link) =>
+          /^Contact info$/i.test(link.textContent?.trim() || ""),
+        ),
+      )
+      .sort(
+        (left, right) =>
+          (left.textContent?.length || 0) - (right.textContent?.length || 0),
+      );
     const profileSection =
-      Array.from(main.querySelectorAll("section")).find(
-        (section) =>
-          section.querySelector("a[href*='/messaging/compose/']") ||
-          Array.from(section.querySelectorAll("a")).some((link) =>
-            /^Contact info$/i.test(link.textContent?.trim() || ""),
-          ),
-      ) || main.querySelector("section");
+      contactSections[0] ||
+      Array.from(main.querySelectorAll("section")).find((section) =>
+        section.querySelector("a[href*='/messaging/compose/']"),
+      ) ||
+      main.querySelector("section");
     const topParagraphs = profileSection
       ? uniqueProfileTexts(profileSection.querySelectorAll("p"), 500)
       : [];
-    const headline =
-      topParagraphs.find(
-        (text) =>
-          text !== fullName &&
-          !/^(contact info|message|connect|follow)$/i.test(text) &&
-          !/\b(connections?|followers?|mutual)\b/i.test(text),
-      ) || null;
-    const location =
-      topParagraphs.find(
-        (text) => text !== headline && text !== fullName && text.length <= 200,
-      ) || null;
-
+    const topAffiliations = profileSection
+      ? uniqueProfileTexts(profileSection.querySelectorAll("button p"), 500)
+      : [];
     const aboutSection = findProfileSection(main, "About");
     const experienceSection = findProfileSection(main, "Experience");
-    const activitySection = findProfileSection(main, "Activity");
     const experienceItem = experienceSection?.querySelector(
       "[data-testid^='profile_ExperienceTopLevelSection_'], li",
     );
@@ -950,33 +950,50 @@
       experienceItem?.querySelectorAll("p") || [],
       500,
     );
+    const currentRole = experienceTexts[0] || null;
+    const currentCompany =
+      experienceTexts[1]?.split("·")[0]?.trim() || null;
+    const usableTopParagraphs = topParagraphs.filter(
+      (text) =>
+        text !== fullName &&
+        !/^\s*·?\s*(?:1st|2nd|3rd\+?)?\s*$/i.test(text) &&
+        !/^(contact info|message|connect|follow)$/i.test(text) &&
+        !/\b(connections?|followers?|mutual)\b/i.test(text),
+    );
+    const headline =
+      usableTopParagraphs.find(
+        (text) =>
+          text !== currentCompany && !topAffiliations.includes(text),
+      ) || null;
+    const location =
+      usableTopParagraphs.find(
+        (text) =>
+          text !== headline &&
+          text !== currentCompany &&
+          text.length <= 200 &&
+          !topAffiliations.includes(text) &&
+          /,/.test(text),
+      ) || null;
     const profile = {
       fullName: fullName || null,
       headline,
       location,
       about: extractProfileSectionText(aboutSection, "About", 3_000),
-      currentRole: experienceTexts[0] || null,
-      currentCompany: experienceTexts[1] || null,
-      recentActivity: extractProfileSectionText(
-        activitySection,
-        "Activity",
-        2_000,
-      ),
-      messageUrl: normalizeLinkedInMessageHref(
-        profileSection?.querySelector("a[href*='/messaging/compose/']")?.href,
-      ),
+      currentRole,
+      currentCompany,
     };
     if (
       !profile.headline &&
       !profile.about &&
       !profile.currentRole &&
-      !profile.currentCompany &&
-      !profile.recentActivity
+      !profile.currentCompany
     ) {
-      throw new Error("We couldn’t read enough profile detail for a personal First DM.");
+      throw new Error(
+        "We couldn’t read enough profile detail for a personal connection note.",
+      );
     }
-    addLog("Profile read", fullName || "Accepted connection");
-    updateStatus("Profile read. Creating a personal First DM...");
+    addLog("Profile read", fullName || "Connection request");
+    updateStatus("Profile read. Creating a personal connection note...");
     return profile;
   }
 
@@ -2430,17 +2447,6 @@
       if (!/(^|\.)linkedin\.com$/i.test(url.hostname)) return null;
       const slug = url.pathname.match(/^\/in\/([^/]+)/i)?.[1];
       return slug ? `https://www.linkedin.com/in/${slug}` : null;
-    } catch {
-      return null;
-    }
-  }
-
-  function normalizeLinkedInMessageHref(value) {
-    try {
-      const url = new URL(String(value || ""), window.location.origin);
-      if (!/(^|\.)linkedin\.com$/i.test(url.hostname)) return null;
-      if (!/^\/messaging\/compose\/$/i.test(url.pathname)) return null;
-      return `https://www.linkedin.com${url.pathname}${url.search}`;
     } catch {
       return null;
     }
