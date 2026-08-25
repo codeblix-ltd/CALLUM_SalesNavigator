@@ -54,7 +54,7 @@ const manifest = JSON.parse(manifestSource);
 const helpSource = await readExtensionFile("help.html");
 const helpStyles = await readExtensionFile("help.css");
 
-assert.equal(manifest.version, "0.10.19");
+assert.equal(manifest.version, "0.10.20");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -104,6 +104,7 @@ assert.match(automationSource, /purple group/);
 assert.match(automationSource, /id="pause-run"/);
 assert.match(automationSource, /id="resume-run"/);
 assert.match(automationSource, /id="stop-run"/);
+assert.match(automationSource, /Want to pause\? Simply close this window/);
 assert.match(automationScript, /autoLeadRunState/);
 assert.match(automationScript, /PAUSE_AUTO_LEAD/);
 assert.match(automationScript, /RESUME_AUTO_LEAD/);
@@ -246,6 +247,13 @@ assert.match(contentSource, /runConnectionStatusInspection/);
 assert.match(contentSource, /findDirectConnectButton/);
 assert.match(contentSource, /Connection state could not be confirmed\. Skipping safely/);
 assert.match(contentSource, /Waiting for the profile actions to finish loading/);
+assert.match(contentSource, /id="callum-run-summary"/);
+assert.match(contentSource, /Estimated finish/);
+assert.match(contentSource, /Simply close this purple automation window/);
+assert.match(contentSource, /formatAutomationRunEta/);
+assert.match(contentSource, /estimatedCompletionAt/);
+assert.match(contentStyles, /#callum-scout-overlay\.callum-automation-context[\s\S]*top: 58px/);
+assert.match(contentStyles, /\.callum-run-pause-note/);
 assert.match(contentSource, /a\[href\^='mailto:'\]/);
 assert.match(contentSource, /ContactInfoDetailSection/);
 assert.match(contentSource, /contactDetailsStartedAt/);

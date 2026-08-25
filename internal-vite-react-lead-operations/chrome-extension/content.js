@@ -6,6 +6,8 @@
 
   let overlayContainer = null;
   let automationContext = null;
+  let latestAutomationRunState = null;
+  let automationEtaRefreshTimer = null;
   const MAX_POST_AGE_DAYS = 92;
   const TOP_POST_SCAN_LIMIT = 3;
   const CONNECTION_LOOKBACK_DAYS = 183;
@@ -100,6 +102,11 @@
     }
   });
 
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== "local" || !changes.autoLeadRunState?.newValue) return;
+    renderAutomationRunSummary(changes.autoLeadRunState.newValue);
+  });
+
   function inspectPremiumAccount() {
     const premiumRoute =
       window.location.pathname.replace(/\/+$/, "") === "/premium/my-premium";
@@ -138,6 +145,14 @@
         <button class="callum-close" id="callum-close-btn" title="Close">&times;</button>
       </div>
       <div class="callum-body">
+        <section id="callum-run-summary" class="callum-run-summary" hidden aria-live="polite">
+          <div class="callum-run-summary-heading">
+            <span>Estimated finish</span>
+            <strong id="callum-run-finish">Calculating...</strong>
+          </div>
+          <p id="callum-run-remaining">The time will appear after the first lead finishes.</p>
+          <p class="callum-run-pause-note"><strong>Want to pause?</strong> Simply close this purple automation window. Callum Scout will pause safely.</p>
+        </section>
         <div class="callum-status-row">
           <div class="callum-pulse"></div>
           <span id="callum-status-text">Ready</span>
@@ -151,6 +166,10 @@
     document.body.appendChild(overlayContainer);
     if (automationContext) applyAutomationOverlayStyle();
 
+    document.getElementById("callum-close-btn")?.setAttribute(
+      "title",
+      "Hide this panel",
+    );
     document.getElementById("callum-close-btn")?.addEventListener("click", () => {
       overlayContainer.style.display = "none";
     });
@@ -178,13 +197,115 @@
     marker.querySelector(".callum-automation-marker-text").textContent =
       `${automationContext.groupTitle} · PROTECTED TAB`;
     initOverlay();
+    if (overlayContainer) overlayContainer.style.display = "block";
     applyAutomationOverlayStyle();
+    startAutomationEtaRefresh();
+    void loadAutomationRunSummary();
   }
 
   function applyAutomationOverlayStyle() {
     overlayContainer?.classList.add("callum-automation-context");
     const badge = overlayContainer?.querySelector(".callum-badge");
     if (badge) badge.textContent = "Automation";
+  }
+
+  async function loadAutomationRunSummary() {
+    try {
+      const stored = await chrome.storage.local.get("autoLeadRunState");
+      renderAutomationRunSummary(stored.autoLeadRunState);
+    } catch {
+      // A navigation can invalidate the extension context before this read finishes.
+    }
+  }
+
+  function startAutomationEtaRefresh() {
+    if (automationEtaRefreshTimer) return;
+    automationEtaRefreshTimer = window.setInterval(() => {
+      if (latestAutomationRunState) {
+        renderAutomationRunSummary(latestAutomationRunState);
+      }
+    }, 30_000);
+  }
+
+  function renderAutomationRunSummary(state) {
+    if (!automationContext || !state) return;
+    if (
+      automationContext.runId &&
+      state.runId &&
+      String(state.runId) !== automationContext.runId
+    ) {
+      return;
+    }
+    latestAutomationRunState = state;
+    initOverlay();
+    const summary = document.getElementById("callum-run-summary");
+    const finish = document.getElementById("callum-run-finish");
+    const remaining = document.getElementById("callum-run-remaining");
+    if (!summary || !finish || !remaining) return;
+
+    const eta = formatAutomationRunEta(state.progress || {}, state.status);
+    summary.hidden = false;
+    summary.dataset.status = String(state.status || "idle");
+    finish.textContent = eta.finish;
+    remaining.textContent = eta.detail;
+  }
+
+  function formatAutomationRunEta(progress, status) {
+    const target = Number(progress.targetRequests || 0);
+    if (status === "completed") {
+      return { finish: "Complete", detail: "Today’s run is complete." };
+    }
+    if (target <= 0) {
+      return {
+        finish: "Preparing...",
+        detail: "The time will appear after today’s lead target is ready.",
+      };
+    }
+    const averageMs = Number(progress.averageLeadDurationMs || 0);
+    if (averageMs <= 0) {
+      return {
+        finish: "Calculating...",
+        detail: "The time will appear after the first lead finishes.",
+      };
+    }
+
+    const storedRemainingMs = Math.max(
+      0,
+      Number(progress.estimatedRemainingMs || 0),
+    );
+    if (status === "paused" || status === "failed") {
+      return {
+        finish: status === "paused" ? "Paused" : "Needs attention",
+        detail: `About ${formatAutomationEtaDuration(storedRemainingMs)} left after resume.`,
+      };
+    }
+
+    const completionAt = Number(progress.estimatedCompletionAt || 0);
+    const remainingMs = completionAt > 0
+      ? Math.max(0, completionAt - Date.now())
+      : storedRemainingMs;
+    if (remainingMs < 30_000) {
+      return { finish: "Very soon", detail: "The run is almost finished." };
+    }
+    const finishAt = completionAt > 0 ? completionAt : Date.now() + remainingMs;
+    const clock = new Date(finishAt).toLocaleTimeString([], {
+      hour: "numeric",
+      minute: "2-digit",
+    });
+    return {
+      finish: clock,
+      detail: `About ${formatAutomationEtaDuration(remainingMs)} left.`,
+    };
+  }
+
+  function formatAutomationEtaDuration(milliseconds) {
+    const minutes = Math.max(1, Math.ceil(milliseconds / 60_000));
+    if (minutes < 60) return `${minutes} min`;
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+    return remainingMinutes > 0
+      ? `${hours} hr ${remainingMinutes} min`
+      : `${hours} hr`;
   }
 
   function updateStatus(text) {

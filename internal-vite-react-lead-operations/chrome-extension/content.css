@@ -39,8 +39,11 @@ html[data-callum-automation="true"]::after {
 }
 
 #callum-scout-overlay.callum-automation-context {
+  top: 58px;
+  bottom: auto;
   border-color: #7c61e4;
   box-shadow: 0 14px 38px rgba(56, 38, 130, 0.24);
+  animation-name: callum-slide-down;
 }
 
 #callum-scout-overlay.callum-automation-context .callum-header {
@@ -67,6 +70,17 @@ html[data-callum-automation="true"]::after {
 @keyframes callum-slide-up {
   from {
     transform: translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes callum-slide-down {
+  from {
+    transform: translateY(-14px);
     opacity: 0;
   }
   to {
@@ -120,6 +134,60 @@ html[data-callum-automation="true"]::after {
   padding: 16px;
   max-height: 480px;
   overflow-y: auto;
+}
+
+.callum-run-summary[hidden] {
+  display: none;
+}
+
+.callum-run-summary {
+  padding: 12px;
+  margin-bottom: 14px;
+  color: #2d1d6d;
+  background: #f5f1ff;
+  border: 1px solid #d8cdfb;
+  border-radius: 9px;
+}
+
+.callum-run-summary-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.callum-run-summary-heading span {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.45px;
+  text-transform: uppercase;
+}
+
+.callum-run-summary-heading strong {
+  color: #5131bd;
+  font-size: 17px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+#callum-run-remaining {
+  margin: 5px 0 0;
+  color: #5f5481;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.callum-run-pause-note {
+  padding-top: 9px;
+  margin: 9px 0 0;
+  color: #4b4268;
+  border-top: 1px solid #ddd4f8;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.callum-run-pause-note strong {
+  color: #2d1d6d;
 }
 
 .callum-status-row {
