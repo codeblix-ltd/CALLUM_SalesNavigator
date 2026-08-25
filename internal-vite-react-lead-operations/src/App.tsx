@@ -544,6 +544,13 @@ function Dashboard({ adminName }: { adminName: string }) {
   const [nicheAssignmentsLoading, setNicheAssignmentsLoading] = useState(false);
   const [scoutAdminError, setScoutAdminError] = useState("");
 
+  const navigateTo = useCallback((nextView: View) => {
+    setView(nextView);
+    window.requestAnimationFrame(() => {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+  }, []);
+
   const refreshOverview = useCallback(async () => {
     setAnalyticsLoading(true);
     setAnalyticsError("");
@@ -947,35 +954,35 @@ function Dashboard({ adminName }: { adminName: string }) {
         </a>
         <p className="sidebar-label">Workspace</p>
         <nav className="main-nav" aria-label="Workspace views">
-          <button className={view === "overview" ? "active" : ""} onClick={() => setView("overview")} aria-current={view === "overview" ? "page" : undefined}><BarChart3 size={17} /> Overview</button>
+          <button className={view === "overview" ? "active" : ""} onClick={() => navigateTo("overview")} aria-current={view === "overview" ? "page" : undefined}><BarChart3 size={17} /> Overview</button>
           <SidebarSectionNav ariaLabel="Overview sections" items={[
-            { label: "Summary", icon: <BarChart3 size={15} />, active: view === "overview" && overviewSection === "summary", onClick: () => { setOverviewSection("summary"); setView("overview"); } },
-            { label: "Trends", icon: <TrendingUp size={15} />, active: view === "overview" && overviewSection === "trends", onClick: () => { setOverviewSection("trends"); setView("overview"); } },
-            { label: "Scout performance", icon: <Users size={15} />, active: view === "overview" && overviewSection === "scouts", onClick: () => { setOverviewSection("scouts"); setView("overview"); } },
-            { label: "Activity & coverage", icon: <Activity size={15} />, active: view === "overview" && overviewSection === "activity", onClick: () => { setOverviewSection("activity"); setView("overview"); } },
+            { label: "Summary", icon: <BarChart3 size={15} />, active: view === "overview" && overviewSection === "summary", onClick: () => { setOverviewSection("summary"); navigateTo("overview"); } },
+            { label: "Trends", icon: <TrendingUp size={15} />, active: view === "overview" && overviewSection === "trends", onClick: () => { setOverviewSection("trends"); navigateTo("overview"); } },
+            { label: "Scout performance", icon: <Users size={15} />, active: view === "overview" && overviewSection === "scouts", onClick: () => { setOverviewSection("scouts"); navigateTo("overview"); } },
+            { label: "Activity & coverage", icon: <Activity size={15} />, active: view === "overview" && overviewSection === "activity", onClick: () => { setOverviewSection("activity"); navigateTo("overview"); } },
           ]} />
-          <button className={view === "scouts" ? "active" : ""} onClick={() => setView("scouts")} aria-current={view === "scouts" ? "page" : undefined}><Users size={17} /> Scouts</button>
+          <button className={view === "scouts" ? "active" : ""} onClick={() => navigateTo("scouts")} aria-current={view === "scouts" ? "page" : undefined}><Users size={17} /> Scouts</button>
           <SidebarSectionNav ariaLabel="Scout administration sections" items={[
-            { label: "Accounts & capacity", icon: <UserCheck size={15} />, active: view === "scouts" && scoutsSection === "accounts", onClick: () => { setScoutsSection("accounts"); setView("scouts"); } },
-            { label: "Lead allocation", icon: <Target size={15} />, active: view === "scouts" && scoutsSection === "allocation", onClick: () => { setScoutsSection("allocation"); setView("scouts"); } },
-            { label: "Scout directory", icon: <Users size={15} />, active: view === "scouts" && scoutsSection === "directory", onClick: () => { setScoutsSection("directory"); setView("scouts"); } },
+            { label: "Accounts & capacity", icon: <UserCheck size={15} />, active: view === "scouts" && scoutsSection === "accounts", onClick: () => { setScoutsSection("accounts"); navigateTo("scouts"); } },
+            { label: "Lead allocation", icon: <Target size={15} />, active: view === "scouts" && scoutsSection === "allocation", onClick: () => { setScoutsSection("allocation"); navigateTo("scouts"); } },
+            { label: "Scout directory", icon: <Users size={15} />, active: view === "scouts" && scoutsSection === "directory", onClick: () => { setScoutsSection("directory"); navigateTo("scouts"); } },
           ]} />
-          <button className={view === "weekly" ? "active" : ""} onClick={() => setView("weekly")} aria-current={view === "weekly" ? "page" : undefined}><TrendingUp size={17} /> Weekly board</button>
+          <button className={view === "weekly" ? "active" : ""} onClick={() => navigateTo("weekly")} aria-current={view === "weekly" ? "page" : undefined}><TrendingUp size={17} /> Weekly board</button>
           <SidebarSectionNav ariaLabel="Weekly board sections" items={[
-            { label: "Leaderboard", icon: <TrendingUp size={15} />, active: view === "weekly" && weeklySection === "board", onClick: () => { setWeeklySection("board"); setView("weekly"); } },
-            { label: "Comments & posts", icon: <Send size={15} />, active: view === "weekly" && weeklySection === "comments", onClick: () => { setWeeklySection("comments"); setView("weekly"); } },
+            { label: "Leaderboard", icon: <TrendingUp size={15} />, active: view === "weekly" && weeklySection === "board", onClick: () => { setWeeklySection("board"); navigateTo("weekly"); } },
+            { label: "Comments & posts", icon: <Send size={15} />, active: view === "weekly" && weeklySection === "comments", onClick: () => { setWeeklySection("comments"); navigateTo("weekly"); } },
           ]} />
-          <button className={view === "operations" ? "active" : ""} onClick={() => setView("operations")} aria-current={view === "operations" ? "page" : undefined}><Activity size={17} /> Daily work</button>
+          <button className={view === "operations" ? "active" : ""} onClick={() => navigateTo("operations")} aria-current={view === "operations" ? "page" : undefined}><Activity size={17} /> Daily work</button>
           <SidebarSectionNav ariaLabel="Daily work sections" items={[
-            { label: "Work summary", icon: <BarChart3 size={15} />, active: view === "operations" && operationsSection === "summary", onClick: () => { setOperationsSection("summary"); setView("operations"); } },
-            { label: "Scout questions", icon: <Users size={15} />, active: view === "operations" && operationsSection === "questions", onClick: () => { setOperationsSection("questions"); setView("operations"); } },
-            { label: "Old requests", icon: <Clock3 size={15} />, active: view === "operations" && operationsSection === "requests", onClick: () => { setOperationsSection("requests"); setView("operations"); } },
-            { label: "CRM queue", icon: <Database size={15} />, active: view === "operations" && operationsSection === "crm", onClick: () => { setOperationsSection("crm"); setView("operations"); } },
+            { label: "Work summary", icon: <BarChart3 size={15} />, active: view === "operations" && operationsSection === "summary", onClick: () => { setOperationsSection("summary"); navigateTo("operations"); } },
+            { label: "Scout questions", icon: <Users size={15} />, active: view === "operations" && operationsSection === "questions", onClick: () => { setOperationsSection("questions"); navigateTo("operations"); } },
+            { label: "Old requests", icon: <Clock3 size={15} />, active: view === "operations" && operationsSection === "requests", onClick: () => { setOperationsSection("requests"); navigateTo("operations"); } },
+            { label: "CRM queue", icon: <Database size={15} />, active: view === "operations" && operationsSection === "crm", onClick: () => { setOperationsSection("crm"); navigateTo("operations"); } },
           ]} />
-          <button className={view === "leads" ? "active" : ""} onClick={() => { setDirectorySection("leads"); setView("leads"); }} aria-current={view === "leads" ? "page" : undefined}><Database size={17} /> Lead directory</button>
+          <button className={view === "leads" ? "active" : ""} onClick={() => { setDirectorySection("leads"); navigateTo("leads"); }} aria-current={view === "leads" ? "page" : undefined}><Database size={17} /> Lead directory</button>
           <SidebarSectionNav ariaLabel="Lead directory sections" items={[
-            { label: "All leads", icon: <Database size={15} />, active: view === "leads" && directorySection === "leads", onClick: () => { setDirectorySection("leads"); setView("leads"); } },
-            { label: "Veblen exclusions", icon: <ShieldCheck size={15} />, active: view === "leads" && directorySection === "veblen", onClick: () => { setDirectorySection("veblen"); setView("leads"); } },
+            { label: "All leads", icon: <Database size={15} />, active: view === "leads" && directorySection === "leads", onClick: () => { setDirectorySection("leads"); navigateTo("leads"); } },
+            { label: "Veblen exclusions", icon: <ShieldCheck size={15} />, active: view === "leads" && directorySection === "veblen", onClick: () => { setDirectorySection("veblen"); navigateTo("leads"); } },
           ]} />
         </nav>
         <div className="sidebar-spacer" />
@@ -1616,7 +1623,7 @@ function Overview({
   const [scoutPage, setScoutPage] = useState(1);
   const [activityPage, setActivityPage] = useState(1);
   const [postActivityPage, setPostActivityPage] = useState(1);
-  const liveHistoryRef = useRef<HTMLElement | null>(null);
+  const scoutSnapshotRef = useRef<HTMLDivElement | null>(null);
 
   const scoutPageCount = Math.max(1, Math.ceil(scouts.length / SCOUT_PAGE_SIZE));
   const visibleScoutPage = Math.min(scoutPage, scoutPageCount);
@@ -1654,12 +1661,12 @@ function Overview({
   }, [postActivityPage, postActivityPageCount]);
 
   useEffect(() => {
-    if (!selectedScout) return;
+    if (!selectedScout || section !== "scouts") return;
     const frame = window.requestAnimationFrame(() => {
-      liveHistoryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      scoutSnapshotRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [selectedScout]);
+  }, [section, selectedScout]);
 
   if (!analytics && loading) {
     return <div className="overview-loading"><RefreshCw size={22} className="spin" /> Building the team overview…</div>;
@@ -1789,15 +1796,17 @@ function Overview({
           </div>
         )}
         {activeScout && (
-          <ScoutDetail
-            scout={activeScout}
-            activity={scoutActivity}
-            assignedLeads={scoutAssignedLeads}
-            assignedLeadsLoading={scoutAssignedLeadsLoading}
-            assignedLeadsError={scoutAssignedLeadsError}
-            onAssignedLeadsPageChange={onScoutAssignedLeadsPageChange}
-            close={() => setSelectedScout(null)}
-          />
+          <div className="scout-snapshot-anchor" ref={scoutSnapshotRef}>
+            <ScoutDetail
+              scout={activeScout}
+              activity={scoutActivity}
+              assignedLeads={scoutAssignedLeads}
+              assignedLeadsLoading={scoutAssignedLeadsLoading}
+              assignedLeadsError={scoutAssignedLeadsError}
+              onAssignedLeadsPageChange={onScoutAssignedLeadsPageChange}
+              close={() => setSelectedScout(null)}
+            />
+          </div>
         )}
         {analytics.scoutsTruncated && <p className="table-note">Only the first 500 scout accounts are included.</p>}
       </section>
@@ -1805,7 +1814,7 @@ function Overview({
 
       {section === "activity" && <>
       <section className="activity-inventory-grid">
-        <article className="panel activity-panel" ref={liveHistoryRef}>
+        <article className="panel activity-panel">
           <PanelHeading
             eyebrow="Live history"
             title={selectedScout ? `${activeScout?.username ?? selectedScout} activity` : "Recent team activity"}

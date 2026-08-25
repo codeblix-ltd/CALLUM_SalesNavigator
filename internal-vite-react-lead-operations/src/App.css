@@ -242,6 +242,7 @@ main { max-width: 1320px; margin: 0 auto; padding: 40px 24px 76px; }
 .compact-empty { min-height: 180px !important; border-top: 1px solid #e1e5ed; }
 
 .scout-detail { margin: 16px; padding: 18px; background: #f8f7fe; border: 1px solid #dfd9f4; border-radius: 14px; }
+.scout-snapshot-anchor { scroll-margin-block: 90px; }
 .scout-detail-head { display: flex; justify-content: space-between; align-items: flex-start; }
 .scout-detail-head .eyebrow { margin-bottom: 3px; font-size: 8px; }
 .scout-detail-head h3 { margin: 0; color: #282f49; font: 800 17px "Manrope", sans-serif; }

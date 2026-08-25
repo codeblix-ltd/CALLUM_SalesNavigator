@@ -624,6 +624,9 @@ assert.match(adminAppSource, /section=\{overviewSection\}/);
 assert.match(adminAppSource, /section=\{scoutsSection\}/);
 assert.match(adminAppSource, /section=\{weeklySection\}/);
 assert.match(adminAppSource, /section=\{operationsSection\}/);
+assert.match(adminAppSource, /window\.scrollTo\(\{ top: 0, behavior: "smooth" \}\)/);
+assert.match(adminAppSource, /scoutSnapshotRef\.current\?\.scrollIntoView\(\{ behavior: "smooth", block: "center" \}\)/);
+assert.ok(!adminAppSource.includes("liveHistoryRef"));
 assert.match(adminAppSource, /Veblen member · excluded/);
 
 const storedAuth = {
