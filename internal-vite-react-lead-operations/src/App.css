@@ -568,6 +568,23 @@ footer span { display: flex; align-items: center; gap: 6px; }
 .weekly-edit-button { display: inline-flex; align-items: center; gap: 4px; padding: 6px 8px; color: #5d49b7; background: #f1effc; border: 1px solid #ded8f3; border-radius: 7px; font-size: 8px; font-weight: 800; }
 .weekly-score-note { min-height: 43px; padding: 0 22px; display: flex; align-items: center; gap: 7px; color: #7b8495; background: #fbfbfd; font-size: 8px; }
 .weekly-score-note svg { color: #4aa77d; flex: 0 0 auto; }
+.weekly-scoring-modal { width: min(100%, 640px); }
+.weekly-scoring-modal > p:not(.eyebrow):not(.weekly-scoring-footnote) { margin-bottom: 15px; line-height: 1.55; }
+.weekly-score-formula { padding: 12px; display: grid; gap: 7px; background: #f3f0ff; border: 1px solid #ddd5f4; border-radius: 10px; }
+.weekly-score-formula span { color: #6750c4; text-transform: uppercase; letter-spacing: 1px; font-size: 8px; font-weight: 800; }
+.weekly-score-formula code { color: #3d326f; font: 700 11px/1.5 "Manrope", sans-serif; white-space: normal; }
+.weekly-scoring-grid { margin-top: 14px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.weekly-scoring-grid > div { padding: 11px; display: grid; gap: 4px; background: #fafbfe; border: 1px solid #e1e5ee; border-radius: 9px; }
+.weekly-scoring-grid strong { color: #5e46c4; font: 800 13px "Manrope", sans-serif; }
+.weekly-scoring-grid span { color: #69758a; font-size: 9px; line-height: 1.4; }
+.weekly-scoring-example { margin-top: 13px; padding: 12px; display: grid; gap: 4px; color: #4c3d78; background: #fffaf0; border: 1px solid #ebd9a8; border-radius: 9px; font-size: 10px; line-height: 1.45; }
+.weekly-scoring-example strong { color: #8a6b1e; text-transform: uppercase; letter-spacing: .8px; font-size: 8px; }
+.weekly-scoring-example small { color: #987e43; font-size: 8px; }
+.weekly-scoring-rules { margin-top: 14px; padding-top: 13px; border-top: 1px solid #e4e7ef; }
+.weekly-scoring-rules p { margin: 0 0 7px; color: #303950; font-size: 10px; }
+.weekly-scoring-rules ul { margin: 0; padding-left: 17px; display: grid; gap: 6px; color: #69758a; font-size: 9px; line-height: 1.45; }
+.weekly-scoring-rules b { color: #4b5670; }
+.weekly-scoring-footnote { margin: 14px 0 0 !important; padding: 10px 11px; color: #7f6c40; background: #fffdf6; border: 1px solid #eee2c0; border-radius: 8px; font-size: 8px !important; line-height: 1.45 !important; }
 .weekly-comments-panel { padding: 22px; }
 .weekly-comments-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .weekly-comments-head p { margin: 0 0 3px; color: #755fcc; text-transform: uppercase; letter-spacing: 1px; font-size: 8px; font-weight: 800; }
@@ -724,4 +741,5 @@ footer span { display: flex; align-items: center; gap: 6px; }
   .weekly-share-intro h2 { font-size: 23px; }
   .weekly-editor-grid { grid-template-columns: 1fr; }
   .weekly-kpi-row { grid-template-columns: minmax(0, 1fr) 82px 30px; }
+  .weekly-scoring-grid { grid-template-columns: 1fr; }
 }

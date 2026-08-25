@@ -719,6 +719,7 @@ export const getWeeklyPerformance = action({
       const additionalEmails = review?.additionalEmails ?? 0;
       const totalEmails = trackedEmails + additionalEmails;
       const managerPoints = review?.managerPoints ?? 0;
+      const extraKpiPoints = (review?.extraKpis ?? []).reduce((total, item) => total + item.value, 0);
       return {
         rank: 0,
         username: scout.username,
@@ -738,7 +739,7 @@ export const getWeeklyPerformance = action({
         evidenceUrl: review?.evidenceUrl ?? null,
         evidenceFileName: review?.evidenceFileName ?? null,
         lastActive: nullableString(activity.last_active),
-        score: Math.max(0, comments + likes + requests * 2 + accepted * 4 + totalEmails * 5 + managerPoints),
+        score: Math.max(0, comments + likes + requests * 2 + accepted * 4 + totalEmails * 5 + extraKpiPoints + managerPoints),
       };
     });
     scouts.sort((left, right) =>
@@ -756,7 +757,7 @@ export const getWeeklyPerformance = action({
       weekEnd,
       weekLabel: weekLabel(weekStart, weekEnd),
       generatedAt: new Date().toISOString(),
-      scoreFormula: "1 point per comment or like, 2 per request, 4 per acceptance, 5 per email, plus manager points",
+      scoreFormula: "1 point per comment, like, or other KPI result; 2 per request; 4 per acceptance; 5 per email; plus manager points",
       scouts,
       comments: commentResult.rows.map((row) => ({
         id: String(row.id),

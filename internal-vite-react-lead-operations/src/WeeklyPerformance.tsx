@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  CircleHelp,
   ExternalLink,
   Image,
   Mail,
@@ -87,6 +88,7 @@ export function WeeklyPerformance() {
   const [evidenceFile, setEvidenceFile] = useState<File | null>(null);
   const [editorBusy, setEditorBusy] = useState(false);
   const [editorError, setEditorError] = useState("");
+  const [scoringOpen, setScoringOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -223,6 +225,9 @@ export function WeeklyPerformance() {
           <button className="secondary-button" onClick={() => void refresh()} disabled={loading}>
             <RefreshCw size={15} className={loading ? "spin" : ""} /> Refresh
           </button>
+          <button className="secondary-button" onClick={() => setScoringOpen(true)}>
+            <CircleHelp size={15} /> How scoring works
+          </button>
         </div>
       </section>
 
@@ -285,7 +290,7 @@ export function WeeklyPerformance() {
                 </tbody>
               </table>
             </div>
-            <div className="weekly-score-note"><CheckCircle2 size={13} /><span>Score: {board.scoreFormula}. Manager points should only represent results supported by notes or evidence.</span></div>
+            <div className="weekly-score-note"><CheckCircle2 size={13} /><span>Score: {board.scoreFormula}. Other KPI counts are included at 1 point each. Manager points should only represent results supported by notes or evidence.</span></div>
           </section>
 
           <section className="panel weekly-comments-panel weekly-live-controls">
@@ -327,7 +332,7 @@ export function WeeklyPerformance() {
               <label>Manager points<input type="number" min="-100" max="100" step="1" value={managerPoints} onChange={(event) => setManagerPoints(event.target.value)} /></label>
             </div>
             <div className="weekly-kpi-editor">
-              <div><strong>Other KPIs</strong><button type="button" onClick={() => setExtraKpis((items) => items.length >= 6 ? items : [...items, { label: "", value: "0" }])} disabled={extraKpis.length >= 6}><Plus size={13} /> Add KPI</button></div>
+              <div><strong>Other KPIs · 1 point per result</strong><button type="button" onClick={() => setExtraKpis((items) => items.length >= 6 ? items : [...items, { label: "", value: "0" }])} disabled={extraKpis.length >= 6}><Plus size={13} /> Add KPI</button></div>
               {extraKpis.length === 0 && <p>No extra KPIs added yet.</p>}
               {extraKpis.map((item, index) => (
                 <div className="weekly-kpi-row" key={index}>
@@ -347,6 +352,29 @@ export function WeeklyPerformance() {
             {editorError && <p className="weekly-editor-error">{editorError}</p>}
             <div className="weekly-editor-actions"><button type="button" className="secondary-button" onClick={() => setEditing(null)} disabled={editorBusy}>Cancel</button><button type="submit" className="primary-button" disabled={editorBusy}>{editorBusy ? <RefreshCw size={15} className="spin" /> : <Save size={15} />}{editorBusy ? "Saving…" : "Save weekly results"}</button></div>
           </form>
+        </div>
+      )}
+      {scoringOpen && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setScoringOpen(false); }}>
+          <section className="modal weekly-scoring-modal" role="dialog" aria-modal="true" aria-labelledby="weekly-scoring-title">
+            <button type="button" className="modal-close" onClick={() => setScoringOpen(false)} aria-label="Close scoring guide"><X size={16} /></button>
+            <p className="eyebrow">Weekly board guide</p>
+            <h2 id="weekly-scoring-title">How the KPI score works</h2>
+            <p>The ranking is a transparent points summary for this week. LinkedIn activity is read automatically; managers can add results that the extension cannot see.</p>
+            <div className="weekly-score-formula"><span>Formula</span><code>comments + likes + (requests × 2) + (accepted × 4) + (emails × 5) + other KPI results + manager points</code></div>
+            <div className="weekly-scoring-grid">
+              <div><strong>1 point</strong><span>Each comment, like, or counted result in an Other KPI row.</span></div>
+              <div><strong>2 points</strong><span>Each connection request recorded in the selected week.</span></div>
+              <div><strong>4 points</strong><span>Each accepted connection recorded in the selected week.</span></div>
+              <div><strong>5 points</strong><span>Each email, including tracked emails and Additional emails.</span></div>
+            </div>
+            <div className="weekly-scoring-example"><strong>Example</strong><span>3 comments + 2 likes + 4 requests + 1 acceptance + 2 emails + 3 other results = <b>30 points</b>.</span><small>3 + 2 + 8 + 4 + 10 + 3 = 30</small></div>
+            <div className="weekly-scoring-rules">
+              <p><strong>What managers can edit</strong></p>
+              <ul><li><b>Additional emails:</b> added to the automatic email count and scored at 5 points each.</li><li><b>Other KPIs:</b> enter a label and count; each counted result adds 1 point.</li><li><b>Manager points:</b> an explicit adjustment from −100 to +100. Add a note or screenshot when using it.</li></ul>
+            </div>
+            <p className="weekly-scoring-footnote">This board is evidence for a weekly review, not a standalone termination decision. Check quality, replies, meetings, and context before acting.</p>
+          </section>
         </div>
       )}
     </div>
