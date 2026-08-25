@@ -162,6 +162,44 @@ CREATE INDEX IF NOT EXISTS leads_search_text_trgm_idx
 CREATE INDEX IF NOT EXISTS leads_by_work_email_status
   ON leads (work_email_status, work_email_checked_at, id);
 
+-- Veblen community members are maintained from the authenticated member
+-- directory. Leads remain in the inventory for auditability, but every live
+-- assignment and automation queue excludes matching LinkedIn URLs or emails.
+CREATE TABLE IF NOT EXISTS veblen_members (
+  member_id STRING PRIMARY KEY,
+  name STRING NOT NULL,
+  email STRING NULL,
+  normalized_email STRING NULL,
+  linkedin_url STRING NULL,
+  profile_url STRING NOT NULL,
+  email_public BOOL NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS veblen_members_by_linkedin_url
+  ON veblen_members (linkedin_url)
+  WHERE linkedin_url IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS veblen_members_by_normalized_email
+  ON veblen_members (normalized_email)
+  WHERE normalized_email IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS veblen_lead_matches (
+  lead_id UUID PRIMARY KEY REFERENCES leads(id) ON DELETE CASCADE,
+  member_id STRING NOT NULL REFERENCES veblen_members(member_id) ON DELETE CASCADE,
+  match_type STRING NOT NULL CHECK (match_type IN ('LinkedIn', 'Email', 'LinkedIn + email')),
+  matched_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS veblen_lead_matches_by_member_id
+  ON veblen_lead_matches (member_id, lead_id);
+
+CREATE INDEX IF NOT EXISTS leads_by_linkedin_url
+  ON leads (linkedin_url)
+  WHERE linkedin_url <> '';
+
 CREATE TABLE IF NOT EXISTS lead_niches (
   niche STRING NOT NULL,
   lead_id UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,

@@ -16,6 +16,7 @@
     "db:migrate-scout-sheet": "node --env-file=.env.local scripts/migrate-scout-sheet-leads.mjs",
     "scout:create": "node --env-file=.env.local scripts/create-scout.mjs",
     "leads:assign": "node --env-file=.env.local scripts/assign-leads.mjs",
+    "veblen:sync": "node --env-file=.env.local scripts/sync-veblen-members.mjs",
     "setup:secrets": "node scripts/configure-secrets.mjs",
     "extension:config": "node scripts/sync-extension-config.mjs",
     "extension:test": "node scripts/test-extension.mjs",

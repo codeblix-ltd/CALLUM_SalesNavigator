@@ -7,6 +7,7 @@ import { internal } from "./_generated/api";
 import { action } from "./_generated/server";
 import { requestCodexGateway } from "./lib/codexGateway";
 import { getPool } from "./lib/cockroach";
+import { upsertVeblenLeadMatches, veblenMatchExistsSql } from "./lib/veblenExclusions";
 
 type ScoutIdentity = {
   userId: string;
@@ -578,6 +579,7 @@ export const claimNextLead = action({
            INNER JOIN leads AS l ON l.id = a.lead_id
            WHERE a.operator_id = $1
              AND a.lead_id = $2::UUID
+             AND NOT (${veblenMatchExistsSql("l", "a")})
              AND (
                a.status IN ('viewed', 'engaged', 'failed', 'connected', 'connection_requested', 'accepted', 'email_collected')
                OR (a.status = 'assigned' AND a.qualification_status <> 'not_qualified')
@@ -629,7 +631,7 @@ export const claimNextLead = action({
       ? `AND a.lead_id NOT IN (${exclusionPlaceholders.join(", ")})`
       : "";
     const selectedExclusionSql = exclusionPlaceholders.length
-      ? `AND lead_id NOT IN (${exclusionPlaceholders.join(", ")})`
+      ? `AND a.lead_id NOT IN (${exclusionPlaceholders.join(", ")})`
       : "";
     const queryParameters = [scout.operatorId, ...excludedLeadIds];
     const database = getPool();
@@ -646,6 +648,7 @@ export const claimNextLead = action({
          INNER JOIN leads AS l ON l.id = a.lead_id
          WHERE a.operator_id = $1
            AND a.status IN ('viewed', 'engaged')
+           AND NOT (${veblenMatchExistsSql("l", "a")})
            ${existingExclusionSql}
          ORDER BY a.updated_at DESC, a.lead_id
          LIMIT 1`,
@@ -658,19 +661,21 @@ export const claimNextLead = action({
     try {
       await client.query("BEGIN");
       const queueStatusSql = args.failedOnly
-        ? "status = 'failed'"
-        : `(status IN ('viewed', 'engaged')
-              OR (status = 'assigned' AND qualification_status <> 'not_qualified'))`;
+        ? "a.status = 'failed'"
+        : `(a.status IN ('viewed', 'engaged')
+              OR (a.status = 'assigned' AND a.qualification_status <> 'not_qualified'))`;
       const selected = await client.query(
-        `SELECT lead_id, status
-           FROM lead_assignments
-          WHERE operator_id = $1
+        `SELECT a.lead_id, a.status
+           FROM lead_assignments AS a
+           INNER JOIN leads AS l ON l.id = a.lead_id
+          WHERE a.operator_id = $1
             AND (${queueStatusSql})
+            AND NOT (${veblenMatchExistsSql("l", "a")})
             ${selectedExclusionSql}
           ORDER BY
-            assigned_at DESC,
-            CASE WHEN qualification_status = 'qualified' THEN 0 ELSE 1 END,
-            lead_id
+            a.assigned_at DESC,
+            CASE WHEN a.qualification_status = 'qualified' THEN 0 ELSE 1 END,
+            a.lead_id
           LIMIT 1
           FOR UPDATE SKIP LOCKED`,
         queryParameters,
@@ -721,24 +726,44 @@ export const recordProfileVisit = action({
     const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
     const resolvedUrl = normalizeLinkedInProfileUrl(args.resolvedLinkedinUrl);
     const database = getPool();
-    const result = await database.query(
-      `UPDATE lead_assignments
-          SET resolved_linkedin_url = $3,
-              status = CASE WHEN status = 'assigned' THEN 'viewed' ELSE status END,
-              viewed_at = coalesce(viewed_at, now()),
-              updated_at = now()
-        WHERE lead_id = $1::UUID
-          AND operator_id = $2
-          AND status IN ('assigned', 'viewed', 'engaged', 'failed', 'connected', 'connection_requested', 'accepted', 'email_collected')
-      RETURNING lead_id`,
-      [args.leadId, scout.operatorId, resolvedUrl],
-    );
-    if (!result.rows[0]) throw new Error("This lead is not available to visit.");
-    await database.query(
-      `INSERT INTO lead_assignment_events (lead_id, operator_id, event_type, details)
-       VALUES ($1::UUID, $2, 'profile_visited', $3::JSONB)`,
-      [args.leadId, scout.operatorId, JSON.stringify({ profileUrl: resolvedUrl })],
-    );
+    const client = await database.connect();
+    let excludedAsVeblenMember = false;
+    try {
+      await client.query("BEGIN");
+      const result = await client.query(
+        `UPDATE lead_assignments
+            SET resolved_linkedin_url = $3,
+                status = CASE WHEN status = 'assigned' THEN 'viewed' ELSE status END,
+                viewed_at = coalesce(viewed_at, now()),
+                updated_at = now()
+          WHERE lead_id = $1::UUID
+            AND operator_id = $2
+            AND status IN ('assigned', 'viewed', 'engaged', 'failed', 'connected', 'connection_requested', 'accepted', 'email_collected')
+        RETURNING lead_id`,
+        [args.leadId, scout.operatorId, resolvedUrl],
+      );
+      if (!result.rows[0]) throw new Error("This lead is not available to visit.");
+      await upsertVeblenLeadMatches(client, [args.leadId]);
+      const exclusion = await client.query(
+        "SELECT 1 FROM veblen_lead_matches WHERE lead_id = $1::UUID",
+        [args.leadId],
+      );
+      excludedAsVeblenMember = Boolean(exclusion.rows[0]);
+      await client.query(
+        `INSERT INTO lead_assignment_events (lead_id, operator_id, event_type, details)
+         VALUES ($1::UUID, $2, 'profile_visited', $3::JSONB)`,
+        [args.leadId, scout.operatorId, JSON.stringify({ profileUrl: resolvedUrl })],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+    if (excludedAsVeblenMember) {
+      throw new Error("This lead is a Veblen member and has been excluded from scout work.");
+    }
     return null;
   },
 });
@@ -823,6 +848,7 @@ export const recordKnownConnection = action({
           WHERE lead_id = $1::UUID AND operator_id = $2`,
         [args.leadId, scout.operatorId, nextStatus, profileUrl],
       );
+      await upsertVeblenLeadMatches(client, [args.leadId]);
       await insertEvent(
         client,
         args.leadId,
@@ -1701,6 +1727,7 @@ export const recordContactInfo = action({
           WHERE lead_id = $1::UUID AND operator_id = $2`,
         [args.leadId, scout.operatorId, nextStatus, profileUrl, finalEmail],
       );
+      await upsertVeblenLeadMatches(client, [args.leadId]);
       await insertEvent(
         client,
         args.leadId,

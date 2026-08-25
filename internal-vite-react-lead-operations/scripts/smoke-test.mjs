@@ -20,6 +20,7 @@ const listUnassignedLeads = makeFunctionReference("adminScouts:listUnassignedLea
 const createScout = makeFunctionReference("adminScouts:createScout");
 const assignLeadCount = makeFunctionReference("adminScouts:assignLeadCount");
 const setScoutActive = makeFunctionReference("adminScouts:setScoutActive");
+const getVeblenMatches = makeFunctionReference("adminVeblenMembers:getMatches");
 const listWorkEmailNiches = makeFunctionReference("workEmails:listQueueNiches");
 const listWorkEmailQueue = makeFunctionReference("workEmails:listQueue");
 const saveWorkEmailResult = makeFunctionReference("workEmails:saveResult");
@@ -89,6 +90,11 @@ const weeklyPerformance = await client.action(getWeeklyPerformance, {
   weekStart: smokeDate.toISOString().slice(0, 10),
 });
 const nicheAssignments = await client.action(getNicheAssignments, {});
+const veblenMatches = await client.action(getVeblenMatches, {
+  search: null,
+  page: 1,
+  pageSize: 10,
+});
 const firstNiche = nicheAssignments.niches[0] ?? null;
 const unassignedLeads = firstNiche
   ? await client.action(listUnassignedLeads, {
@@ -157,7 +163,13 @@ if (
   !Array.isArray(weeklyPerformance.comments) ||
   weeklyPerformance.scouts.some((scout, index) => scout.rank !== index + 1) ||
   !Array.isArray(nicheAssignments.niches) ||
-  nicheAssignments.niches.some((niche) => niche.total !== niche.assigned + niche.unassigned) ||
+  nicheAssignments.niches.some((niche) => niche.total !== niche.assigned + niche.excluded + niche.unassigned) ||
+  veblenMatches.members < 1 ||
+  veblenMatches.memberLinkedInUrls > veblenMatches.members ||
+  veblenMatches.memberEmails > veblenMatches.members ||
+  veblenMatches.total !== veblenMatches.matchedLeads ||
+  veblenMatches.assignedMatches > veblenMatches.matchedLeads ||
+  veblenMatches.matches.length < 1 ||
   (unassignedLeads !== null && unassignedLeads.leads.length > 10) ||
   !duplicateScoutRejected ||
   !invalidQuantityRejected ||

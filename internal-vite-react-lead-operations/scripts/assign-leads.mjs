@@ -59,8 +59,15 @@ async function run() {
         `INSERT INTO lead_assignments (lead_id, operator_id, status)
          SELECT ln.lead_id, $2, 'assigned'
            FROM lead_niches AS ln
+           INNER JOIN leads AS l ON l.id = ln.lead_id
            LEFT JOIN lead_assignments AS existing ON existing.lead_id = ln.lead_id
-          WHERE ln.niche = $1 AND existing.lead_id IS NULL
+          WHERE ln.niche = $1
+            AND existing.lead_id IS NULL
+            AND NOT EXISTS (
+              SELECT 1
+                FROM veblen_lead_matches AS vx
+               WHERE vx.lead_id = l.id
+            )
           ORDER BY ln.lead_id
           LIMIT $3
          ON CONFLICT (lead_id) DO NOTHING
@@ -78,10 +85,17 @@ async function run() {
     }
 
     const remainingResult = await pool.query(
-      `SELECT count(*)::FLOAT8 AS count
+       `SELECT count(*)::FLOAT8 AS count
          FROM lead_niches AS ln
+         INNER JOIN leads AS l ON l.id = ln.lead_id
          LEFT JOIN lead_assignments AS a ON a.lead_id = ln.lead_id
-        WHERE ln.niche = $1 AND a.lead_id IS NULL`,
+        WHERE ln.niche = $1
+          AND a.lead_id IS NULL
+          AND NOT EXISTS (
+            SELECT 1
+              FROM veblen_lead_matches AS vx
+             WHERE vx.lead_id = l.id
+          )`,
       [niche],
     );
     const remaining = Number(remainingResult.rows[0]?.count ?? 0);

@@ -596,8 +596,10 @@ assert.match(scoutSource, /existingExclusionSql/);
 assert.match(scoutSource, /selectedExclusionSql/);
 assert.match(
   scoutSource,
-  /status IN \('viewed', 'engaged'\)[\s\S]*?status = 'assigned'[\s\S]*?ORDER BY\s+assigned_at DESC,\s+CASE WHEN qualification_status = 'qualified' THEN 0 ELSE 1 END,\s+lead_id/,
+  /a\.status IN \('viewed', 'engaged'\)[\s\S]*?a\.status = 'assigned'[\s\S]*?ORDER BY\s+a\.assigned_at DESC,\s+CASE WHEN a\.qualification_status = 'qualified' THEN 0 ELSE 1 END,\s+a\.lead_id/,
 );
+assert.match(scoutSource, /veblenMatchExistsSql/);
+assert.match(scoutSource, /This lead is a Veblen member and has been excluded from scout work/);
 assert.match(backgroundSource, /resumeExisting: retryFailedOnly \? false : resumeExistingLead/);
 assert.match(backgroundSource, /resumeExistingLead = false/);
 assert.match(adminSource, /export const exportCleanCsv/);
@@ -606,6 +608,10 @@ assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS lead_followup_tasks/);
 assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS operator_daily_tasks/);
 assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS scout_escalations/);
 assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS crm_delivery_outbox/);
+assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS veblen_members/);
+assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS veblen_lead_matches/);
+assert.match(adminAppSource, /Veblen exclusions/);
+assert.match(adminAppSource, /Veblen member · excluded/);
 
 const storedAuth = {
   callumScoutAuth: {

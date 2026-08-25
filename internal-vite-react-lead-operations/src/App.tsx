@@ -40,7 +40,7 @@ import { WeeklyPerformance } from "./WeeklyPerformance";
 import "./App.css";
 
 type Range = "7d" | "30d" | "90d" | "all";
-type View = "overview" | "scouts" | "weekly" | "operations" | "leads";
+type View = "overview" | "scouts" | "veblen" | "weekly" | "operations" | "leads";
 type ScoutSort = "activity" | "emails" | "accepted" | "assigned" | "name";
 type EmailAvailability = "present" | "missing";
 type EmailValidation = "validated" | "not_validated";
@@ -168,6 +168,7 @@ type NicheAssignment = {
   name: string;
   total: number;
   assigned: number;
+  excluded: number;
   unassigned: number;
 };
 
@@ -198,6 +199,7 @@ type HermesUploadLead = {
   currentCompany: string | null;
   dateFound: string;
   sourceRow: number;
+  excludedAsVeblenMember: boolean;
 };
 
 type HermesUploadScout = {
@@ -223,6 +225,36 @@ type HermesAssignmentResult = {
     username: string;
     count: number;
   }>;
+};
+
+type VeblenMatch = {
+  leadId: string;
+  leadName: string | null;
+  leadLinkedInUrl: string;
+  originalEmail: string | null;
+  workEmail: string | null;
+  memberId: string;
+  memberName: string;
+  memberEmail: string | null;
+  memberLinkedInUrl: string | null;
+  memberProfileUrl: string;
+  matchType: string;
+  assignedTo: string | null;
+  assignmentStatus: string | null;
+};
+
+type VeblenMatchesPage = {
+  generatedAt: string;
+  members: number;
+  memberLinkedInUrls: number;
+  memberEmails: number;
+  matchedLeads: number;
+  assignedMatches: number;
+  total: number;
+  page: number;
+  pageSize: number;
+  pageCount: number;
+  matches: VeblenMatch[];
 };
 
 type Lead = {
@@ -442,6 +474,7 @@ function Dashboard({ adminName }: { adminName: string }) {
   const assignLeadsToScout = useAction(api.adminScouts.assignLeads);
   const assignLeadCount = useAction(api.adminScouts.assignLeadCount);
   const setScoutActive = useAction(api.adminScouts.setScoutActive);
+  const getVeblenMatches = useAction(api.adminVeblenMembers.getMatches);
   const [view, setView] = useState<View>("overview");
   const [range, setRange] = useState<Range>("all");
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
@@ -838,6 +871,12 @@ function Dashboard({ adminName }: { adminName: string }) {
         title: <>Manage your scout<br /><span>team and queues.</span></>,
         copy: "Create secure scout logins, see assignment capacity by niche, and place individual leads into the right scout’s queue.",
       }
+    : view === "veblen"
+      ? {
+          eyebrow: "Protected member list",
+          title: <>Keep Veblen members<br /><span>out of every queue.</span></>,
+          copy: "Review directory coverage and every database lead matched by LinkedIn URL or public email.",
+        }
     : view === "weekly"
       ? {
           eyebrow: "Weekly scout results",
@@ -872,6 +911,7 @@ function Dashboard({ adminName }: { adminName: string }) {
         <nav className="main-nav" aria-label="Workspace views">
           <button className={view === "overview" ? "active" : ""} onClick={() => setView("overview")}>Overview</button>
           <button className={view === "scouts" ? "active" : ""} onClick={() => setView("scouts")}>Scouts</button>
+          <button className={view === "veblen" ? "active" : ""} onClick={() => setView("veblen")}>Veblen exclusions</button>
           <button className={view === "weekly" ? "active" : ""} onClick={() => setView("weekly")}>Weekly board</button>
           <button className={view === "operations" ? "active" : ""} onClick={() => setView("operations")}>Daily work</button>
           <button className={view === "leads" ? "active" : ""} onClick={() => setView("leads")}>Lead directory</button>
@@ -957,6 +997,8 @@ function Dashboard({ adminName }: { adminName: string }) {
               await Promise.all([refreshOverview(), refreshNicheAssignments()]);
             }}
           />
+        ) : view === "veblen" ? (
+          <VeblenExclusionsPage load={getVeblenMatches} />
         ) : view === "weekly" ? (
           <WeeklyPerformance />
         ) : view === "operations" ? (
@@ -1028,6 +1070,97 @@ function Dashboard({ adminName }: { adminName: string }) {
           }}
         />
       )}
+    </div>
+  );
+}
+
+function VeblenExclusionsPage({ load }: {
+  load: (args: { search: string | null; page: number; pageSize: number }) => Promise<VeblenMatchesPage>;
+}) {
+  const [data, setData] = useState<VeblenMatchesPage | null>(null);
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      setDebouncedSearch(search.trim().length >= 3 ? search.trim() : "");
+      setPage(1);
+    }, 300);
+    return () => window.clearTimeout(handle);
+  }, [search]);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      setData(await load({ search: debouncedSearch || null, page, pageSize: 25 }));
+    } catch (loadError) {
+      setError(readError(loadError));
+    } finally {
+      setLoading(false);
+    }
+  }, [debouncedSearch, load, page]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  return (
+    <div className="veblen-page">
+      <section className="veblen-summary-grid" aria-label="Veblen exclusion summary">
+        <article><span><Users size={17} /></span><div><strong>{formatNumber(data?.members ?? 0)}</strong><small>directory members</small></div></article>
+        <article><span><ExternalLink size={17} /></span><div><strong>{formatNumber(data?.memberLinkedInUrls ?? 0)}</strong><small>LinkedIn identifiers</small></div></article>
+        <article><span><Mail size={17} /></span><div><strong>{formatNumber(data?.memberEmails ?? 0)}</strong><small>public emails</small></div></article>
+        <article className="is-alert"><span><ShieldCheck size={17} /></span><div><strong>{formatNumber(data?.matchedLeads ?? 0)}</strong><small>database leads excluded</small></div></article>
+      </section>
+
+      <section className="panel veblen-matches-panel">
+        <div className="workspace-heading veblen-heading">
+          <PanelHeading
+            eyebrow="Live protection"
+            title="Matched leads"
+            description="LinkedIn URL and public-email matches are blocked from uploads, assignments, scout queues, and work-email runs"
+            icon={<ShieldCheck size={18} />}
+          />
+          <div className="veblen-controls">
+            <label className="search-field compact"><Search size={15} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search lead or member" />{search && <button onClick={() => setSearch("")} aria-label="Clear Veblen search"><X size={14} /></button>}</label>
+            <button className="secondary-button" onClick={() => void refresh()} disabled={loading}><RefreshCw size={14} className={loading ? "spin" : ""} /> Refresh</button>
+          </div>
+        </div>
+
+        {data && (
+          <div className="veblen-protection-note">
+            <ShieldCheck size={16} />
+            <span><strong>{formatNumber(data.matchedLeads)} matched leads are protected.</strong> {formatNumber(data.assignedMatches)} retain assignment history but can no longer enter a scout workflow. Updated {formatRelativeTime(data.generatedAt)}.</span>
+          </div>
+        )}
+        {search.trim().length > 0 && search.trim().length < 3 && <p className="veblen-search-hint">Type at least 3 characters to filter matches.</p>}
+        {error && <div className="upload-error veblen-error"><AlertTriangle size={16} /><span>{error}</span></div>}
+        {loading && !data ? (
+          <div className="assigned-leads-state"><RefreshCw size={16} className="spin" /> Loading protected leads…</div>
+        ) : data && (
+          <>
+            <div className="veblen-table-scroll">
+              <table className="veblen-table">
+                <thead><tr><th>Database lead</th><th>Veblen member</th><th>Matched by</th><th>Assignment history</th></tr></thead>
+                <tbody>{data.matches.map((match) => (
+                  <tr key={match.leadId}>
+                    <td><strong>{match.leadName || "Unnamed lead"}</strong><span>{match.originalEmail || match.workEmail || "No stored email"}</span>{match.leadLinkedInUrl && <a href={match.leadLinkedInUrl} target="_blank" rel="noreferrer">Lead LinkedIn <ExternalLink size={10} /></a>}</td>
+                    <td><strong>{match.memberName}</strong><span>{match.memberEmail || "No public email"}</span><div className="veblen-member-links"><a href={match.memberProfileUrl} target="_blank" rel="noreferrer">Veblen profile <ExternalLink size={10} /></a>{match.memberLinkedInUrl && <a href={match.memberLinkedInUrl} target="_blank" rel="noreferrer">LinkedIn <ExternalLink size={10} /></a>}</div></td>
+                    <td><span className="veblen-match-pill">{match.matchType}</span></td>
+                    <td>{match.assignedTo ? <><strong>{match.assignedTo}</strong><span>{match.assignmentStatus || "assigned"} · history retained</span></> : <><strong>Never assigned</strong><span>Protected before allocation</span></>}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+            {data.matches.length === 0 && <div className="assigned-leads-state">No protected leads match this search.</div>}
+            {data.pageCount > 1 && <div className="pagination veblen-pagination"><p>Page {data.page} of {data.pageCount} · {formatNumber(data.total)} matches</p><div><button onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={data.page === 1 || loading}><ArrowLeft size={15} /> Previous</button><button onClick={() => setPage((value) => Math.min(data.pageCount, value + 1))} disabled={data.page === data.pageCount || loading}>Next <ArrowRight size={15} /></button></div></div>}
+          </>
+        )}
+      </section>
     </div>
   );
 }
@@ -1292,8 +1425,8 @@ function ScoutsPage({
           ) : (
             <div className="niche-capacity-table-scroll">
               <table className="niche-capacity-table">
-                <thead><tr><th>Niche</th><th>Total</th><th>Assigned</th><th>Unassigned</th></tr></thead>
-                <tbody>{niches.map((niche) => <tr key={niche.name}><td>{niche.name}</td><td>{formatNumber(niche.total)}</td><td>{formatNumber(niche.assigned)}</td><td><strong>{formatNumber(niche.unassigned)}</strong></td></tr>)}</tbody>
+                <thead><tr><th>Niche</th><th>Total</th><th>Assigned</th><th>Veblen excluded</th><th>Available</th></tr></thead>
+                <tbody>{niches.map((niche) => <tr key={niche.name}><td>{niche.name}</td><td>{formatNumber(niche.total)}</td><td>{formatNumber(niche.assigned)}</td><td><span className="veblen-count">{formatNumber(niche.excluded)}</span></td><td><strong>{formatNumber(niche.unassigned)}</strong></td></tr>)}</tbody>
               </table>
             </div>
           )}
@@ -2181,6 +2314,11 @@ function UploadLeadsModal({ close, upload, confirm, onAssigned }: {
 
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const selectedScoutSet = useMemo(() => new Set(selectedScoutIds), [selectedScoutIds]);
+  const eligibleLeads = useMemo(
+    () => result?.leads.filter((lead) => !lead.excludedAsVeblenMember) ?? [],
+    [result?.leads],
+  );
+  const excludedLeadCount = (result?.leads.length ?? 0) - eligibleLeads.length;
   const selectedCount = selectedIds.length;
   const selectedScoutCount = selectedScoutIds.length;
   const selectedScouts = useMemo(
@@ -2218,7 +2356,7 @@ function UploadLeadsModal({ close, upload, confirm, onAssigned }: {
     try {
       const nextResult = await upload({ fileName: file.name, csvText: await file.text() });
       setResult(nextResult);
-      setSelectedIds(nextResult.leads.map((lead) => lead.id));
+      setSelectedIds(nextResult.leads.filter((lead) => !lead.excludedAsVeblenMember).map((lead) => lead.id));
       setSelectedScoutIds(nextResult.scouts.map((scout) => scout.operatorId));
     } catch (uploadError) {
       setError(readError(uploadError));
@@ -2228,6 +2366,7 @@ function UploadLeadsModal({ close, upload, confirm, onAssigned }: {
   }
 
   function toggleLead(leadId: string) {
+    if (result?.leads.find((lead) => lead.id === leadId)?.excludedAsVeblenMember) return;
     setSelectedIds((current) => current.includes(leadId)
       ? current.filter((id) => id !== leadId)
       : [...current, leadId]);
@@ -2235,7 +2374,7 @@ function UploadLeadsModal({ close, upload, confirm, onAssigned }: {
 
   function toggleAll() {
     if (!result) return;
-    setSelectedIds(selectedCount === result.leads.length ? [] : result.leads.map((lead) => lead.id));
+    setSelectedIds(selectedCount === eligibleLeads.length ? [] : eligibleLeads.map((lead) => lead.id));
   }
 
   function toggleAllScouts() {
@@ -2307,15 +2446,15 @@ function UploadLeadsModal({ close, upload, confirm, onAssigned }: {
 
         {result && !assignment && (
           <>
-            <div className="upload-file-summary"><FileCheck2 size={17} /><div><strong>{fileName}</strong><span>{result.uniqueRows} unique Hermes leads ready · {result.totalRows - result.uniqueRows} duplicate rows merged</span></div><button type="button" className="secondary-button" onClick={() => fileInput.current?.click()}>Replace</button></div>
+            <div className="upload-file-summary"><FileCheck2 size={17} /><div><strong>{fileName}</strong><span>{eligibleLeads.length} eligible Hermes leads · {excludedLeadCount} Veblen member{excludedLeadCount === 1 ? "" : "s"} excluded · {result.totalRows - result.uniqueRows} duplicate rows merged</span></div><button type="button" className="secondary-button" onClick={() => fileInput.current?.click()}>Replace</button></div>
             <input ref={fileInput} className="upload-file-input" type="file" accept=".csv,text/csv" onChange={(event) => { void handleFile(event.target.files?.[0]); event.currentTarget.value = ""; }} />
-            <div className="upload-review-toolbar"><div><strong>Review leads before allocation</strong><span>{selectedCount} of {result.leads.length} selected</span></div><button type="button" className="secondary-button" onClick={toggleAll}>{selectedCount === result.leads.length ? "Uncheck all" : "Check all"}</button></div>
+            <div className="upload-review-toolbar"><div><strong>Review leads before allocation</strong><span>{selectedCount} of {eligibleLeads.length} eligible selected · {excludedLeadCount} protected</span></div><button type="button" className="secondary-button" onClick={toggleAll} disabled={eligibleLeads.length === 0}>{selectedCount === eligibleLeads.length ? "Uncheck all" : "Check all eligible"}</button></div>
             <div className="upload-lead-list">
               {result.leads.map((lead) => (
-                <label className={`upload-lead-row ${selectedSet.has(lead.id) ? "is-selected" : ""}`} key={lead.id}>
-                  <input type="checkbox" checked={selectedSet.has(lead.id)} onChange={() => toggleLead(lead.id)} />
+                <label className={`upload-lead-row ${selectedSet.has(lead.id) ? "is-selected" : ""} ${lead.excludedAsVeblenMember ? "is-excluded" : ""}`} key={lead.id}>
+                  <input type="checkbox" checked={selectedSet.has(lead.id)} onChange={() => toggleLead(lead.id)} disabled={lead.excludedAsVeblenMember} />
                   <span className="upload-lead-check"><Check size={13} /></span>
-                  <span className="upload-lead-info"><strong>{lead.firstName} {lead.lastName}</strong><small>{lead.headline}</small><small>{lead.location} · Found {lead.dateFound}</small></span>
+                  <span className="upload-lead-info"><strong>{lead.firstName} {lead.lastName}{lead.excludedAsVeblenMember && <em>Veblen member · excluded</em>}</strong><small>{lead.headline}</small><small>{lead.location} · Found {lead.dateFound}</small></span>
                   <a href={lead.linkedinUrl} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>Open <ExternalLink size={11} /></a>
                 </label>
               ))}
@@ -2339,7 +2478,7 @@ function UploadLeadsModal({ close, upload, confirm, onAssigned }: {
         )}
 
         {assignment && (
-          <div className="upload-assignment-success"><span><Check size={19} /></span><div><strong>{assignment.assignedCount} leads assigned across {assignment.allocations.filter((item) => item.count > 0).length} scouts.</strong><p>{assignment.skippedCount ? `${assignment.skippedCount} lead${assignment.skippedCount === 1 ? " was" : "s were"} skipped because it was already assigned or unavailable.` : "The Hermes upload is now ready in the scouts' queues."}</p></div></div>
+          <div className="upload-assignment-success"><span><Check size={19} /></span><div><strong>{assignment.assignedCount} leads assigned across {assignment.allocations.filter((item) => item.count > 0).length} scouts.</strong><p>{assignment.skippedCount ? `${assignment.skippedCount} lead${assignment.skippedCount === 1 ? " was" : "s were"} skipped because it was already assigned, unavailable, or protected as a Veblen member.` : "The Hermes upload is now ready in the scouts' queues."}</p></div></div>
         )}
 
         {error && <div className="upload-error"><AlertTriangle size={16} /><span>{error}</span></div>}

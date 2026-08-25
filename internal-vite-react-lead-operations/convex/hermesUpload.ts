@@ -6,6 +6,7 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { action } from "./_generated/server";
 import { getPool } from "./lib/cockroach";
+import { upsertVeblenLeadMatches, veblenMatchExistsSql } from "./lib/veblenExclusions";
 
 const HERMES_NICHE = "Hermes";
 const MAX_CSV_BYTES = 5_000_000;
@@ -76,6 +77,7 @@ const uploadLeadValidator = v.object({
   currentCompany: v.union(v.string(), v.null()),
   dateFound: v.string(),
   sourceRow: v.number(),
+  excludedAsVeblenMember: v.boolean(),
 });
 
 const uploadScoutValidator = v.object({
@@ -268,7 +270,19 @@ export const uploadLeads = action({
           WHERE id = $1::UUID`,
         [importId, parsed.leads.length],
       );
+      const uploadedLeadIds = [...idsByProfile.values()];
+      await upsertVeblenLeadMatches(client, uploadedLeadIds);
       await client.query("COMMIT");
+
+      const excludedResult = await pool.query(
+        `SELECT lead_id::STRING AS lead_id
+           FROM veblen_lead_matches
+          WHERE lead_id = ANY($1::UUID[])`,
+        [uploadedLeadIds],
+      );
+      const excludedLeadIds = new Set(
+        excludedResult.rows.map((row) => String(row.lead_id)),
+      );
 
       return {
         importId,
@@ -287,6 +301,7 @@ export const uploadLeads = action({
           currentCompany: lead.company_name,
           dateFound: lead.date_found,
           sourceRow: lead.source_row,
+          excludedAsVeblenMember: excludedLeadIds.has(idsByProfile.get(lead.profile_key) ?? ""),
         })),
         scouts: scouts.map(({ operatorId, username }) => ({ operatorId, username })),
       };
@@ -339,7 +354,9 @@ export const confirmAssignments = action({
            FROM leads AS l
            INNER JOIN lead_niches AS ln ON ln.lead_id = l.id AND ln.niche = $${leadIds.length + 1}
            LEFT JOIN lead_assignments AS a ON a.lead_id = l.id
-          WHERE l.id IN (${placeholders}) AND a.lead_id IS NULL`,
+          WHERE l.id IN (${placeholders})
+            AND a.lead_id IS NULL
+            AND NOT (${veblenMatchExistsSql("l", "a")})`,
         [...leadIds, HERMES_NICHE],
       );
       const eligibleIds = new Set(eligibleResult.rows.map((row) => String(row.lead_id)));

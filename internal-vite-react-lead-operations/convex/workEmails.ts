@@ -5,6 +5,7 @@ import type { PoolClient } from "pg";
 import { internal } from "./_generated/api";
 import { action } from "./_generated/server";
 import { getPool } from "./lib/cockroach";
+import { upsertVeblenLeadMatches, veblenMatchExistsSql } from "./lib/veblenExclusions";
 
 const optionalText = v.union(v.string(), v.null());
 const optionalNumber = v.union(v.number(), v.null());
@@ -32,6 +33,7 @@ export const listQueueNiches = action({
          FROM leads AS l
          LEFT JOIN lead_assignments AS a ON a.lead_id = l.id
          WHERE (${preferredLinkedInUrlSql} LIKE 'https://linkedin.com/in/%' OR ${preferredLinkedInUrlSql} LIKE 'https://www.linkedin.com/in/%')
+           AND NOT (${veblenMatchExistsSql("l", "a")})
            AND l.work_email IS NULL
            AND (
              l.work_email_status IN ('pending', 'error')
@@ -87,6 +89,7 @@ export const listQueue = action({
            FROM leads AS l
            LEFT JOIN lead_assignments AS a ON a.lead_id = l.id
            INNER JOIN lead_niches AS ln ON ln.lead_id = l.id AND ln.niche = $1
+           WHERE NOT (${veblenMatchExistsSql("l", "a")})
          )
          SELECT lead_id, linkedin_url, full_name, company_name, work_email_status, work_email_last_error
          FROM queueable
@@ -113,6 +116,7 @@ export const listQueue = action({
          LEFT JOIN lead_assignments AS a ON a.lead_id = l.id
          INNER JOIN lead_niches AS ln ON ln.lead_id = l.id AND ln.niche = $1
          WHERE (${preferredLinkedInUrlSql} LIKE 'https://linkedin.com/in/%' OR ${preferredLinkedInUrlSql} LIKE 'https://www.linkedin.com/in/%')
+           AND NOT (${veblenMatchExistsSql("l", "a")})
            AND l.work_email IS NULL
            AND (
              l.work_email_status IN ('pending', 'error')
@@ -146,12 +150,13 @@ export const beginJob = action({
     await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
     assertUuid(args.leadId);
     const result = await getPool().query(
-      `UPDATE leads
+      `UPDATE leads AS l
           SET work_email_status = 'processing',
               work_email_checked_at = now(),
               work_email_last_error = NULL,
               updated_at = now()
         WHERE id = $1::UUID
+          AND NOT (${veblenMatchExistsSql("l")})
           AND work_email IS NULL
           AND work_email_status <> 'not_found'
         RETURNING id`,
@@ -221,6 +226,7 @@ export const saveResult = action({
           normalizeHttpStatus(args.httpStatus),
         ],
       );
+      await upsertVeblenLeadMatches(client, [String(lead.id)]);
       await client.query("COMMIT");
       return { saved: true, leadId: String(lead.id) };
     } catch (error) {

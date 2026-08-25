@@ -385,7 +385,8 @@ async function mergeStagedChunk(client, importId, niche) {
       WHERE duplicate_rank = 1
      ON CONFLICT (profile_key) DO UPDATE SET
        ${updates},
-       updated_at = now()`,
+       updated_at = now()
+     RETURNING id::STRING AS id`,
     [importId],
   );
 
@@ -402,6 +403,10 @@ async function mergeStagedChunk(client, importId, niche) {
        INNER JOIN batch_keys AS b ON b.profile_key = l.profile_key
      ON CONFLICT (niche, lead_id) DO NOTHING`,
     [importId, niche],
+  );
+  await refreshVeblenMatchesForLeadIds(
+    client,
+    upsertResult.rows.map((row) => String(row.id)),
   );
 
   return upsertResult.rowCount ?? 0;
@@ -476,6 +481,10 @@ async function upsertBatch(leads, niche, importId, processedRows) {
        ON CONFLICT (niche, lead_id) DO NOTHING`,
       nicheValues,
     );
+    await refreshVeblenMatchesForLeadIds(
+      client,
+      result.rows.map((row) => String(row.id)),
+    );
     await client.query(
       "UPDATE lead_imports SET processed_rows = $2 WHERE id = $1",
       [importId, processedRows],
@@ -492,6 +501,60 @@ async function upsertBatch(leads, niche, importId, processedRows) {
     client.removeListener("error", onClientError);
     client.release(clientError ? true : undefined);
   }
+}
+
+async function refreshVeblenMatchesForLeadIds(client, leadIds) {
+  const uniqueIds = [...new Set(leadIds)].filter(Boolean);
+  if (uniqueIds.length === 0) return;
+  await client.query(
+    `INSERT INTO veblen_lead_matches (lead_id, member_id, match_type, matched_at, updated_at)
+     SELECT lead_id, member_id, match_type, now(), now()
+       FROM (
+         SELECT
+           l.id AS lead_id,
+           vm.member_id,
+           CASE
+             WHEN vm.linkedin_url IS NOT NULL AND vm.linkedin_url IN (
+               rtrim(replace(lower(l.linkedin_url), 'https://www.linkedin.com/', 'https://linkedin.com/'), '/'),
+               rtrim(replace(lower(coalesce(l.work_email_resolved_linkedin_url, '')), 'https://www.linkedin.com/', 'https://linkedin.com/'), '/'),
+               rtrim(replace(lower(coalesce(a.resolved_linkedin_url, '')), 'https://www.linkedin.com/', 'https://linkedin.com/'), '/')
+             ) THEN 'LinkedIn'
+             ELSE 'Email'
+           END AS match_type,
+           row_number() OVER (
+             PARTITION BY l.id
+             ORDER BY
+               CASE WHEN vm.linkedin_url IS NOT NULL AND vm.linkedin_url IN (
+                 rtrim(replace(lower(l.linkedin_url), 'https://www.linkedin.com/', 'https://linkedin.com/'), '/'),
+                 rtrim(replace(lower(coalesce(l.work_email_resolved_linkedin_url, '')), 'https://www.linkedin.com/', 'https://linkedin.com/'), '/'),
+                 rtrim(replace(lower(coalesce(a.resolved_linkedin_url, '')), 'https://www.linkedin.com/', 'https://linkedin.com/'), '/')
+               ) THEN 0 ELSE 1 END,
+               vm.member_id
+           ) AS match_rank
+         FROM leads AS l
+         LEFT JOIN lead_assignments AS a ON a.lead_id = l.id
+         INNER JOIN veblen_members AS vm ON (
+           (vm.linkedin_url IS NOT NULL AND vm.linkedin_url IN (
+             rtrim(replace(lower(l.linkedin_url), 'https://www.linkedin.com/', 'https://linkedin.com/'), '/'),
+             rtrim(replace(lower(coalesce(l.work_email_resolved_linkedin_url, '')), 'https://www.linkedin.com/', 'https://linkedin.com/'), '/'),
+             rtrim(replace(lower(coalesce(a.resolved_linkedin_url, '')), 'https://www.linkedin.com/', 'https://linkedin.com/'), '/')
+           ))
+           OR
+           (vm.normalized_email IS NOT NULL AND vm.normalized_email IN (
+             lower(l.original_email),
+             lower(l.work_email),
+             lower(a.email)
+           ))
+         )
+         WHERE l.id = ANY($1::UUID[])
+       ) AS ranked
+      WHERE match_rank = 1
+     ON CONFLICT (lead_id) DO UPDATE SET
+       member_id = excluded.member_id,
+       match_type = excluded.match_type,
+       updated_at = now()`,
+    [uniqueIds],
+  );
 }
 
 async function* readLeads(filePath, sourceFile) {

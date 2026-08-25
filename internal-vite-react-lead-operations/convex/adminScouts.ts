@@ -6,6 +6,7 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { action } from "./_generated/server";
 import { getPool } from "./lib/cockroach";
+import { veblenMatchExistsSql } from "./lib/veblenExclusions";
 
 const usernamePattern = /^[a-z0-9][a-z0-9._-]{2,39}$/;
 type ScoutLookup = { operatorId: string; active: boolean };
@@ -14,6 +15,7 @@ const nicheAssignmentValidator = v.object({
   name: v.string(),
   total: v.number(),
   assigned: v.number(),
+  excluded: v.number(),
   unassigned: v.number(),
 });
 
@@ -71,9 +73,16 @@ export const getNicheAssignments = action({
       `SELECT
          n.name,
          count(ln.lead_id)::FLOAT8 AS total,
-         count(a.lead_id)::FLOAT8 AS assigned
+         count(a.lead_id)::FLOAT8 AS assigned,
+         count(ln.lead_id) FILTER (
+           WHERE a.lead_id IS NULL AND ${veblenMatchExistsSql("l", "a")}
+         )::FLOAT8 AS excluded,
+         count(ln.lead_id) FILTER (
+           WHERE a.lead_id IS NULL AND NOT (${veblenMatchExistsSql("l", "a")})
+         )::FLOAT8 AS unassigned
        FROM niches AS n
        LEFT JOIN lead_niches AS ln ON ln.niche = n.name
+       LEFT JOIN leads AS l ON l.id = ln.lead_id
        LEFT JOIN lead_assignments AS a ON a.lead_id = ln.lead_id
       GROUP BY n.name
       ORDER BY n.name`,
@@ -88,7 +97,8 @@ export const getNicheAssignments = action({
           name: String(row.name),
           total,
           assigned,
-          unassigned: Math.max(0, total - assigned),
+          excluded: Number(row.excluded ?? 0),
+          unassigned: Number(row.unassigned ?? 0),
         };
       }),
     };
@@ -132,7 +142,10 @@ export const listUnassignedLeads = action({
          FROM lead_niches AS ln
          INNER JOIN leads AS l ON l.id = ln.lead_id
          LEFT JOIN lead_assignments AS a ON a.lead_id = l.id
-        WHERE ln.niche = $1 AND a.lead_id IS NULL ${searchClause}`,
+        WHERE ln.niche = $1
+          AND a.lead_id IS NULL
+          AND NOT (${veblenMatchExistsSql("l", "a")})
+          ${searchClause}`,
       values,
     );
     const total = Number(countResult.rows[0]?.total ?? 0);
@@ -149,7 +162,10 @@ export const listUnassignedLeads = action({
        FROM lead_niches AS ln
        INNER JOIN leads AS l ON l.id = ln.lead_id
        LEFT JOIN lead_assignments AS a ON a.lead_id = l.id
-      WHERE ln.niche = $1 AND a.lead_id IS NULL ${searchClause}
+      WHERE ln.niche = $1
+        AND a.lead_id IS NULL
+        AND NOT (${veblenMatchExistsSql("l", "a")})
+        ${searchClause}
       ORDER BY l.full_name NULLS LAST, l.id
       LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
       queryValues,
@@ -200,7 +216,9 @@ export const assignLeads = action({
          FROM leads AS l
          INNER JOIN lead_niches AS ln ON ln.lead_id = l.id AND ln.niche = $3
          LEFT JOIN lead_assignments AS a ON a.lead_id = l.id
-        WHERE l.id = ANY($1::UUID[]) AND a.lead_id IS NULL
+        WHERE l.id = ANY($1::UUID[])
+          AND a.lead_id IS NULL
+          AND NOT (${veblenMatchExistsSql("l", "a")})
        ON CONFLICT (lead_id) DO NOTHING
        RETURNING lead_id`,
       [leadIds, operatorId, niche],
@@ -237,10 +255,13 @@ export const assignLeadCount = action({
     const database = getPool();
     const result = await database.query(
       `INSERT INTO lead_assignments (lead_id, operator_id, status)
-       SELECT ln.lead_id, $2, 'assigned'
+       SELECT l.id, $2, 'assigned'
          FROM lead_niches AS ln
+         INNER JOIN leads AS l ON l.id = ln.lead_id
          LEFT JOIN lead_assignments AS a ON a.lead_id = ln.lead_id
-        WHERE ln.niche = $1 AND a.lead_id IS NULL
+        WHERE ln.niche = $1
+          AND a.lead_id IS NULL
+          AND NOT (${veblenMatchExistsSql("l", "a")})
         ORDER BY ln.lead_id
         LIMIT $3
        ON CONFLICT (lead_id) DO NOTHING
@@ -248,10 +269,13 @@ export const assignLeadCount = action({
       [niche, operatorId, count],
     );
     const remainingResult = await database.query(
-      `SELECT count(*)::FLOAT8 AS remaining
+       `SELECT count(*)::FLOAT8 AS remaining
          FROM lead_niches AS ln
+         INNER JOIN leads AS l ON l.id = ln.lead_id
          LEFT JOIN lead_assignments AS a ON a.lead_id = ln.lead_id
-        WHERE ln.niche = $1 AND a.lead_id IS NULL`,
+        WHERE ln.niche = $1
+          AND a.lead_id IS NULL
+          AND NOT (${veblenMatchExistsSql("l", "a")})`,
       [niche],
     );
     return {
