@@ -33,11 +33,15 @@ assert.match(backendSource, /DELETE FROM lead_assignments/);
 assert.match(backendSource, /leadCanReturnToPoolSql/);
 assert.match(backendSource, /'admin_unassigned'/);
 assert.match(backendSource, /destination: "unassigned_pool"/);
+assert.match(backendSource, /export const bulkUnassignLeads/);
+assert.match(backendSource, /protectedCount/);
 assert.match(analyticsSource, /canUnassign: v\.boolean\(\)/);
 assert.match(analyticsSource, /unassignBlockedReason/);
 assert.match(appSource, /Return this lead to the pool\?/);
 assert.match(appSource, /Only untouched leads can move/);
 assert.match(appSource, /This does not delete the lead or its niche data\./);
 assert.match(appSource, /api\.adminScouts\.unassignLead/);
+assert.match(appSource, /api\.adminScouts\.bulkUnassignLeads/);
+assert.match(appSource, /Return untouched leads/);
 
 console.log("Admin lead unassignment guard test passed.");

@@ -372,6 +372,63 @@ export const unassignLead = action({
   },
 });
 
+export const bulkUnassignLeads = action({
+  args: {
+    operatorId: v.string(),
+  },
+  returns: v.object({
+    requested: v.number(),
+    returnedToPool: v.number(),
+    protectedCount: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
+    const operatorId = normalizeUsername(args.operatorId);
+    const database = getPool();
+    const client = await database.connect();
+    try {
+      await client.query("BEGIN");
+      const assignedResult = await client.query(
+        `SELECT count(*)::FLOAT8 AS requested
+           FROM lead_assignments
+          WHERE operator_id = $1`,
+        [operatorId],
+      );
+      const requested = Number(assignedResult.rows[0]?.requested ?? 0);
+      const removed = await client.query(
+        `DELETE FROM lead_assignments AS a
+          USING leads AS l
+          WHERE a.operator_id = $1
+            AND l.id = a.lead_id
+            AND (${leadCanReturnToPoolSql("l", "a")})
+        RETURNING a.lead_id::STRING AS lead_id`,
+        [operatorId],
+      );
+      const leadIds = removed.rows.map((row) => String(row.lead_id));
+      if (leadIds.length > 0) {
+        await client.query(
+          `INSERT INTO lead_assignment_events (lead_id, operator_id, event_type, details)
+           SELECT returned_lead_id, $2, 'admin_unassigned', $3::JSONB
+             FROM unnest($1::UUID[]) AS returned_lead(returned_lead_id)`,
+          [leadIds, operatorId, JSON.stringify({ destination: "unassigned_pool", bulk: true })],
+        );
+      }
+      await client.query("COMMIT");
+      const returnedToPool = leadIds.length;
+      return {
+        requested,
+        returnedToPool,
+        protectedCount: Math.max(0, requested - returnedToPool),
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+});
+
 function normalizeUsername(value: string) {
   const username = value.trim().toLowerCase();
   if (!usernamePattern.test(username)) {

@@ -22,6 +22,7 @@ const createScout = makeFunctionReference("adminScouts:createScout");
 const assignLeadCount = makeFunctionReference("adminScouts:assignLeadCount");
 const setScoutActive = makeFunctionReference("adminScouts:setScoutActive");
 const unassignLead = makeFunctionReference("adminScouts:unassignLead");
+const bulkUnassignLeads = makeFunctionReference("adminScouts:bulkUnassignLeads");
 const getVeblenMatches = makeFunctionReference("adminVeblenMembers:getMatches");
 const listWorkEmailNiches = makeFunctionReference("workEmails:listQueueNiches");
 const listWorkEmailQueue = makeFunctionReference("workEmails:listQueue");
@@ -151,6 +152,12 @@ try {
 } catch (error) {
   invalidUnassignRejected = String(error).toLowerCase().includes("valid lead");
 }
+let invalidBulkUnassignRejected = false;
+try {
+  await client.action(bulkUnassignLeads, { operatorId: "x" });
+} catch (error) {
+  invalidBulkUnassignRejected = String(error).toLowerCase().includes("username must be");
+}
 const workEmailNiches = await client.action(listWorkEmailNiches, {});
 const firstWorkEmailNiche = workEmailNiches.niches[0] ?? null;
 const workEmailQueue = firstWorkEmailNiche
@@ -193,6 +200,7 @@ if (
   !invalidQuantityRejected ||
   !scoutToggleHealthy ||
   !invalidUnassignRejected ||
+  !invalidBulkUnassignRejected ||
   (assignedLeadPage !== null && assignedLeadPage.leads.some((lead) =>
     typeof lead.canUnassign !== "boolean" ||
     !(lead.unassignBlockedReason === null || typeof lead.unassignBlockedReason === "string")

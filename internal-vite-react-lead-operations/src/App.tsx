@@ -1585,7 +1585,7 @@ function ScoutsPage({
           <div className="scout-directory-title"><PanelHeading eyebrow="Scout directory" title="Accounts and performance" description="Open a scout to review their full assigned queue" icon={<Users size={18} />} /><button className="scout-directory-toggle" type="button" onClick={() => setDirectoryOpen((open) => !open)} aria-expanded={directoryOpen}><ChevronDown size={16} className={directoryOpen ? "rotate-180" : ""} />{directoryOpen ? "Collapse" : "Expand"}</button></div>
           {directoryOpen && <div className="scout-controls"><label className="search-field compact"><Search size={16} /><input value={scoutSearch} onChange={(event) => setScoutSearch(event.target.value)} placeholder="Find a scout" />{scoutSearch && <button onClick={() => setScoutSearch("")} aria-label="Clear scout search"><X size={14} /></button>}</label><select value={scoutSort} onChange={(event) => setScoutSort(event.target.value as ScoutSort)} aria-label="Sort scouts"><option value="activity">Most activity</option><option value="emails">Most emails</option><option value="accepted">Most accepted</option><option value="assigned">Most assigned</option><option value="name">Name</option></select></div>}
         </div>
-        {directoryOpen && <><ScoutTable scouts={scouts} selectedScout={selectedScout} setSelectedScout={setSelectedScout} onToggleActive={(scout) => void toggleScout(scout)} togglingScoutId={scoutToggleBusyId} />{activeScout && <ScoutDetail scout={activeScout} activity={scoutActivity} assignedLeads={scoutAssignedLeads} assignedLeadsLoading={scoutAssignedLeadsLoading} assignedLeadsError={scoutAssignedLeadsError} onAssignedLeadsPageChange={onScoutAssignedLeadsPageChange} onAssignedLeadChanged={onAssignedLeadChanged} close={() => setSelectedScout(null)} />}</>}
+        {directoryOpen && <><ScoutTable scouts={scouts} selectedScout={selectedScout} setSelectedScout={setSelectedScout} onToggleActive={(scout) => void toggleScout(scout)} togglingScoutId={scoutToggleBusyId} onAssignedLeadChanged={onAssignedLeadChanged} />{activeScout && <ScoutDetail scout={activeScout} activity={scoutActivity} assignedLeads={scoutAssignedLeads} assignedLeadsLoading={scoutAssignedLeadsLoading} assignedLeadsError={scoutAssignedLeadsError} onAssignedLeadsPageChange={onScoutAssignedLeadsPageChange} onAssignedLeadChanged={onAssignedLeadChanged} close={() => setSelectedScout(null)} />}</>}
       </section>
       </>}
     </div>
@@ -2108,22 +2108,46 @@ function Funnel({ summary }: { summary: Summary }) {
   );
 }
 
-function ScoutTable({ scouts, selectedScout, setSelectedScout, onToggleActive, togglingScoutId }: { scouts: ScoutMetrics[]; selectedScout: string | null; setSelectedScout: (value: string | null) => void; onToggleActive?: (scout: ScoutMetrics) => void; togglingScoutId?: string | null }) {
+function ScoutTable({ scouts, selectedScout, setSelectedScout, onToggleActive, togglingScoutId, onAssignedLeadChanged }: { scouts: ScoutMetrics[]; selectedScout: string | null; setSelectedScout: (value: string | null) => void; onToggleActive?: (scout: ScoutMetrics) => void; togglingScoutId?: string | null; onAssignedLeadChanged?: () => Promise<void> }) {
+  const bulkUnassignLead = useAction(api.adminScouts.bulkUnassignLeads);
+  const [bulkScout, setBulkScout] = useState<ScoutMetrics | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkError, setBulkError] = useState("");
+  const [bulkResult, setBulkResult] = useState<{ requested: number; returnedToPool: number; protectedCount: number } | null>(null);
+
+  async function confirmBulkUnassign() {
+    if (!bulkScout || !onAssignedLeadChanged) return;
+    setBulkBusy(true);
+    setBulkError("");
+    try {
+      const result = await bulkUnassignLead({ operatorId: bulkScout.operatorId });
+      setBulkResult(result);
+      await onAssignedLeadChanged();
+    } catch (bulkFailure) {
+      setBulkError(readError(bulkFailure));
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
   if (scouts.length === 0) return <div className="empty-state compact-empty"><Users size={23} /><h3>No scouts found</h3><p>Try clearing the scout search.</p></div>;
   return (
     <div className="scout-table-scroll">
+      {bulkResult && <p className="bulk-unassign-success"><CheckCircle2 size={14} />{formatNumber(bulkResult.returnedToPool)} untouched lead{bulkResult.returnedToPool === 1 ? "" : "s"} returned to the pool; {formatNumber(bulkResult.protectedCount)} protected lead{bulkResult.protectedCount === 1 ? " stays" : "s stay"} assigned.</p>}
       <table className="scout-table">
-        <thead><tr><th>Scout</th><th>Assigned</th><th>Fresh</th><th>Engaged</th><th>Requests</th><th>Pending</th><th>Accepted</th><th>Original emails</th><th>Failed</th><th>Last active</th>{onToggleActive && <th>Access</th>}</tr></thead>
+        <thead><tr><th>Scout</th><th>Assigned</th><th>Fresh</th><th>Engaged</th><th>Requests</th><th>Pending</th><th>Accepted</th><th>Original emails</th><th>Failed</th><th>Last active</th>{onToggleActive && <th>Access</th>}{onAssignedLeadChanged && <th>Pool</th>}</tr></thead>
         <tbody>
           {scouts.map((scout) => (
             <tr key={scout.operatorId} className={selectedScout === scout.operatorId ? "selected" : ""} onClick={() => setSelectedScout(selectedScout === scout.operatorId ? null : scout.operatorId)}>
               <td><div className="scout-cell"><span>{initials(scout.username)}</span><div><strong>{scout.username}</strong><small className={scout.active ? "status-active" : "status-inactive"}>{scout.active ? "Active" : scout.hasAccount ? "Disabled" : "Unlinked"}</small></div></div></td>
               <td>{formatNumber(scout.assigned)}</td><td>{formatNumber(scout.fresh)}</td><td><strong>{formatNumber(scout.engaged)}</strong></td><td>{formatNumber(scout.requests)}</td><td>{formatNumber(scout.pending)}</td><td>{formatNumber(scout.accepted)}</td><td><span className="email-count"><Mail size={13} />{formatNumber(scout.emails)}</span></td><td><span className={scout.failed ? "failed-count" : ""}>{formatNumber(scout.failed)}</span></td><td><span className="last-active">{scout.lastActive ? formatRelativeTime(scout.lastActive) : "No activity"}</span></td>
               {onToggleActive && <td><button className={`scout-access-toggle ${scout.active ? "is-enabled" : "is-disabled"}`} type="button" disabled={togglingScoutId === scout.operatorId} onClick={(event) => { event.stopPropagation(); onToggleActive(scout); }}>{togglingScoutId === scout.operatorId ? <RefreshCw size={12} className="spin" /> : scout.active ? "Disable" : "Enable"}</button></td>}
+              {onAssignedLeadChanged && <td><button className="bulk-unassign-button" type="button" disabled={scout.assigned < 1 || bulkBusy} title="Return every untouched lead to the pool; protected leads stay assigned." onClick={(event) => { event.stopPropagation(); setBulkError(""); setBulkResult(null); setBulkScout(scout); }}>{scout.assigned > 0 ? <><UserMinus size={12} />Return untouched</> : "No leads"}</button></td>}
             </tr>
           ))}
         </tbody>
       </table>
+      {bulkScout && <BulkUnassignModal scout={bulkScout} busy={bulkBusy} error={bulkError} result={bulkResult} close={() => { if (!bulkBusy) { setBulkScout(null); setBulkError(""); } }} confirm={() => void confirmBulkUnassign()} />}
     </div>
   );
 }
@@ -2487,6 +2511,39 @@ function LeadTable({ leads, loading }: { leads: Lead[]; loading: boolean }) {
           </tr>
         ))}</tbody>
       </table>
+    </div>
+  );
+}
+
+function BulkUnassignModal({ scout, busy, error, result, close, confirm }: { scout: ScoutMetrics; busy: boolean; error: string; result: { requested: number; returnedToPool: number; protectedCount: number } | null; close: () => void; confirm: () => void }) {
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !busy) close();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [busy, close]);
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) close(); }}>
+      <section className="modal bulk-unassign-modal" role="dialog" aria-modal="true" aria-labelledby="bulk-unassign-title">
+        <button className="modal-close" type="button" onClick={close} disabled={busy} aria-label="Close bulk unassign warning"><X size={18} /></button>
+        <div className="unassign-warning-icon"><AlertTriangle size={22} /></div>
+        <p className="eyebrow">Bulk admin action</p>
+        <h2 id="bulk-unassign-title">Return untouched leads for {scout.username}?</h2>
+        {!result ? <>
+          <p>The dashboard will review all <strong>{formatNumber(scout.assigned)} assigned leads</strong> for this scout and return only leads that have not been worked on.</p>
+          <div className="unassign-process-card"><strong>Protected automatically</strong><ol><li>Leads with an original or work email stay assigned.</li><li>Leads with contact, profile, engagement, qualification, note, email-search, follow-up, CRM, or error history stay assigned.</li><li>Only untouched leads are removed from this scout and added back to the pool.</li></ol></div>
+          <div className="unassign-safety-note"><ShieldCheck size={18} /><div><strong>Safe to run for the whole queue</strong><span>This check runs again inside one transaction. If anything changes before confirmation, that lead is protected and skipped.</span></div></div>
+          <p className="unassign-delete-note">No lead or niche data is deleted. The result will show how many returned and how many stayed protected.</p>
+          {error && <p className="unassign-modal-error"><AlertTriangle size={14} />{error}</p>}
+          <div className="unassign-modal-actions"><button className="secondary-button" type="button" onClick={close} disabled={busy}>Cancel</button><button className="confirm-unassign-button" type="button" onClick={confirm} disabled={busy} autoFocus>{busy ? <RefreshCw size={14} className="spin" /> : <UserMinus size={14} />}{busy ? "Returning untouched leads…" : "Return untouched leads"}</button></div>
+        </> : <>
+          <p>The bulk action is complete. Protected leads remain assigned to {scout.username}.</p>
+          <div className="bulk-unassign-result"><div><strong>{formatNumber(result.returnedToPool)}</strong><span>returned to pool</span></div><div><strong>{formatNumber(result.protectedCount)}</strong><span>protected and kept</span></div></div>
+          <div className="unassign-modal-actions"><button className="primary-button" type="button" onClick={close}>Done</button></div>
+        </>}
+      </section>
     </div>
   );
 }
