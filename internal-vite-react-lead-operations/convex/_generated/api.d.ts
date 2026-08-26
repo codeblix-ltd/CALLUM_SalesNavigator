@@ -20,6 +20,7 @@ import type * as http from "../http.js";
 import type * as leads from "../leads.js";
 import type * as lib_cockroach from "../lib/cockroach.js";
 import type * as lib_codexGateway from "../lib/codexGateway.js";
+import type * as lib_leadUnassignment from "../lib/leadUnassignment.js";
 import type * as lib_veblenExclusions from "../lib/veblenExclusions.js";
 import type * as scoutAdmin from "../scoutAdmin.js";
 import type * as scoutIdentity from "../scoutIdentity.js";
@@ -47,6 +48,7 @@ declare const fullApi: ApiFromModules<{
   leads: typeof leads;
   "lib/cockroach": typeof lib_cockroach;
   "lib/codexGateway": typeof lib_codexGateway;
+  "lib/leadUnassignment": typeof lib_leadUnassignment;
   "lib/veblenExclusions": typeof lib_veblenExclusions;
   scoutAdmin: typeof scoutAdmin;
   scoutIdentity: typeof scoutIdentity;

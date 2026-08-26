@@ -6,6 +6,7 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { action } from "./_generated/server";
 import { getPool } from "./lib/cockroach";
+import { leadCanReturnToPoolSql, leadReturnToPoolBlockedReasonSql } from "./lib/leadUnassignment";
 import { veblenMatchExistsSql } from "./lib/veblenExclusions";
 
 const usernamePattern = /^[a-z0-9][a-z0-9._-]{2,39}$/;
@@ -306,6 +307,71 @@ export const setScoutActive = action({
   },
 });
 
+export const unassignLead = action({
+  args: {
+    operatorId: v.string(),
+    leadId: v.string(),
+  },
+  returns: v.object({
+    leadId: v.string(),
+    operatorId: v.string(),
+    returnedToPool: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
+    const operatorId = normalizeUsername(args.operatorId);
+    const leadId = args.leadId.trim();
+    if (!uuidPattern.test(leadId)) {
+      throw new Error("A valid lead is required.");
+    }
+
+    const database = getPool();
+    const client = await database.connect();
+    try {
+      await client.query("BEGIN");
+      const removed = await client.query(
+        `DELETE FROM lead_assignments AS a
+          USING leads AS l
+          WHERE a.lead_id = $1::UUID
+            AND a.operator_id = $2
+            AND l.id = a.lead_id
+            AND (${leadCanReturnToPoolSql("l", "a")})
+        RETURNING a.lead_id::STRING AS lead_id`,
+        [leadId, operatorId],
+      );
+
+      if ((removed.rowCount ?? 0) !== 1) {
+        const blocked = await client.query(
+          `SELECT ${leadReturnToPoolBlockedReasonSql("l", "a")} AS reason
+             FROM lead_assignments AS a
+             INNER JOIN leads AS l ON l.id = a.lead_id
+            WHERE a.lead_id = $1::UUID
+              AND a.operator_id = $2`,
+          [leadId, operatorId],
+        );
+        throw new Error(
+          blocked.rows[0]?.reason
+            ? String(blocked.rows[0].reason)
+            : "This lead is no longer assigned to this scout.",
+        );
+      }
+
+      await client.query(
+        `INSERT INTO lead_assignment_events (lead_id, operator_id, event_type, details)
+         VALUES ($1::UUID, $2, 'admin_unassigned', $3::JSONB)`,
+        [leadId, operatorId, JSON.stringify({ destination: "unassigned_pool" })],
+      );
+      await client.query("COMMIT");
+      return { leadId, operatorId, returnedToPool: true };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+});
+
 function normalizeUsername(value: string) {
   const username = value.trim().toLowerCase();
   if (!usernamePattern.test(username)) {
@@ -315,6 +381,8 @@ function normalizeUsername(value: string) {
   }
   return username;
 }
+
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function generatePassword() {
   return `Ca${randomBytes(18).toString("base64url")}7`;

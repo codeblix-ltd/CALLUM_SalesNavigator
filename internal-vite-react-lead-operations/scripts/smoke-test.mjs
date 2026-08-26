@@ -14,12 +14,14 @@ const getStats = makeFunctionReference("leads:getStats");
 const listLeads = makeFunctionReference("leads:list");
 const exportLeads = makeFunctionReference("leads:exportCsv");
 const getOverview = makeFunctionReference("adminAnalytics:getOverview");
+const getScoutAssignedLeads = makeFunctionReference("adminAnalytics:getScoutAssignedLeads");
 const getWeeklyPerformance = makeFunctionReference("adminAnalytics:getWeeklyPerformance");
 const getNicheAssignments = makeFunctionReference("adminScouts:getNicheAssignments");
 const listUnassignedLeads = makeFunctionReference("adminScouts:listUnassignedLeads");
 const createScout = makeFunctionReference("adminScouts:createScout");
 const assignLeadCount = makeFunctionReference("adminScouts:assignLeadCount");
 const setScoutActive = makeFunctionReference("adminScouts:setScoutActive");
+const unassignLead = makeFunctionReference("adminScouts:unassignLead");
 const getVeblenMatches = makeFunctionReference("adminVeblenMembers:getMatches");
 const listWorkEmailNiches = makeFunctionReference("workEmails:listQueueNiches");
 const listWorkEmailQueue = makeFunctionReference("workEmails:listQueue");
@@ -105,6 +107,13 @@ const unassignedLeads = firstNiche
     })
   : null;
 const existingScout = overview.scouts.find((scout) => scout.hasAccount);
+const assignedLeadPage = existingScout
+  ? await client.action(getScoutAssignedLeads, {
+      operatorId: existingScout.operatorId,
+      page: 1,
+      pageSize: 10,
+    })
+  : null;
 let duplicateScoutRejected = existingScout === undefined;
 if (existingScout) {
   try {
@@ -132,6 +141,15 @@ if (existingScout) {
     active: existingScout.active,
   });
   scoutToggleHealthy = toggleResult.operatorId === existingScout.operatorId && toggleResult.active === existingScout.active;
+}
+let invalidUnassignRejected = false;
+try {
+  await client.action(unassignLead, {
+    operatorId: existingScout?.operatorId ?? "smoke-scout",
+    leadId: "not-a-valid-lead-id",
+  });
+} catch (error) {
+  invalidUnassignRejected = String(error).toLowerCase().includes("valid lead");
 }
 const workEmailNiches = await client.action(listWorkEmailNiches, {});
 const firstWorkEmailNiche = workEmailNiches.niches[0] ?? null;
@@ -174,6 +192,11 @@ if (
   !duplicateScoutRejected ||
   !invalidQuantityRejected ||
   !scoutToggleHealthy ||
+  !invalidUnassignRejected ||
+  (assignedLeadPage !== null && assignedLeadPage.leads.some((lead) =>
+    typeof lead.canUnassign !== "boolean" ||
+    !(lead.unassignBlockedReason === null || typeof lead.unassignBlockedReason === "string")
+  )) ||
   !Array.isArray(workEmailNiches.niches) ||
   workEmailNiches.niches.some((niche) => !niche.name || niche.eligible < 1) ||
   !Array.isArray(workEmailQueue.leads) ||

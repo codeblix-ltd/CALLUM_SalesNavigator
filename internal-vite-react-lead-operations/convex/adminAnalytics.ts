@@ -4,6 +4,7 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { action } from "./_generated/server";
 import { getPool } from "./lib/cockroach";
+import { leadCanReturnToPoolSql, leadReturnToPoolBlockedReasonSql } from "./lib/leadUnassignment";
 
 const rangeValidator = v.union(
   v.literal("7d"),
@@ -134,6 +135,8 @@ const scoutAssignedLeadValidator = v.object({
   connectionRequestedAt: v.union(v.string(), v.null()),
   acceptedAt: v.union(v.string(), v.null()),
   emailCollectedAt: v.union(v.string(), v.null()),
+  canUnassign: v.boolean(),
+  unassignBlockedReason: v.union(v.string(), v.null()),
 });
 
 const scoutAssignedLeadsValidator = v.object({
@@ -820,7 +823,12 @@ export const getScoutAssignedLeads = action({
          a.engaged_at::STRING AS engaged_at,
          a.connection_requested_at::STRING AS connection_requested_at,
          a.accepted_at::STRING AS accepted_at,
-         a.email_collected_at::STRING AS email_collected_at
+         a.email_collected_at::STRING AS email_collected_at,
+         (${leadCanReturnToPoolSql("l", "a")}) AS can_unassign,
+         CASE
+           WHEN (${leadCanReturnToPoolSql("l", "a")}) THEN NULL
+           ELSE ${leadReturnToPoolBlockedReasonSql("l", "a")}
+         END AS unassign_blocked_reason
        FROM lead_assignments AS a
        INNER JOIN leads AS l ON l.id = a.lead_id
       WHERE a.operator_id = $1
@@ -849,6 +857,8 @@ export const getScoutAssignedLeads = action({
         connectionRequestedAt: nullableString(row.connection_requested_at),
         acceptedAt: nullableString(row.accepted_at),
         emailCollectedAt: nullableString(row.email_collected_at),
+        canUnassign: Boolean(row.can_unassign),
+        unassignBlockedReason: nullableString(row.unassign_blocked_reason),
       })),
     };
   },

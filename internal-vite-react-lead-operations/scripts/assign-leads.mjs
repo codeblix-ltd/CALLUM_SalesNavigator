@@ -14,7 +14,7 @@ async function run() {
   const provisioningKey = process.env.SCOUT_PROVISIONING_KEY;
   if (!databaseUrl || !convexUrl || !provisioningKey) {
     throw new Error(
-      "COCKROACH_DATABASE_URL, VITE_CONVEX_URL, or SCOUT_PROVISIONING_KEY is missing. Run npm run setup:secrets.",
+      "COCKROACH_DATABASE_URL, VITE_CONVEX_URL, or SCOUT_PROVISIONING_KEY is missing. Run pnpm run setup:secrets.",
     );
   }
 
@@ -131,7 +131,7 @@ function parseArgs(values) {
   }
   if (!parsed.username || !parsed.niche || !parsed.count) {
     throw new Error(
-      'Usage: npm run leads:assign -- --username scout01 --niche "Niche name" --count 10000',
+      'Usage: pnpm run leads:assign -- --username scout01 --niche "Niche name" --count 10000',
     );
   }
   return parsed;

@@ -32,6 +32,7 @@ import {
   Target,
   TrendingUp,
   UserCheck,
+  UserMinus,
   Users,
   X,
 } from "lucide-react";
@@ -135,6 +136,8 @@ type ScoutAssignedLead = {
   connectionRequestedAt: string | null;
   acceptedAt: string | null;
   emailCollectedAt: string | null;
+  canUnassign: boolean;
+  unassignBlockedReason: string | null;
 };
 
 type ScoutAssignedLeadsPage = {
@@ -534,6 +537,7 @@ function Dashboard({ adminName }: { adminName: string }) {
   const [scoutAssignedLeadsPage, setScoutAssignedLeadsPage] = useState(1);
   const [scoutAssignedLeadsLoading, setScoutAssignedLeadsLoading] = useState(false);
   const [scoutAssignedLeadsError, setScoutAssignedLeadsError] = useState("");
+  const [scoutAssignedLeadsRefreshKey, setScoutAssignedLeadsRefreshKey] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [codexStatus, setCodexStatus] = useState<CodexStatus | null>(null);
   const [codexError, setCodexError] = useState("");
@@ -697,7 +701,12 @@ function Dashboard({ adminName }: { adminName: string }) {
     return () => {
       cancelled = true;
     };
-  }, [getScoutAssignedLeads, scoutAssignedLeadsPage, selectedScout]);
+  }, [getScoutAssignedLeads, scoutAssignedLeadsPage, scoutAssignedLeadsRefreshKey, selectedScout]);
+
+  const handleAssignedLeadChanged = useCallback(async () => {
+    setScoutAssignedLeadsRefreshKey((current) => current + 1);
+    await Promise.all([refreshOverview(), refreshNicheAssignments()]);
+  }, [refreshNicheAssignments, refreshOverview]);
 
   useEffect(() => {
     if (settingsOpen) void refreshCodexStatus();
@@ -1045,6 +1054,7 @@ function Dashboard({ adminName }: { adminName: string }) {
             scoutAssignedLeadsLoading={scoutAssignedLeadsLoading}
             scoutAssignedLeadsError={scoutAssignedLeadsError}
             onScoutAssignedLeadsPageChange={setScoutAssignedLeadsPage}
+            onAssignedLeadChanged={handleAssignedLeadChanged}
             section={overviewSection}
           />
         ) : view === "scouts" ? (
@@ -1062,6 +1072,7 @@ function Dashboard({ adminName }: { adminName: string }) {
             scoutAssignedLeadsLoading={scoutAssignedLeadsLoading}
             scoutAssignedLeadsError={scoutAssignedLeadsError}
             onScoutAssignedLeadsPageChange={setScoutAssignedLeadsPage}
+            onAssignedLeadChanged={handleAssignedLeadChanged}
             niches={nicheAssignments}
             nichesLoading={nicheAssignmentsLoading}
             error={scoutAdminError}
@@ -1266,6 +1277,7 @@ function ScoutsPage({
   scoutAssignedLeadsLoading,
   scoutAssignedLeadsError,
   onScoutAssignedLeadsPageChange,
+  onAssignedLeadChanged,
   niches,
   nichesLoading,
   error,
@@ -1290,6 +1302,7 @@ function ScoutsPage({
   scoutAssignedLeadsLoading: boolean;
   scoutAssignedLeadsError: string;
   onScoutAssignedLeadsPageChange: (page: number) => void;
+  onAssignedLeadChanged: () => Promise<void>;
   niches: NicheAssignment[];
   nichesLoading: boolean;
   error: string;
@@ -1572,7 +1585,7 @@ function ScoutsPage({
           <div className="scout-directory-title"><PanelHeading eyebrow="Scout directory" title="Accounts and performance" description="Open a scout to review their full assigned queue" icon={<Users size={18} />} /><button className="scout-directory-toggle" type="button" onClick={() => setDirectoryOpen((open) => !open)} aria-expanded={directoryOpen}><ChevronDown size={16} className={directoryOpen ? "rotate-180" : ""} />{directoryOpen ? "Collapse" : "Expand"}</button></div>
           {directoryOpen && <div className="scout-controls"><label className="search-field compact"><Search size={16} /><input value={scoutSearch} onChange={(event) => setScoutSearch(event.target.value)} placeholder="Find a scout" />{scoutSearch && <button onClick={() => setScoutSearch("")} aria-label="Clear scout search"><X size={14} /></button>}</label><select value={scoutSort} onChange={(event) => setScoutSort(event.target.value as ScoutSort)} aria-label="Sort scouts"><option value="activity">Most activity</option><option value="emails">Most emails</option><option value="accepted">Most accepted</option><option value="assigned">Most assigned</option><option value="name">Name</option></select></div>}
         </div>
-        {directoryOpen && <><ScoutTable scouts={scouts} selectedScout={selectedScout} setSelectedScout={setSelectedScout} onToggleActive={(scout) => void toggleScout(scout)} togglingScoutId={scoutToggleBusyId} />{activeScout && <ScoutDetail scout={activeScout} activity={scoutActivity} assignedLeads={scoutAssignedLeads} assignedLeadsLoading={scoutAssignedLeadsLoading} assignedLeadsError={scoutAssignedLeadsError} onAssignedLeadsPageChange={onScoutAssignedLeadsPageChange} close={() => setSelectedScout(null)} />}</>}
+        {directoryOpen && <><ScoutTable scouts={scouts} selectedScout={selectedScout} setSelectedScout={setSelectedScout} onToggleActive={(scout) => void toggleScout(scout)} togglingScoutId={scoutToggleBusyId} />{activeScout && <ScoutDetail scout={activeScout} activity={scoutActivity} assignedLeads={scoutAssignedLeads} assignedLeadsLoading={scoutAssignedLeadsLoading} assignedLeadsError={scoutAssignedLeadsError} onAssignedLeadsPageChange={onScoutAssignedLeadsPageChange} onAssignedLeadChanged={onAssignedLeadChanged} close={() => setSelectedScout(null)} />}</>}
       </section>
       </>}
     </div>
@@ -1598,6 +1611,7 @@ function Overview({
   scoutAssignedLeadsLoading,
   scoutAssignedLeadsError,
   onScoutAssignedLeadsPageChange,
+  onAssignedLeadChanged,
   section,
 }: {
   analytics: Analytics | null;
@@ -1618,6 +1632,7 @@ function Overview({
   scoutAssignedLeadsLoading: boolean;
   scoutAssignedLeadsError: string;
   onScoutAssignedLeadsPageChange: (page: number) => void;
+  onAssignedLeadChanged: () => Promise<void>;
   section: OverviewSection;
 }) {
   const [scoutPage, setScoutPage] = useState(1);
@@ -1804,6 +1819,7 @@ function Overview({
               assignedLeadsLoading={scoutAssignedLeadsLoading}
               assignedLeadsError={scoutAssignedLeadsError}
               onAssignedLeadsPageChange={onScoutAssignedLeadsPageChange}
+              onAssignedLeadChanged={onAssignedLeadChanged}
               close={() => setSelectedScout(null)}
             />
           </div>
@@ -2119,6 +2135,7 @@ function ScoutDetail({
   assignedLeadsLoading,
   assignedLeadsError,
   onAssignedLeadsPageChange,
+  onAssignedLeadChanged,
   close,
 }: {
   scout: ScoutMetrics;
@@ -2127,6 +2144,7 @@ function ScoutDetail({
   assignedLeadsLoading: boolean;
   assignedLeadsError: string;
   onAssignedLeadsPageChange: (page: number) => void;
+  onAssignedLeadChanged: () => Promise<void>;
   close: () => void;
 }) {
   return (
@@ -2148,6 +2166,9 @@ function ScoutDetail({
         loading={assignedLeadsLoading}
         error={assignedLeadsError}
         onPageChange={onAssignedLeadsPageChange}
+        operatorId={scout.operatorId}
+        scoutName={scout.username}
+        onAssignedLeadChanged={onAssignedLeadChanged}
       />
     </div>
   );
@@ -2158,12 +2179,48 @@ function AssignedLeadList({
   loading,
   error,
   onPageChange,
+  operatorId,
+  scoutName,
+  onAssignedLeadChanged,
 }: {
   page: ScoutAssignedLeadsPage | null;
   loading: boolean;
   error: string;
   onPageChange: (page: number) => void;
+  operatorId: string;
+  scoutName: string;
+  onAssignedLeadChanged: () => Promise<void>;
 }) {
+  const unassignLead = useAction(api.adminScouts.unassignLead);
+  const [leadToUnassign, setLeadToUnassign] = useState<ScoutAssignedLead | null>(null);
+  const [unassigning, setUnassigning] = useState(false);
+  const [unassignError, setUnassignError] = useState("");
+  const [unassignNotice, setUnassignNotice] = useState("");
+
+  useEffect(() => {
+    setLeadToUnassign(null);
+    setUnassignError("");
+    setUnassignNotice("");
+  }, [operatorId]);
+
+  async function confirmUnassign() {
+    if (!leadToUnassign || !leadToUnassign.canUnassign) return;
+    setUnassigning(true);
+    setUnassignError("");
+    try {
+      const result = await unassignLead({ operatorId, leadId: leadToUnassign.id });
+      if (!result.returnedToPool) throw new Error("The lead was not returned to the pool.");
+      const leadName = leadToUnassign.fullName || "The lead";
+      setLeadToUnassign(null);
+      setUnassignNotice(`${leadName} is now available in the unassigned pool.`);
+      await onAssignedLeadChanged();
+    } catch (unassignFailure) {
+      setUnassignError(readError(unassignFailure));
+    } finally {
+      setUnassigning(false);
+    }
+  }
+
   return (
     <section className="assigned-leads-section" aria-label="Assigned leads">
       <div className="assigned-leads-heading">
@@ -2173,6 +2230,7 @@ function AssignedLeadList({
         </div>
         {page && <span>{formatNumber(page.total)} total · page {page.page} of {page.pageCount}</span>}
       </div>
+      {unassignNotice && <p className="assigned-leads-success"><CheckCircle2 size={14} />{unassignNotice}</p>}
       {loading && <div className="assigned-leads-state"><RefreshCw size={16} className="spin" /> Loading assigned leads…</div>}
       {!loading && error && <div className="assigned-leads-state error">{error}</div>}
       {!loading && !error && page && page.leads.length === 0 && <div className="assigned-leads-state">No assigned leads found.</div>}
@@ -2180,7 +2238,7 @@ function AssignedLeadList({
         <>
           <div className="assigned-leads-table-scroll">
             <table className="assigned-leads-table">
-              <thead><tr><th>Lead</th><th>Status</th><th>Original email</th><th>Assigned</th><th>Profile</th></tr></thead>
+              <thead><tr><th>Lead</th><th>Status</th><th>Email</th><th>Assigned</th><th>Profile</th><th>Pool action</th></tr></thead>
               <tbody>
                 {page.leads.map((lead) => (
                   <tr key={lead.id}>
@@ -2191,9 +2249,10 @@ function AssignedLeadList({
                       </div>
                     </td>
                     <td><span className={`lead-status status-${lead.status}`}>{leadStatusLabel(lead.status)}</span></td>
-                    <td>{lead.originalEmail ? <span className="assigned-lead-email"><Mail size={12} />{lead.originalEmail}</span> : <span className="muted-value">Not collected</span>}</td>
+                    <td>{lead.originalEmail || lead.workEmail ? <span className="assigned-lead-email"><Mail size={12} /><span>{lead.originalEmail || lead.workEmail}<small>{lead.originalEmail ? "Original email" : "Work email"}</small></span></span> : <span className="muted-value">Not collected</span>}</td>
                     <td><span className="assigned-lead-date">{formatShortDate(lead.assignedAt)}</span></td>
                     <td><a className="activity-link" href={lead.profileUrl} target="_blank" rel="noreferrer">Open <ExternalLink size={11} /></a></td>
+                    <td>{lead.canUnassign ? <button className="unassign-lead-button" type="button" onClick={() => { setUnassignError(""); setLeadToUnassign(lead); }}><UserMinus size={12} />Unassign</button> : <span className="protected-lead-label" title={lead.unassignBlockedReason || "This lead has protected work or contact data."}><ShieldCheck size={12} />Protected</span>}</td>
                   </tr>
                 ))}
               </tbody>
@@ -2210,7 +2269,49 @@ function AssignedLeadList({
           )}
         </>
       )}
+      {leadToUnassign && <UnassignLeadModal lead={leadToUnassign} scoutName={scoutName} busy={unassigning} error={unassignError} close={() => { if (!unassigning) { setLeadToUnassign(null); setUnassignError(""); } }} confirm={() => void confirmUnassign()} />}
     </section>
+  );
+}
+
+function UnassignLeadModal({ lead, scoutName, busy, error, close, confirm }: {
+  lead: ScoutAssignedLead;
+  scoutName: string;
+  busy: boolean;
+  error: string;
+  close: () => void;
+  confirm: () => void;
+}) {
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !busy) close();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [busy, close]);
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) close(); }}>
+      <section className="modal unassign-lead-modal" role="dialog" aria-modal="true" aria-labelledby="unassign-lead-title">
+        <button className="modal-close" type="button" onClick={close} disabled={busy} aria-label="Close unassign warning"><X size={18} /></button>
+        <div className="unassign-warning-icon"><AlertTriangle size={22} /></div>
+        <p className="eyebrow">Admin action</p>
+        <h2 id="unassign-lead-title">Return this lead to the pool?</h2>
+        <p><strong>{lead.fullName || "This lead"}</strong> will be removed from {scoutName}’s queue and become available for assignment to another scout.</p>
+        <div className="unassign-process-card">
+          <strong>What happens next</strong>
+          <ol>
+            <li>The current scout assignment is removed.</li>
+            <li>The lead stays in the database and keeps its existing niche.</li>
+            <li>It appears in the unassigned pool and can be assigned later.</li>
+          </ol>
+        </div>
+        <div className="unassign-safety-note"><ShieldCheck size={18} /><div><strong>Only untouched leads can move</strong><span>The server checks again that there is no original or work email, contact activity, profile work, qualification, note, email search, error, follow-up, or CRM work. If anything was recorded after this modal opened, the action will be refused.</span></div></div>
+        <p className="unassign-delete-note">This does not delete the lead or its niche data.</p>
+        {error && <p className="unassign-modal-error"><AlertTriangle size={14} />{error}</p>}
+        <div className="unassign-modal-actions"><button className="secondary-button" type="button" onClick={close} disabled={busy}>Keep assigned</button><button className="confirm-unassign-button" type="button" onClick={confirm} disabled={busy} autoFocus>{busy ? <RefreshCw size={14} className="spin" /> : <UserMinus size={14} />}{busy ? "Returning to pool…" : "Return to pool"}</button></div>
+      </section>
+    </div>
   );
 }
 

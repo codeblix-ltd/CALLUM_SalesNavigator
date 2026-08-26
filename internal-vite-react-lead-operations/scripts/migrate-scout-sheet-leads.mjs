@@ -1109,7 +1109,7 @@ function parseArgs(argv) {
   }
   if (!parsed.file || !["dry-run", "apply"].includes(parsed.mode)) {
     throw new Error(
-      "Usage: npm run db:migrate-scout-sheet -- --file <all-scout-leads.json> (--dry-run | --apply) [--backup-dir <dir>]",
+      "Usage: pnpm run db:migrate-scout-sheet -- --file <all-scout-leads.json> (--dry-run | --apply) [--backup-dir <dir>]",
     );
   }
   return parsed;

@@ -7,9 +7,12 @@ RUN apt-get update \
 ENV NODE_ENV=production
 WORKDIR /app
 
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --ignore-scripts=false \
-  && npm cache clean --force
+RUN corepack enable \
+  && corepack prepare pnpm@10.16.1 --activate
+
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --prod --frozen-lockfile --ignore-scripts=false \
+  && pnpm store prune
 
 COPY gateway ./gateway
 

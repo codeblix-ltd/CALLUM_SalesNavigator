@@ -2,6 +2,7 @@
   "name": "internal-vite-react-lead-operations",
   "private": true,
   "version": "0.0.0",
+  "packageManager": "pnpm@10.16.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -20,6 +21,7 @@
     "setup:secrets": "node scripts/configure-secrets.mjs",
     "extension:config": "node scripts/sync-extension-config.mjs",
     "extension:test": "node scripts/test-extension.mjs",
+    "admin-unassign:test": "node scripts/test-admin-unassignment.mjs",
     "extension:selfhost": "node scripts/build-self-hosted-extension.mjs",
     "gateway:start": "node --env-file=.env.gateway gateway/server.mjs",
     "gateway:dev": "node --env-file=.env.local --watch gateway/server.mjs",

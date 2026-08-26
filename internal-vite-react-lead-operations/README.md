@@ -34,11 +34,11 @@ The repository is linked to its existing Convex development deployment.
 # Only needed when COCKROACH_DATABASE_URL is not already in .env.local:
 $env:CRDB_PASSWORD="<CockroachDB SQL password>"
 
-npm run setup:secrets
+pnpm run setup:secrets
 npx @convex-dev/auth --skip-git-check --web-server-url http://localhost:5173
-npm run db:schema
-npm run convex:push
-npm run extension:config
+pnpm run db:schema
+pnpm run convex:push
+pnpm run extension:config
 ```
 
 `setup:secrets` generates the server-only scout provisioning key, the gateway
@@ -69,8 +69,8 @@ docker compose -f gateway/docker-compose.example.yml up -d --build
 
 ```powershell
 $env:CODEX_GATEWAY_URL="https://codex-gateway.example.com"
-npm run setup:secrets
-npm run convex:push
+pnpm run setup:secrets
+pnpm run convex:push
 ```
 
 Open the React admin app, unlock it, choose **Access settings**, and select
@@ -89,14 +89,14 @@ Create accounts individually. Omitting `--password` generates a strong
 password and prints it once.
 
 ```powershell
-npm run scout:create -- --username scout01
-npm run scout:create -- --username scout02
+pnpm run scout:create -- --username scout01
+pnpm run scout:create -- --username scout02
 ```
 
 To choose the initial password:
 
 ```powershell
-npm run scout:create -- --username scout03 --password "A-Strong-Password-123"
+pnpm run scout:create -- --username scout03 --password "A-Strong-Password-123"
 ```
 
 ## Assign leads
@@ -110,8 +110,8 @@ user: scout01
 pass: CaGFfSbA2mw5E7poTRwzLuFZgv7
 
 ```powershell
-npm run leads:assign -- --username scout01 --niche "Institute of Directors" --count 100
-npm run leads:assign -- --username scout01 --niche "Institute of Directors" --count 10000
+pnpm run leads:assign -- --username scout01 --niche "Institute of Directors" --count 100
+pnpm run leads:assign -- --username scout01 --niche "Institute of Directors" --count 10000
 ```
 
 `lead_assignments.lead_id` is the primary key. That database constraint is the
@@ -121,7 +121,7 @@ assignments.
 
 ## Load the extension
 
-1. Run `npm run extension:config`.
+1. Run `pnpm run extension:config`.
 2. Open `chrome://extensions`.
 3. Enable Developer mode.
 4. Choose **Load unpacked** and select the `chrome-extension` directory.
@@ -131,8 +131,8 @@ For scouts who cannot use Developer mode while the unlisted Chrome Web Store
 release is under review, a signed Windows self-hosted release can be generated:
 
 ```powershell
-npm run extension:test
-npm run extension:selfhost
+pnpm run extension:test
+pnpm run extension:selfhost
 ```
 
 The hosting bundle is written to `self-hosted-extension`. It targets
@@ -192,7 +192,7 @@ anything older than 92 days or without a verifiable date is skipped.
 Run the streaming importer once per niche:
 
 ```powershell
-npm run db:import -- --niche "Institute of Directors" --copy-chunk-size 5000 --defer-search-index "C:\path\to\leads.csv"
+pnpm run db:import -- --niche "Institute of Directors" --copy-chunk-size 5000 --defer-search-index "C:\path\to\leads.csv"
 ```
 
 The importer saves a durable checkpoint after every committed chunk. If the
@@ -210,13 +210,13 @@ be changed with `--max-retries`.
 ## Development and verification
 
 ```powershell
-npm run convex:dev
-npm run dev
+pnpm run convex:dev
+pnpm run dev
 
 npx tsc --noEmit
-npm run build
-npm run check
-npm run smoke
+pnpm run build
+pnpm run check
+pnpm run smoke
 ```
 
 The admin dashboard uses the fixed internal credentials documented above; no

@@ -10,7 +10,7 @@ const provisioningKey = process.env.SCOUT_PROVISIONING_KEY;
 
 if (!convexUrl || !provisioningKey) {
   throw new Error(
-    "VITE_CONVEX_URL or SCOUT_PROVISIONING_KEY is missing. Run npm run setup:secrets first.",
+    "VITE_CONVEX_URL or SCOUT_PROVISIONING_KEY is missing. Run pnpm run setup:secrets first.",
   );
 }
 
@@ -55,7 +55,7 @@ function parseArgs(values) {
   }
   if (!parsed.username) {
     throw new Error(
-      "Usage: npm run scout:create -- --username scout01 [--password StrongPassword123]",
+      "Usage: pnpm run scout:create -- --username scout01 [--password StrongPassword123]",
     );
   }
   return parsed;

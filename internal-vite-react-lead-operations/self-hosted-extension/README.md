@@ -34,8 +34,8 @@ publicly readable without a login or redirect to another hostname.
 From `internal-vite-react-lead-operations`:
 
 ```powershell
-npm run extension:test
-npm run extension:selfhost
+pnpm run extension:test
+pnpm run extension:selfhost
 ```
 
 The build copies only the extension's required runtime files, adds the external
@@ -53,8 +53,8 @@ extension ID differs from the published release.
 ## Publish an update
 
 1. Increase `chrome-extension/manifest.json` version.
-2. Run `npm run extension:test`.
-3. Run `npm run extension:selfhost` using the existing private key.
+2. Run `pnpm run extension:test`.
+3. Run `pnpm run extension:selfhost` using the existing private key.
 4. Upload `callum-scout.crx` first.
 5. Confirm its live SHA-256 equals `release.json`.
 6. Upload `updates.xml` last.

@@ -7,7 +7,7 @@ import App from './App.tsx'
 
 const convexUrl = import.meta.env.VITE_CONVEX_URL
 if (!convexUrl) {
-  throw new Error('VITE_CONVEX_URL is missing. Run npx convex dev once.')
+  throw new Error('VITE_CONVEX_URL is missing. Run pnpm exec convex dev once.')
 }
 const convex = new ConvexReactClient(convexUrl)
 
