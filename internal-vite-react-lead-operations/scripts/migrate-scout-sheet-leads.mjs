@@ -63,7 +63,12 @@ async function run() {
       [...prepared.groups.keys()],
       args.batchSize,
     );
-    const plan = buildPlan(prepared, existingBefore);
+    const veblenProfileKeys = await loadVeblenProfileKeys(
+      pool,
+      prepared,
+      args.batchSize,
+    );
+    const plan = buildPlan(prepared, existingBefore, veblenProfileKeys);
     const dryRun = summarizePlan(
       payload,
       prepared,
@@ -286,12 +291,17 @@ function prepareSourceRows(records) {
   return { rows, groups };
 }
 
-function buildPlan(prepared, existingByKey) {
+function buildPlan(prepared, existingByKey, veblenProfileKeys = new Set()) {
   const actionable = [];
   const conflicts = [];
+  const protectedProfiles = [];
   for (const [profileKey, rows] of prepared.groups) {
     const existing = existingByKey.get(profileKey);
     const operators = [...new Set(rows.map((row) => row.record.scout_account))];
+    if (veblenProfileKeys.has(profileKey)) {
+      protectedProfiles.push({ profileKey, rows, existing, operators });
+      continue;
+    }
     const existingOperator = existing?.operator_id ?? null;
     let operatorId = null;
     if (existingOperator) {
@@ -313,13 +323,17 @@ function buildPlan(prepared, existingByKey) {
       operators,
     });
   }
-  return { actionable, conflicts };
+  return { actionable, conflicts, protectedProfiles };
 }
 
 function summarizePlan(payload, prepared, plan, existingByKey, databaseBefore) {
   const validRows = prepared.rows.filter((row) => row.profileKey).length;
   const existingLeads = [...prepared.groups.keys()].filter((key) => existingByKey.has(key)).length;
   const existingAssignmentConflicts = plan.conflicts.reduce(
+    (total, group) => total + group.rows.length,
+    0,
+  );
+  const protectedVeblenRows = plan.protectedProfiles.reduce(
     (total, group) => total + group.rows.length,
     0,
   );
@@ -334,13 +348,15 @@ function summarizePlan(payload, prepared, plan, existingByKey, databaseBefore) {
     invalid_linkedin_rows: prepared.rows.length - validRows,
     unique_profiles: prepared.groups.size,
     existing_canonical_leads: existingLeads,
-    new_canonical_leads_planned: prepared.groups.size - existingLeads,
+    new_canonical_leads_planned: plan.actionable.filter((entry) => !entry.existing).length,
     actionable_unique_profiles: plan.actionable.length,
+    veblen_member_protected_profiles: plan.protectedProfiles.length,
+    veblen_member_protected_rows: protectedVeblenRows,
     existing_assignment_conflict_profiles: plan.conflicts.length,
     existing_assignment_conflict_rows: existingAssignmentConflicts,
     same_owner_source_rows_merged: selectedOwnerRows - plan.actionable.length,
     cross_scout_duplicate_rows_skipped:
-      validRows - selectedOwnerRows - existingAssignmentConflicts,
+      validRows - selectedOwnerRows - existingAssignmentConflicts - protectedVeblenRows,
     database_before: databaseBefore,
   };
 }
@@ -554,6 +570,9 @@ function buildAuditRows(migrationId, prepared, plan, existingByKey) {
   const actionableByKey = new Map(
     plan.actionable.map((entry) => [entry.profileKey, entry]),
   );
+  const protectedByKey = new Set(
+    plan.protectedProfiles.map((entry) => entry.profileKey),
+  );
   return prepared.rows.map((row) => {
     if (!row.profileKey) {
       return auditRow(
@@ -567,6 +586,16 @@ function buildAuditRows(migrationId, prepared, plan, existingByKey) {
     }
     const existing = existingByKey.get(row.profileKey);
     const assignedOperator = existing?.operator_id ?? null;
+    if (protectedByKey.has(row.profileKey)) {
+      return auditRow(
+        migrationId,
+        row,
+        "veblen_member_skipped",
+        existing?.lead_id ?? null,
+        assignedOperator,
+        "This profile matches a Veblen member and was preserved only in the migration audit.",
+      );
+    }
     const actionable = actionableByKey.get(row.profileKey);
     if (!actionable) {
       return auditRow(
@@ -679,6 +708,8 @@ async function verifyMigration(pool, migrationId, scoutIds, digest) {
               AS existing_assignment_conflicts,
             count(*) FILTER (WHERE outcome = 'invalid_url_skipped')::INT8
               AS invalid_url_skipped,
+            count(*) FILTER (WHERE outcome = 'veblen_member_skipped')::INT8
+              AS veblen_member_skipped,
             count(DISTINCT lead_id)::INT8 AS canonical_leads_linked
        FROM scout_sheet_migration_rows
       WHERE migration_id = $1::UUID`,
@@ -753,6 +784,37 @@ async function linkMigrationToNiche(pool, migrationId, niche) {
     [migrationId, normalizedNiche],
   );
   return numberValues(counts.rows[0]);
+}
+
+async function loadVeblenProfileKeys(pool, prepared, batchSize) {
+  const sourceProfiles = [...prepared.groups.entries()].map(([profileKey, rows]) => ({
+    profile_key: profileKey,
+    linkedin_url: rows[0]?.linkedinUrl ?? "",
+    email: firstNonEmpty(rows.map((row) => row.record), "email") || null,
+  }));
+  const protectedKeys = new Set();
+  for (const batch of chunks(sourceProfiles, batchSize)) {
+    const matches = await withRetry(
+      () => pool.query(
+        `SELECT DISTINCT source.profile_key
+           FROM jsonb_to_recordset($1::JSONB) AS source(
+             profile_key STRING,
+             linkedin_url STRING,
+             email STRING
+           )
+           INNER JOIN veblen_members AS vm
+             ON vm.linkedin_url = lower(rtrim(source.linkedin_url, '/'))
+             OR (
+               vm.normalized_email IS NOT NULL
+               AND vm.normalized_email = lower(nullif(trim(source.email), ''))
+             )`,
+        [JSON.stringify(batch)],
+      ),
+      "check Veblen member exclusions",
+    );
+    for (const row of matches.rows) protectedKeys.add(row.profile_key);
+  }
+  return protectedKeys;
 }
 
 async function loadDatabaseCounts(pool, scoutIds) {
