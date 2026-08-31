@@ -152,6 +152,17 @@ type ScoutOperations = {
 };
 
 const optionalText = v.union(v.string(), v.null());
+const languageStatusValidator = v.union(
+  v.literal("english"),
+  v.literal("non_english"),
+  v.literal("uncertain"),
+);
+const languageResultValidator = v.object({
+  id: v.string(),
+  status: languageStatusValidator,
+  languageCode: v.string(),
+  confidence: v.number(),
+});
 const settingsValidator = v.object({
   postEngagements: v.number(),
   linkedinPremium: v.boolean(),
@@ -2438,13 +2449,249 @@ export const reportError = action({
   },
 });
 
-export const draftComment = action({
-  args: { postText: v.string() },
-  returns: v.object({ draft: v.string(), threadId: v.string(), model: v.string() }),
+export const classifyLanguages = action({
+  args: {
+    leadId: v.string(),
+    context: v.union(
+      v.literal("profile"),
+      v.literal("posts"),
+      v.literal("comment"),
+    ),
+    samples: v.array(v.object({ id: v.string(), text: v.string() })),
+  },
+  returns: v.object({
+    results: v.array(languageResultValidator),
+    cached: v.boolean(),
+    model: v.string(),
+  }),
   handler: async (
     ctx,
     args,
-  ): Promise<{ draft: string; threadId: string; model: string }> => {
+  ): Promise<{
+    results: Array<{
+      id: string;
+      status: "english" | "non_english" | "uncertain";
+      languageCode: string;
+      confidence: number;
+    }>;
+    cached: boolean;
+    model: string;
+  }> => {
+    const scout: ScoutIdentity = await ctx.runQuery(
+      internal.scoutIdentity.requireScout,
+      {},
+    );
+    if (args.samples.length < 1 || args.samples.length > 3) {
+      throw new Error("Language checks require between one and three samples.");
+    }
+    const seenIds = new Set<string>();
+    const samples = args.samples.map((sample) => {
+      const id = sample.id.trim().slice(0, 100);
+      const text = sample.text.trim().slice(0, 8_000);
+      if (!id || seenIds.has(id)) {
+        throw new Error("Language sample ids must be unique.");
+      }
+      if (text.length < 12) {
+        throw new Error("Language samples must contain at least 12 characters.");
+      }
+      seenIds.add(id);
+      return { id, text };
+    });
+
+    const database = getPool();
+    const leadResult = await database.query(
+      `SELECT
+         l.profile_language,
+         l.profile_language_status,
+         l.profile_language_confidence,
+         l.profile_language_checked_at
+       FROM lead_assignments AS a
+       INNER JOIN leads AS l ON l.id = a.lead_id
+       WHERE a.lead_id = $1::UUID
+         AND a.operator_id = $2
+         AND a.status IN ('assigned', 'viewed', 'engaged', 'failed')
+       LIMIT 1`,
+      [args.leadId, scout.operatorId],
+    );
+    const lead = leadResult.rows[0];
+    if (!lead) throw new Error("This lead is no longer available for a language check.");
+
+    if (
+      args.context === "profile" &&
+      samples.length === 1 &&
+      ["english", "non_english", "uncertain"].includes(
+        String(lead.profile_language_status || ""),
+      ) &&
+      lead.profile_language_checked_at &&
+      Date.now() - new Date(lead.profile_language_checked_at).getTime() <
+        90 * 24 * 60 * 60 * 1_000
+    ) {
+      return {
+        results: [
+          {
+            id: samples[0].id,
+            status: lead.profile_language_status,
+            languageCode: nullableString(lead.profile_language) || "und",
+            confidence: Math.max(
+              0,
+              Math.min(1, Number(lead.profile_language_confidence) || 0),
+            ),
+          },
+        ],
+        cached: true,
+        model: "cached",
+      };
+    }
+
+    const result = await requestCodexGateway<{
+      results: Array<{
+        id: string;
+        status: string;
+        languageCode: string;
+        confidence: number;
+      }>;
+      model: string;
+    }>("/v1/linkedin/language-check", {
+      method: "POST",
+      timeoutMs: 125_000,
+      body: {
+        requestId: randomUUID(),
+        scoutId: scout.userId,
+        context: args.context,
+        samples,
+      },
+    });
+    const results = normalizeLanguageResults(result.results, samples);
+    if (args.context === "profile") {
+      const profileResult = results[0];
+      await database.query(
+        `UPDATE leads
+            SET profile_language = $2,
+                profile_language_status = $3,
+                profile_language_confidence = $4,
+                profile_language_checked_at = now(),
+                updated_at = now()
+          WHERE id = $1::UUID`,
+        [
+          args.leadId,
+          profileResult.languageCode,
+          profileResult.status,
+          profileResult.confidence,
+        ],
+      );
+    }
+    return { results, cached: false, model: String(result.model || "unknown") };
+  },
+});
+
+export const recordLeadLanguageDecision = action({
+  args: {
+    leadId: v.string(),
+    status: languageStatusValidator,
+    languageCode: v.string(),
+    confidence: v.number(),
+    source: v.union(v.literal("profile"), v.literal("recent_posts")),
+  },
+  returns: v.object({ filtered: v.boolean(), note: optionalText }),
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ filtered: boolean; note: string | null }> => {
+    const scout: ScoutIdentity = await ctx.runQuery(
+      internal.scoutIdentity.requireScout,
+      {},
+    );
+    const languageCode = /^[a-z]{2}$/i.test(args.languageCode.trim())
+      ? args.languageCode.trim().toLowerCase()
+      : "und";
+    const confidence = Math.max(0, Math.min(1, Number(args.confidence) || 0));
+    const filtered = args.status !== "english";
+    const note = args.status === "non_english"
+      ? `Non-English profile (${languageCode}, ${Math.round(confidence * 100)}% confidence)`
+      : args.status === "uncertain"
+        ? "Language could not be confirmed as English; manual review required"
+        : null;
+    const database = getPool();
+    const client = await database.connect();
+    try {
+      await client.query("BEGIN");
+      const assignment = await client.query(
+        `SELECT status
+           FROM lead_assignments
+          WHERE lead_id = $1::UUID
+            AND operator_id = $2
+            AND status IN ('assigned', 'viewed', 'engaged', 'failed')
+          FOR UPDATE`,
+        [args.leadId, scout.operatorId],
+      );
+      if (!assignment.rows[0]) {
+        throw new Error("This lead is no longer available for a language decision.");
+      }
+      await client.query(
+        `UPDATE leads
+            SET profile_language = $2,
+                profile_language_status = $3,
+                profile_language_confidence = $4,
+                profile_language_checked_at = now(),
+                updated_at = now()
+          WHERE id = $1::UUID`,
+        [args.leadId, languageCode, args.status, confidence],
+      );
+      if (filtered) {
+        await client.query(
+          `UPDATE lead_assignments
+              SET status = 'skipped',
+                  qualification_status = 'not_qualified',
+                  qualification_note = $3,
+                  connection_request_reserved_on = NULL,
+                  last_error = NULL,
+                  last_error_at = NULL,
+                  updated_at = now()
+            WHERE lead_id = $1::UUID AND operator_id = $2`,
+          [args.leadId, scout.operatorId, note],
+        );
+      }
+      await insertEvent(
+        client,
+        args.leadId,
+        scout.operatorId,
+        filtered ? "language_filtered" : "language_checked",
+        {
+          status: args.status,
+          languageCode,
+          confidence,
+          source: args.source,
+          note,
+        },
+      );
+      await client.query("COMMIT");
+      return { filtered, note };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+});
+
+export const draftComment = action({
+  args: { postText: v.string() },
+  returns: v.object({
+    draft: v.string(),
+    languageStatus: v.literal("english"),
+    threadId: v.string(),
+    model: v.string(),
+  }),
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{
+    draft: string;
+    languageStatus: "english";
+    threadId: string;
+    model: string;
+  }> => {
     const scout: ScoutIdentity = await ctx.runQuery(
       internal.scoutIdentity.requireScout,
       {},
@@ -2455,6 +2702,7 @@ export const draftComment = action({
     }
     return requestCodexGateway<{
       draft: string;
+      languageStatus: "english";
       threadId: string;
       model: string;
     }>("/v1/drafts", {
@@ -2937,6 +3185,50 @@ function isAllowedTransition(current: string, next: string) {
     return ["assigned", "viewed", "engaged", "failed"].includes(current);
   }
   return current === "viewed" && next === "engaged";
+}
+
+function normalizeLanguageResults(
+  value: Array<{
+    id: string;
+    status: string;
+    languageCode: string;
+    confidence: number;
+  }>,
+  samples: Array<{ id: string; text: string }>,
+) {
+  if (!Array.isArray(value) || value.length !== samples.length) {
+    throw new Error("The language service returned an incomplete result.");
+  }
+  const expectedIds = new Set(samples.map((sample) => sample.id));
+  const seen = new Set<string>();
+  const normalized = value.map((result) => {
+    const id = String(result?.id || "").trim();
+    if (!expectedIds.has(id) || seen.has(id)) {
+      throw new Error("The language service returned an invalid sample id.");
+    }
+    seen.add(id);
+    const confidence = Math.max(0, Math.min(1, Number(result.confidence) || 0));
+    const languageCode = /^[a-z]{2}$/i.test(String(result.languageCode || ""))
+      ? String(result.languageCode).toLowerCase()
+      : "und";
+    const rawStatus = String(result.status || "uncertain");
+    let status: "english" | "non_english" | "uncertain" =
+      ["english", "non_english"].includes(rawStatus) && confidence >= 0.8
+        ? rawStatus as "english" | "non_english"
+        : "uncertain";
+    if (
+      (status === "english" && languageCode !== "en") ||
+      (status === "non_english" && languageCode === "en")
+    ) {
+      status = "uncertain";
+    }
+    return { id, status, languageCode, confidence };
+  });
+  return samples.map((sample) => {
+    const result = normalized.find((item) => item.id === sample.id);
+    if (!result) throw new Error("The language service omitted a sample.");
+    return result;
+  });
 }
 
 function normalizeLinkedInProfileUrl(value: unknown) {

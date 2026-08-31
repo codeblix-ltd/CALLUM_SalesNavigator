@@ -54,7 +54,7 @@ const manifest = JSON.parse(manifestSource);
 const helpSource = await readExtensionFile("help.html");
 const helpStyles = await readExtensionFile("help.css");
 
-assert.equal(manifest.version, "0.10.24");
+assert.equal(manifest.version, "0.10.25");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -354,6 +354,23 @@ assert.match(contentSource, /a\[href\*='\/messaging\/compose\/'\]/);
 assert.match(contentSource, /contactSections[\s\S]*textContent\?\.length/);
 assert.match(contentSource, /topAffiliations/);
 assert.match(contentSource, /no like or comment was added/i);
+assert.match(contentSource, /Checking post language before any interaction/);
+assert.match(contentSource, /scouts:classifyLanguages/);
+assert.match(contentSource, /leadLanguageDecision/);
+const postEngagementSource = contentSource.slice(
+  contentSource.indexOf("async function runPostEngagement"),
+  contentSource.indexOf("async function runConnectionRequest"),
+);
+assert.ok(
+  postEngagementSource.indexOf('context: "posts"') <
+    postEngagementSource.indexOf("handleLikeButton(postEl)"),
+  "Post language must be checked before LinkedIn receives a Like.",
+);
+assert.ok(
+  postEngagementSource.indexOf('response?.languageStatus !== "english"') <
+    postEngagementSource.indexOf("handleLikeButton(postEl)"),
+  "The finished English draft must be validated before LinkedIn receives a Like.",
+);
 assert.match(contentSource, /TOP_POST_SCAN_LIMIT = 3/);
 assert.match(contentSource, /\.slice\(0, TOP_POST_SCAN_LIMIT\)/);
 const findPostElementsSource = contentSource.slice(
@@ -371,6 +388,18 @@ assert.match(contentStyles, /data-callum-automation/);
 assert.doesNotMatch(backgroundSource, /CHECK_LINKEDIN_PREMIUM/);
 assert.doesNotMatch(backgroundSource, /DRAFT_FIRST_DM|scouts:draftFirstDm/);
 assert.match(backgroundSource, /scouts:draftConnectionNote/);
+assert.match(backgroundSource, /checkLeadProfileLanguage/);
+assert.match(backgroundSource, /scouts:recordLeadLanguageDecision/);
+assert.match(backgroundSource, /languageFiltered: true/);
+const leadWorkflowSource = backgroundSource.slice(
+  backgroundSource.indexOf("async function runLeadWorkflow"),
+  backgroundSource.indexOf("function uniqueLeads"),
+);
+assert.ok(
+  leadWorkflowSource.indexOf("checkLeadProfileLanguage") <
+    leadWorkflowSource.indexOf("inspectConnectionStatus"),
+  "Profile language must be checked before the connection workflow.",
+);
 assert.match(backgroundSource, /CONNECTION_NOTE_MAX_ATTEMPTS = 2/);
 assert.match(backgroundSource, /The connection request will still continue without a note/);
 assert.doesNotMatch(backgroundSource, /PREMIUM_CHECK_TTL_MS|force: true|cached: true/);
@@ -535,6 +564,12 @@ assert.match(clientSource, /refreshOnce/);
 assert.match(clientSource, /clearAuthIfUnchanged/);
 assert.match(scoutSource, /export const getScoutOperations/);
 assert.match(scoutSource, /export const draftConnectionNote/);
+assert.match(scoutSource, /export const classifyLanguages/);
+assert.match(scoutSource, /export const recordLeadLanguageDecision/);
+assert.match(scoutSource, /language_filtered/);
+assert.match(scoutSource, /profile_language_checked_at/);
+assert.match(schemaSource, /profile_language_status STRING NOT NULL DEFAULT 'unchecked'/);
+assert.match(schemaSource, /'english', 'non_english', 'uncertain'/);
 assert.match(scoutSource, /composeConnectionNote/);
 assert.match(scoutSource, /const detailLimit = 300 - prefix\.length - closing\.length - 2/);
 assert.match(scoutSource, /I would be glad to connect\./);

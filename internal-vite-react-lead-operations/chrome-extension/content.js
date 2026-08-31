@@ -352,7 +352,7 @@
 
     addLog("Settings", `Posts: ${maxPosts}, Check comments: ${validate ? "Yes" : "No"}`);
 
-    if (maxPosts === 0) {
+    if (maxPosts === 0 && !options.requireLanguageFallback) {
       const skipReason = "The post limit has been reached for today.";
       addLog("Posts skipped", skipReason);
       updateStatus("No comment was added. Continuing to the connection request...");
@@ -363,6 +363,11 @@
         partial: true,
         skipped: true,
         skipReason,
+        leadLanguageDecision: {
+          status: options.profileLanguageStatus || "english",
+          languageCode: options.profileLanguageStatus === "english" ? "en" : "und",
+          confidence: options.profileLanguageStatus === "english" ? 1 : 0,
+        },
       };
     }
 
@@ -412,8 +417,13 @@
         skipReason =
           "No recent posts among the latest 3 could be used. Reposts were skipped.";
       }
-      addLog("Connection next", "No comment was added, but this lead will still be connected.");
-      updateStatus("No comment was added. Continuing to the connection request...");
+      if (options.requireLanguageFallback) {
+        addLog("Language check", "English could not be confirmed from this profile or its recent posts.");
+        updateStatus("English could not be confirmed. This lead will be parked for review.");
+      } else {
+        addLog("Connection next", "No comment was added, but this lead will still be connected.");
+        updateStatus("No comment was added. Continuing to the connection request...");
+      }
       return {
         engagedCount: 0,
         totalProcessed: inspectedPosts.length,
@@ -421,6 +431,11 @@
         partial: true,
         skipped: true,
         skipReason,
+        leadLanguageDecision: {
+          status: options.requireLanguageFallback ? "uncertain" : "english",
+          languageCode: options.requireLanguageFallback ? "und" : "en",
+          confidence: options.requireLanguageFallback ? 0 : 1,
+        },
       };
     }
 
@@ -445,10 +460,119 @@
         `${oldPostCount} older than 3 months and ${unknownPostCount} with no readable date were skipped.`,
       );
     }
-    const countToEngage = Math.min(posts.length, maxPosts);
+    updateStatus("Checking post language before any interaction...");
+    const readablePosts = [];
+    for (let index = 0; index < posts.length; index += 1) {
+      const postEl = posts[index];
+      postEl.scrollIntoView({ behavior: "smooth", block: "center" });
+      await sleep(500);
+      const verifiedAgeDays = extractPostAgeDays(postEl);
+      if (verifiedAgeDays === null || verifiedAgeDays > MAX_POST_AGE_DAYS) {
+        continue;
+      }
+      await handleSeeMore(postEl);
+      const postText = extractPostText(postEl).slice(0, 8_000);
+      const postUrl = extractPostUrl(postEl);
+      if (!postText || postText.length < 30 || !postUrl) continue;
+      readablePosts.push({
+        id: `post-${index + 1}`,
+        postEl,
+        postIndex: index + 1,
+        postText,
+        postUrl,
+      });
+    }
+
+    let languageResults = [];
+    if (readablePosts.length > 0) {
+      const languageResponse = await ScoutApi.authenticatedAction(
+        "scouts:classifyLanguages",
+        {
+          leadId: String(options.leadId),
+          context: "posts",
+          samples: readablePosts.map((post) => ({
+            id: post.id,
+            text: post.postText,
+          })),
+        },
+      );
+      languageResults = languageResponse?.results || [];
+    }
+    const languageById = new Map(
+      languageResults.map((result) => [result.id, result]),
+    );
+    const classifiedPosts = readablePosts.map((post) => ({
+      ...post,
+      language: languageById.get(post.id) || {
+        status: "uncertain",
+        languageCode: "und",
+        confidence: 0,
+      },
+    }));
+    const englishPosts = classifiedPosts.filter(
+      (post) => post.language.status === "english",
+    );
+    const rejectedLanguagePosts = classifiedPosts.length - englishPosts.length;
+    if (rejectedLanguagePosts > 0) {
+      addLog(
+        "Language filter",
+        `${rejectedLanguagePosts} post${rejectedLanguagePosts === 1 ? " was" : "s were"} not confirmed as English; no like or comment was added.`,
+      );
+    }
+    const longEnglishPost = englishPosts.find(
+      (post) => post.postText.replace(/\s/g, "").length >= 200,
+    );
+    const englishConfidence = englishPosts.length
+      ? Math.min(...englishPosts.map((post) => Number(post.language.confidence) || 0))
+      : 0;
+    const leadLanguageDecision =
+      options.profileLanguageStatus === "english" ||
+      englishPosts.length >= 2 ||
+      Boolean(longEnglishPost)
+        ? {
+            status: "english",
+            languageCode: "en",
+            confidence: options.profileLanguageStatus === "english"
+              ? 1
+              : englishConfidence,
+          }
+        : { status: "uncertain", languageCode: "und", confidence: 0 };
+
+    if (options.requireLanguageFallback && leadLanguageDecision.status !== "english") {
+      const skipReason =
+        "English could not be confirmed from the profile or the latest readable posts.";
+      addLog("Language check", skipReason);
+      updateStatus("English could not be confirmed. This lead will be parked for review.");
+      return {
+        engagedCount: 0,
+        totalProcessed: readablePosts.length,
+        activities: [],
+        partial: true,
+        skipped: true,
+        skipReason,
+        leadLanguageDecision,
+      };
+    }
+
+    if (maxPosts === 0) {
+      const skipReason = "The post limit has been reached for today.";
+      addLog("Posts skipped", skipReason);
+      updateStatus("No comment was added. Continuing to the connection request...");
+      return {
+        engagedCount: 0,
+        totalProcessed: readablePosts.length,
+        activities: [],
+        partial: true,
+        skipped: true,
+        skipReason,
+        leadLanguageDecision,
+      };
+    }
+
+    const countToEngage = Math.min(englishPosts.length, maxPosts);
     addLog(
       "Posts",
-      `Checked only the latest ${inspectedPosts.length}. Found ${posts.length} recent original post${posts.length === 1 ? "" : "s"}; working on ${countToEngage}.`,
+      `Checked only the latest ${inspectedPosts.length}. Found ${englishPosts.length} recent English original post${englishPosts.length === 1 ? "" : "s"}; working on ${countToEngage}.`,
     );
 
     let engagedCount = 0;
@@ -456,7 +580,12 @@
     const skippedReasons = [];
 
     for (let i = 0; i < countToEngage; i++) {
-      const postEl = posts[i];
+      const {
+        postEl,
+        postIndex,
+        postText,
+        postUrl,
+      } = englishPosts[i];
       updateStatus(`Working on post ${i + 1} of ${countToEngage}...`);
 
       // Scroll post into view
@@ -480,47 +609,18 @@
         continue;
       }
 
-      // 1. Click 'Like' button
-      const likeResult = await handleLikeButton(postEl);
-      if (!likeResult.success) {
-        addLog("Problem", `Couldn’t like post ${i + 1}`);
-        skippedReasons.push(`post ${i + 1}: Like was unavailable`);
-        continue;
-      }
-      addLog(
-        likeResult.changed ? "Liked" : "Like",
-        likeResult.changed
-          ? `Liked post ${i + 1}`
-          : `Post ${i + 1} was already liked`,
-      );
-
-      // 2. Click 'see more' if present and extract full post commentary text
-      await handleSeeMore(postEl);
-      const postText = extractPostText(postEl);
-      const postUrl = extractPostUrl(postEl);
-
-      if (!postText || postText.length < 30) {
-        addLog("Skipped", `Post ${i + 1} did not have enough text for a comment`);
-        skippedReasons.push(`post ${i + 1}: not enough readable text`);
-        continue;
-      }
-      if (!postUrl) {
-        throw new Error(
-          `We couldn’t save post ${i + 1}, so no comment was posted.`,
-        );
-      }
-
       addLog("Read", `"${postText.substring(0, 60)}..."`);
 
-      // 3. Request a draft comment
+      // The post is read and confirmed as English before any public action.
       updateStatus(`Writing a comment for post ${i + 1}...`);
       const response = await ScoutApi.authenticatedAction("scouts:draftComment", {
         postText: postText.slice(0, 8_000),
       });
       let draftText = response?.draft?.trim() || "";
-      if (!draftText) {
+      if (!draftText || response?.languageStatus !== "english") {
         throw new Error(`No comment was created for post ${i + 1}. Try again.`);
       }
+      const generatedDraft = draftText;
 
       // 4. Handle Comment Validation Option
       if (validate) {
@@ -533,6 +633,41 @@
         }
         draftText = userApprovedText;
       }
+
+      if (draftText !== generatedDraft) {
+        if (draftText.length < 12) {
+          addLog("Skipped", `Edited comment ${i + 1} was too short to verify as English`);
+          skippedReasons.push(`post ${postIndex}: edited comment was too short`);
+          continue;
+        }
+        const editedLanguage = await ScoutApi.authenticatedAction(
+          "scouts:classifyLanguages",
+          {
+            leadId: String(options.leadId),
+            context: "comment",
+            samples: [{ id: "edited-comment", text: draftText }],
+          },
+        );
+        if (editedLanguage?.results?.[0]?.status !== "english") {
+          addLog("Skipped", `Edited comment ${i + 1} was not confirmed as English`);
+          skippedReasons.push(`post ${postIndex}: edited comment was not English`);
+          continue;
+        }
+      }
+
+      // Only like after the post and final comment have passed the language gates.
+      const likeResult = await handleLikeButton(postEl);
+      if (!likeResult.success) {
+        addLog("Problem", `Couldn’t like post ${i + 1}`);
+        skippedReasons.push(`post ${postIndex}: Like was unavailable`);
+        continue;
+      }
+      addLog(
+        likeResult.changed ? "Liked" : "Like",
+        likeResult.changed
+          ? `Liked post ${i + 1}`
+          : `Post ${i + 1} was already liked`,
+      );
 
       // 5. Click 'Comment' button under post
       updateStatus(`Opening the comment box for post ${i + 1}...`);
@@ -596,6 +731,7 @@
         partial: true,
         skipped: true,
         skipReason,
+        leadLanguageDecision,
       };
     }
 
@@ -618,6 +754,7 @@
       totalProcessed: countToEngage,
       activities,
       partial,
+      leadLanguageDecision,
     };
   }
 
@@ -896,11 +1033,15 @@
     );
     if (!currentProfileUrl || currentProfileUrl !== expectedProfileUrl) {
       throw new Error(
-        "LinkedIn opened the wrong profile. No connection note was created.",
+        "LinkedIn opened the wrong profile. Nothing was sent.",
       );
     }
 
-    updateStatus("Reading this profile for a personal connection note...");
+    updateStatus(
+      options.languageCheckOnly
+        ? "Reading profile text for the English-language check..."
+        : "Reading this profile for a personal connection note...",
+    );
     const main = await waitForMatch(
       () => document.querySelector("main") || null,
       20_000,
@@ -974,6 +1115,7 @@
       currentCompany,
     };
     if (
+      !options.languageCheckOnly &&
       !profile.headline &&
       !profile.about &&
       !profile.currentRole &&
@@ -984,7 +1126,11 @@
       );
     }
     addLog("Profile read", fullName || "Connection request");
-    updateStatus("Profile read. Creating a personal connection note...");
+    updateStatus(
+      options.languageCheckOnly
+        ? "Profile text is ready for the language check."
+        : "Profile read. Creating a personal connection note...",
+    );
     return profile;
   }
 

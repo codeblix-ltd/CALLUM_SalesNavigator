@@ -1859,6 +1859,13 @@ async function runPostEngagementWithRecovery(
         totalProcessed: Number(automationOptions.postEngagements || engagedCount),
         partial: engagedCount < Number(automationOptions.postEngagements || engagedCount),
         recoveredAfterRefresh: true,
+        leadLanguageDecision: automationOptions.requireLanguageFallback
+          ? { status: "english", languageCode: "en", confidence: 0.8 }
+          : {
+              status: automationOptions.profileLanguageStatus || "english",
+              languageCode: automationOptions.profileLanguageStatus === "english" ? "en" : "und",
+              confidence: automationOptions.profileLanguageStatus === "english" ? 1 : 0,
+            },
       },
     };
   }
@@ -2051,6 +2058,79 @@ async function createPersonalizedConnectionNoteWithRetry(
   throw lastError || new Error("The personal connection note could not be created.");
 }
 
+async function checkLeadProfileLanguage(
+  runContext,
+  tabId,
+  lead,
+  profileUrl,
+) {
+  await sendAutomationMessageToTab(runContext, tabId, {
+    type: "SHOW_AUTOMATION_STATUS",
+    status: "Checking that this profile is in English...",
+  }).catch(() => {});
+  let profile = null;
+  try {
+    const extraction = await sendAutomationMessageToTab(runContext, tabId, {
+      type: "EXTRACT_CONNECTION_NOTE_PROFILE",
+      options: {
+        expectedProfileUrl: profileUrl,
+        expectedProfileName: String(lead.fullName || "").trim(),
+        languageCheckOnly: true,
+      },
+    });
+    if (extraction?.ok) profile = extraction.result || {};
+  } catch {
+    profile = null;
+  }
+  const sample = [profile?.headline, profile?.currentRole, profile?.about]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .join("\n")
+    .slice(0, 8_000);
+  if (sample.length < 30) {
+    return {
+      status: "uncertain",
+      languageCode: "und",
+      confidence: 0,
+      cached: false,
+    };
+  }
+  const response = await ScoutApi.authenticatedAction(
+    "scouts:classifyLanguages",
+    {
+      leadId: lead.id,
+      context: "profile",
+      samples: [{ id: "profile", text: sample }],
+    },
+  );
+  const decision = response?.results?.[0] || {
+    status: "uncertain",
+    languageCode: "und",
+    confidence: 0,
+  };
+  if (decision.status !== "uncertain") {
+    await ScoutApi.authenticatedAction("scouts:recordLeadLanguageDecision", {
+      leadId: lead.id,
+      status: decision.status,
+      languageCode: decision.languageCode,
+      confidence: Number(decision.confidence || 0),
+      source: "profile",
+    });
+  }
+  return { ...decision, cached: Boolean(response?.cached) };
+}
+
+async function recordRecentPostLanguageDecision(lead, decision) {
+  return ScoutApi.authenticatedAction("scouts:recordLeadLanguageDecision", {
+    leadId: lead.id,
+    status: decision?.status === "english" ? "english" : "uncertain",
+    languageCode:
+      decision?.status === "english" ? decision.languageCode || "en" : "und",
+    confidence: Number(decision?.confidence || 0),
+    source: "recent_posts",
+  });
+}
+
 async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
   let workflowTabId = null;
   let connectionReserved = false;
@@ -2061,6 +2141,11 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
   let engagementSkipReason = null;
   let resolvedProfileUrl = lead.linkedinUrl;
   let knownConnectionDetected = false;
+  let profileLanguage = {
+    status: "uncertain",
+    languageCode: "und",
+    confidence: 0,
+  };
   try {
     throwIfWorkflowControlled(runContext);
     let includeNote = Boolean(settings.includeNote && settings.linkedinPremium);
@@ -2103,6 +2188,37 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
     throwIfWorkflowControlled(runContext);
 
     await waitForAutomationContentScript(runContext, tab.id);
+    profileLanguage = await checkLeadProfileLanguage(
+      runContext,
+      tab.id,
+      lead,
+      profileUrl,
+    );
+    throwIfWorkflowControlled(runContext);
+    if (profileLanguage.status === "non_english") {
+      const languageLabel = profileLanguage.languageCode === "und"
+        ? "another language"
+        : profileLanguage.languageCode.toUpperCase();
+      await updateRunProgress(runContext, progress, {
+        phase: "working_leads",
+        message: `${lead.fullName} was skipped because the profile is not in English (${languageLabel}).`,
+        currentLead: {
+          id: lead.id,
+          fullName: lead.fullName,
+          status: "skipped",
+        },
+      });
+      return {
+        leadId: lead.id,
+        leadName: lead.fullName,
+        status: "skipped",
+        profileUrl,
+        languageFiltered: true,
+        languageStatus: "non_english",
+        languageCode: profileLanguage.languageCode,
+        engagedCount: 0,
+      };
+    }
     const connectionInspection = await inspectConnectionStatus(
       runContext,
       tab.id,
@@ -2152,7 +2268,7 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
         engagedCount: 0,
       };
     }
-    if (includeNote) {
+    if (includeNote && profileLanguage.status === "english") {
       try {
         automationOptions.invitationNote =
           await createPersonalizedConnectionNoteWithRetry(
@@ -2179,12 +2295,17 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
     }
     let engagementResponse = {
       ok: true,
-      result: { engagedCount: 0, resumedAfterEngagement: true },
+      result: {
+        engagedCount: 0,
+        resumedAfterEngagement: true,
+        leadLanguageDecision: profileLanguage,
+      },
     };
-    if (needsEngagement && postEngagements < 1) {
+    const needsLanguageFallback = profileLanguage.status === "uncertain";
+    if (needsEngagement && postEngagements < 1 && !needsLanguageFallback) {
       engagementSkipped = true;
       engagementSkipReason = "The post limit has been reached for today.";
-    } else if (needsEngagement) {
+    } else if (needsEngagement || needsLanguageFallback) {
       const recentActivityUrl = `${profileUrl}/recent-activity/all/`;
       await chrome.tabs.update(tab.id, { url: recentActivityUrl });
       await waitForTabComplete(tab.id, {
@@ -2198,7 +2319,12 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
         tab.id,
         lead,
         profileUrl,
-        automationOptions,
+        {
+          ...automationOptions,
+          postEngagements: needsEngagement ? postEngagements : 0,
+          profileLanguageStatus: profileLanguage.status,
+          requireLanguageFallback: needsLanguageFallback,
+        },
         progress,
       );
       if (!engagementResponse?.ok) {
@@ -2208,6 +2334,36 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
       completedEngagementCount = engagementOutcome.engagedCount;
       engagementSkipped = engagementOutcome.skipped;
       engagementSkipReason = engagementOutcome.skipReason;
+    }
+
+    if (profileLanguage.status === "uncertain") {
+      const fallbackDecision = engagementResponse?.result?.leadLanguageDecision;
+      const languageRecord = await recordRecentPostLanguageDecision(
+        lead,
+        fallbackDecision,
+      );
+      if (languageRecord?.filtered) {
+        await updateRunProgress(runContext, progress, {
+          phase: "working_leads",
+          message: `${lead.fullName} was parked because English could not be confirmed.`,
+          currentLead: {
+            id: lead.id,
+            fullName: lead.fullName,
+            status: "skipped",
+          },
+        });
+        return {
+          leadId: lead.id,
+          leadName: lead.fullName,
+          status: "skipped",
+          profileUrl,
+          languageFiltered: true,
+          languageStatus: "uncertain",
+          languageCode: "und",
+          engagedCount: completedEngagementCount,
+        };
+      }
+      profileLanguage = fallbackDecision;
     }
 
     await checkpointRun(runContext, progress, {

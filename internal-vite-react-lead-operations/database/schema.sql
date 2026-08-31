@@ -96,6 +96,10 @@ CREATE TABLE IF NOT EXISTS leads (
   work_email_http_status INT4 NULL,
   lead_note STRING NULL,
   lead_note_updated_at TIMESTAMPTZ NULL,
+  profile_language STRING NULL,
+  profile_language_status STRING NOT NULL DEFAULT 'unchecked',
+  profile_language_confidence FLOAT8 NULL,
+  profile_language_checked_at TIMESTAMPTZ NULL,
   search_text STRING NOT NULL DEFAULT '',
   source_file STRING NOT NULL,
   source_row INT8 NOT NULL,
@@ -124,7 +128,28 @@ ALTER TABLE leads
   ADD COLUMN IF NOT EXISTS work_email_last_error STRING NULL,
   ADD COLUMN IF NOT EXISTS work_email_http_status INT4 NULL,
   ADD COLUMN IF NOT EXISTS lead_note STRING NULL,
-  ADD COLUMN IF NOT EXISTS lead_note_updated_at TIMESTAMPTZ NULL;
+  ADD COLUMN IF NOT EXISTS lead_note_updated_at TIMESTAMPTZ NULL,
+  ADD COLUMN IF NOT EXISTS profile_language STRING NULL,
+  ADD COLUMN IF NOT EXISTS profile_language_status STRING NOT NULL DEFAULT 'unchecked',
+  ADD COLUMN IF NOT EXISTS profile_language_confidence FLOAT8 NULL,
+  ADD COLUMN IF NOT EXISTS profile_language_checked_at TIMESTAMPTZ NULL;
+
+ALTER TABLE leads
+  DROP CONSTRAINT IF EXISTS leads_profile_language_status_check;
+
+ALTER TABLE leads
+  ADD CONSTRAINT leads_profile_language_status_check
+  CHECK (profile_language_status IN ('unchecked', 'english', 'non_english', 'uncertain'));
+
+ALTER TABLE leads
+  DROP CONSTRAINT IF EXISTS leads_profile_language_confidence_check;
+
+ALTER TABLE leads
+  ADD CONSTRAINT leads_profile_language_confidence_check
+  CHECK (
+    profile_language_confidence IS NULL
+    OR profile_language_confidence BETWEEN 0 AND 1
+  );
 
 ALTER TABLE leads
   ALTER COLUMN original_email_status SET DEFAULT 'pending';

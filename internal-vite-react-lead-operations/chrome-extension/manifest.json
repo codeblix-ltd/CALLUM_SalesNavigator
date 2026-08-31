@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Callum Scout",
   "description": "Helps you work through your leads on LinkedIn.",
-  "version": "0.10.24",
+  "version": "0.10.25",
   "action": {
     "default_title": "Callum Scout",
     "default_popup": "popup.html",

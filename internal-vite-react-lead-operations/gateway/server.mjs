@@ -2,7 +2,11 @@ import { timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { CodexAppServer, GatewayError } from "./app-server-client.mjs";
+import {
+  CodexAppServer,
+  GatewayError,
+  normalizeLanguageSample,
+} from "./app-server-client.mjs";
 import { EncryptedAuthStore } from "./auth-store.mjs";
 
 const projectRoot = path.resolve(
@@ -161,6 +165,29 @@ async function route(request, response) {
         tagline,
         description,
         previousComments,
+      }),
+    );
+    return;
+  }
+
+  if (
+    request.method === "POST" &&
+    url.pathname === "/v1/linkedin/language-check"
+  ) {
+    requireScope(accessScope, "admin");
+    const body = await readJson(request);
+    const requestId = requiredString(body.requestId, "requestId", 200);
+    const scoutId = requiredString(body.scoutId, "scoutId", 200);
+    const context = readLanguageContext(body.context);
+    const samples = readLanguageSamples(body.samples);
+    sendJson(
+      response,
+      200,
+      await codex.enqueueLanguageCheck({
+        requestId,
+        scoutId,
+        context,
+        samples,
       }),
     );
     return;
@@ -398,6 +425,44 @@ function readPreviousComments(value) {
         1_500,
       ),
     };
+  });
+}
+
+function readLanguageContext(value) {
+  const context = String(value ?? "").trim();
+  if (!new Set(["profile", "posts", "comment"]).has(context)) {
+    throw new GatewayError(400, "context must be profile, posts, or comment.");
+  }
+  return context;
+}
+
+function readLanguageSamples(value) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 3) {
+    throw new GatewayError(
+      400,
+      "samples must contain between 1 and 3 text samples.",
+    );
+  }
+  const ids = new Set();
+  return value.map((sample, index) => {
+    if (!sample || typeof sample !== "object" || Array.isArray(sample)) {
+      throw new GatewayError(400, `samples[${index}] must be an object.`);
+    }
+    const id = requiredString(sample.id, `samples[${index}].id`, 100);
+    if (ids.has(id)) {
+      throw new GatewayError(400, "Language sample ids must be unique.");
+    }
+    ids.add(id);
+    const text = normalizeLanguageSample(
+      requiredString(sample.text, `samples[${index}].text`, 8_000),
+    );
+    if (text.length < 12) {
+      throw new GatewayError(
+        400,
+        `samples[${index}].text is too short after cleaning.`,
+      );
+    }
+    return { id, text };
   });
 }
 
