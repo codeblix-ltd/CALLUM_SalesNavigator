@@ -282,6 +282,12 @@ input:focus, select:focus, textarea:focus {
   font-weight: 850;
 }
 .retry-failed-button:hover:not(:disabled) { background: #ffe9ec; }
+.failed-action-note {
+  margin: 6px 2px 0;
+  color: #7c8494;
+  font-size: 9px;
+  line-height: 1.45;
+}
 
 .work-tools { margin-top: 10px; padding: 15px; }
 .work-tools-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 6px; }

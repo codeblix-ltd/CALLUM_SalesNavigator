@@ -17,6 +17,7 @@ const elements = {
   emailCount: document.querySelector("#email-count"),
   failedCount: document.querySelector("#failed-count"),
   retryFailedLeads: document.querySelector("#retry-failed-leads"),
+  failedActionNote: document.querySelector("#failed-action-note"),
   requestUsage: document.querySelector("#request-usage"),
   engagementUsage: document.querySelector("#engagement-usage"),
   openDashboard: document.querySelector("#open-dashboard"),
@@ -968,7 +969,9 @@ function renderDashboard(value, updatedAt) {
   elements.acceptedCount.textContent = formatNumber(value.counts.accepted);
   elements.emailCount.textContent = formatNumber(value.counts.emailCollected);
   elements.failedCount.textContent = formatNumber(value.counts.failed);
-  elements.retryFailedLeads.hidden = Number(value.counts.failed || 0) < 1;
+  const hasFailedLeads = Number(value.counts.failed || 0) > 0;
+  elements.retryFailedLeads.hidden = !hasFailedLeads;
+  elements.failedActionNote.hidden = !hasFailedLeads;
   elements.retryFailedLeads.textContent = `Retry ${formatCount(
     value.counts.failed,
     "failed lead",

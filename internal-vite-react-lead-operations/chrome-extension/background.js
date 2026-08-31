@@ -17,6 +17,7 @@ const CONNECTION_NOTE_MAX_ATTEMPTS = 2;
 const CONNECTION_NOTE_RETRY_DELAY_MS = 1_500;
 const LINKEDIN_TAB_LOAD_TIMEOUT_MS = 90_000;
 const LINKEDIN_TAB_READY_PROBE_MS = 1_000;
+const AUTOMATION_KEEP_AWAKE_LEVEL = "display";
 
 let workflowPromise = null;
 let manualConnectionReviewPromise = null;
@@ -25,6 +26,7 @@ let activeRunId = null;
 let activeWorkflowTabId = null;
 let activeAutomationWindowId = null;
 let runStateInitializationPromise = null;
+let automationKeepAwakeActive = false;
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create(REFRESH_ALARM, { periodInMinutes: 30 });
@@ -230,6 +232,7 @@ async function startDailyWorkflow(
   activeRunId = runId;
   activeAutomationWindowId = runContext.automationWindowId;
   try {
+    requestAutomationKeepAwake();
     await writeAutoLeadRunState({
       ...(resume ? previousState : defaultAutoLeadRunState()),
       status: "running",
@@ -260,6 +263,7 @@ async function startDailyWorkflow(
   } catch (error) {
     activeRunId = null;
     activeAutomationWindowId = null;
+    releaseAutomationKeepAwake();
     await closeManagedAutomationWindow(
       runContext.automationWindowId,
       runContext.automationHomeTabId,
@@ -309,6 +313,7 @@ async function startDailyWorkflow(
       activeRunId = null;
       activeWorkflowTabId = null;
       activeAutomationWindowId = null;
+      releaseAutomationKeepAwake();
     });
   const state = await readAutoLeadRunState();
   return { status: state.status, state };
@@ -634,6 +639,7 @@ function ensureAutoLeadRunState() {
 
 async function recoverAutoLeadRunState() {
   const state = await readAutoLeadRunState();
+  if (!workflowPromise) releaseAutomationKeepAwake();
   if (!state.runId) {
     return writeAutoLeadRunState(defaultAutoLeadRunState());
   }
@@ -752,7 +758,10 @@ async function requestWorkflowControl(action, { reason = null } = {}) {
   }
 
   if (action !== "stop") throw new Error("Unknown run control.");
-  if (["idle", "completed", "stopped"].includes(state.status)) return state;
+  if (["idle", "completed", "stopped"].includes(state.status)) {
+    releaseAutomationKeepAwake();
+    return state;
+  }
 
   workflowControlRequest = { runId: state.runId, action: "stop" };
   const automationWindowId = state.automationWindowId || activeAutomationWindowId;
@@ -782,6 +791,20 @@ async function requestWorkflowControl(action, { reason = null } = {}) {
     automationHomeTabId,
   ).catch(() => {});
   return next;
+}
+
+function requestAutomationKeepAwake() {
+  if (automationKeepAwakeActive || !chrome.power?.requestKeepAwake) return false;
+  chrome.power.requestKeepAwake(AUTOMATION_KEEP_AWAKE_LEVEL);
+  automationKeepAwakeActive = true;
+  return true;
+}
+
+function releaseAutomationKeepAwake() {
+  if (chrome.power?.releaseKeepAwake) {
+    chrome.power.releaseKeepAwake();
+  }
+  automationKeepAwakeActive = false;
 }
 
 async function finalizeControlledRun(runContext, control) {

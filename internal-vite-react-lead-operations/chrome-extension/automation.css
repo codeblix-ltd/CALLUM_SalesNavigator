@@ -73,7 +73,7 @@ h1 { max-width: 690px; margin: 0; font-size: clamp(36px, 5vw, 62px); line-height
 .danger { color: #ffcdd4; background: rgba(153, 59, 77, .19); border: 1px solid rgba(218, 112, 130, .42); }
 .control-message { grid-column: 2 / -1; margin: -10px 0 0; color: #d6cdf6; font-size: 11px; text-align: right; }
 
-.safety-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 16px; }
+.safety-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 16px; }
 .safety-grid article { min-height: 150px; padding: 19px; background: rgba(19, 14, 44, .76); border: 1px solid rgba(255, 255, 255, .075); border-radius: 15px; }
 .safety-grid .number { display: block; margin-bottom: 28px; color: #765fca; font: 800 10px/1 monospace; }
 .safety-grid strong { display: block; font-size: 12px; }

@@ -54,11 +54,14 @@ const manifest = JSON.parse(manifestSource);
 const helpSource = await readExtensionFile("help.html");
 const helpStyles = await readExtensionFile("help.css");
 
-assert.equal(manifest.version, "0.10.23");
+assert.equal(manifest.version, "0.10.24");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
-assert.deepEqual(manifest.permissions, ["alarms", "storage", "tabGroups", "tabs"]);
+assert.deepEqual(manifest.permissions, ["alarms", "power", "storage", "tabGroups", "tabs"]);
+assert.deepEqual(manifest.web_accessible_resources[0].matches, [
+  "https://*.linkedin.com/*",
+]);
 for (const source of [manifestSource, popupSource, popupScript, contentSource]) {
   assert.doesNotMatch(
     source,
@@ -98,6 +101,8 @@ assert.match(popupScript, /help\.html/);
 assert.match(helpSource, /How Callum Scout works/);
 assert.match(helpSource, /What happens after you click Start today’s work/);
 assert.match(helpSource, /the connection request still continues/);
+assert.match(helpSource, /You do not have to redo every failed lead/);
+assert.match(helpSource, /prevents screen and computer sleep/);
 assert.match(helpStyles, /\.help-steps/);
 assert.match(automationSource, /Dedicated automation window/);
 assert.match(automationSource, /purple group/);
@@ -105,6 +110,7 @@ assert.match(automationSource, /id="pause-run"/);
 assert.match(automationSource, /id="resume-run"/);
 assert.match(automationSource, /id="stop-run"/);
 assert.match(automationSource, /Want to pause\? Simply close this window/);
+assert.match(automationSource, /keeps the screen and computer awake/);
 assert.match(automationScript, /autoLeadRunState/);
 assert.match(automationScript, /PAUSE_AUTO_LEAD/);
 assert.match(automationScript, /RESUME_AUTO_LEAD/);
@@ -389,6 +395,9 @@ assert.match(backgroundSource, /color: "purple"/);
 assert.match(backgroundSource, /assertAutomationTab/);
 assert.match(backgroundSource, /SET_AUTOMATION_CONTEXT/);
 assert.match(backgroundSource, /outside the protected window/);
+assert.match(backgroundSource, /chrome\.power\.requestKeepAwake\(AUTOMATION_KEEP_AWAKE_LEVEL\)/);
+assert.match(backgroundSource, /chrome\.power\.releaseKeepAwake\(\)/);
+assert.match(backgroundSource, /AUTOMATION_KEEP_AWAKE_LEVEL = "display"/);
 assert.doesNotMatch(backgroundSource, /premium\/my-premium|isLinkedInPremiumUrl\(finalUrl\)/);
 assert.match(backgroundSource, /LINKEDIN_TAB_LOAD_TIMEOUT_MS = 90_000/);
 assert.match(backgroundSource, /type: "GET_PAGE_INFO"/);
@@ -710,6 +719,7 @@ assert.deepEqual(
 const listenerStub = () => ({ addListener() {}, removeListener() {} });
 const backgroundStorage = {};
 const backgroundActions = [];
+const powerCalls = { requested: [], released: 0 };
 const backgroundContext = {
   URL,
   clearTimeout,
@@ -725,6 +735,14 @@ const backgroundContext = {
   chrome: {
     action: {},
     alarms: { create() {}, onAlarm: listenerStub() },
+    power: {
+      requestKeepAwake(level) {
+        powerCalls.requested.push(level);
+      },
+      releaseKeepAwake() {
+        powerCalls.released += 1;
+      },
+    },
     runtime: {
       getURL(pathname) {
         return `chrome-extension://test/${pathname}`;
@@ -777,6 +795,11 @@ assert.equal(
 );
 assert.equal(backgroundContext.defaultAutoLeadRunState().status, "idle");
 assert.equal(backgroundContext.defaultAutoLeadRunState().retryFailedOnly, false);
+assert.equal(backgroundContext.requestAutomationKeepAwake(), true);
+assert.equal(backgroundContext.requestAutomationKeepAwake(), false);
+assert.deepEqual(powerCalls.requested, ["display"]);
+backgroundContext.releaseAutomationKeepAwake();
+assert.equal(powerCalls.released, 1);
 assert.equal(
   backgroundContext.isClosedMessageChannelError(
     "A listener indicated an asynchronous response by returning true, but the message channel closed before a response was received",
