@@ -54,7 +54,7 @@ const manifest = JSON.parse(manifestSource);
 const helpSource = await readExtensionFile("help.html");
 const helpStyles = await readExtensionFile("help.css");
 
-assert.equal(manifest.version, "0.10.25");
+assert.equal(manifest.version, "0.10.26");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -103,6 +103,8 @@ assert.match(helpSource, /What happens after you click Start today’s work/);
 assert.match(helpSource, /the connection request still continues/);
 assert.match(helpSource, /You do not have to redo every failed lead/);
 assert.match(helpSource, /prevents screen and computer sleep/);
+assert.match(helpSource, /waits for up to 5 minutes/);
+assert.match(helpSource, /Last week, Last month, Last 3 months, or Last 6 months/);
 assert.match(helpStyles, /\.help-steps/);
 assert.match(automationSource, /Dedicated automation window/);
 assert.match(automationSource, /purple group/);
@@ -139,6 +141,8 @@ assert.match(popupSource, /Do you have LinkedIn Premium\?/);
 assert.doesNotMatch(popupSource, /Check your Premium plan|Check Premium/i);
 assert.match(popupSource, /id="onboarding-next"[\s\S]*disabled/);
 assert.match(popupSource, /id="connection-daily-limit"/);
+assert.match(popupSource, /id="connection-review-lookback"/);
+assert.match(popupScript, /connectionReviewLookbackDays/);
 assert.doesNotMatch(popupSource, /id="engagement-daily-limit"/);
 assert.match(popupSource, /Likes each day/);
 assert.match(popupSource, /id="onboarding-validate-comment"/);
@@ -262,6 +266,11 @@ assert.match(contentSource, /formatAutomationRunEta/);
 assert.match(contentSource, /estimatedCompletionAt/);
 assert.match(contentStyles, /#callum-scout-overlay\.callum-automation-context[\s\S]*top: 58px/);
 assert.match(contentStyles, /\.callum-run-pause-note/);
+assert.match(contentStyles, /\.callum-textarea[\s\S]*color: #1e293b !important/);
+assert.match(contentStyles, /\.callum-review-timeout-note/);
+assert.match(contentSource, /COMMENT_REVIEW_TIMEOUT_MS = 5 \* 60 \* 1_000/);
+assert.match(contentSource, /If no choice is made, this post will be skipped/);
+assert.match(contentSource, /finishReview\(null\)/);
 assert.match(contentSource, /a\[href\^='mailto:'\]/);
 assert.match(contentSource, /ContactInfoDetailSection/);
 assert.match(contentSource, /contactDetailsStartedAt/);
@@ -302,6 +311,52 @@ assert.equal(
     "Gerard Seng",
   ),
   false,
+);
+let directConnectClicks = 0;
+const directConnectRetryContext = {
+  addLog() {},
+  clickElement() {
+    directConnectClicks += 1;
+  },
+  findActiveInvitationDialog() {
+    return null;
+  },
+  findConnectOption() {
+    return null;
+  },
+  findDirectConnectButton() {
+    return { id: "direct-connect" };
+  },
+  findMoreButton() {
+    throw new Error("More should not be used while direct Connect remains visible.");
+  },
+  findVisibleConnectionState() {
+    return "unavailable";
+  },
+  async sleep() {},
+  updateStatus() {},
+  async waitForMatch(find) {
+    return find();
+  },
+};
+const openConnectionInvitationSource = contentSource.slice(
+  contentSource.indexOf("async function openConnectionInvitation"),
+  contentSource.indexOf("function isProfileMoreButton"),
+);
+vm.runInNewContext(openConnectionInvitationSource, directConnectRetryContext);
+const directConnectRetry =
+  await directConnectRetryContext.openConnectionInvitation({
+    targetProfileName: "Jordi Pasqualin",
+    targetProfileSlug: "jordi-pasqualin",
+  });
+assert.equal(
+  directConnectClicks,
+  2,
+  "A visible direct Connect button must receive one safe retry when the first click does not open LinkedIn's dialog.",
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(directConnectRetry.attemptedMethods)),
+  ["the direct Connect button"],
 );
 assert.match(contentSource, /recordPostActivity/);
 assert.match(contentSource, /options\.validateBeforeCommenting/);
@@ -378,8 +433,9 @@ const findPostElementsSource = contentSource.slice(
   contentSource.indexOf("function queryPostElements"),
 );
 assert.doesNotMatch(findPostElementsSource, /scrollIntoView/);
-assert.match(contentSource, /CONNECTION_LOOKBACK_DAYS = 183/);
-assert.match(contentSource, /Checking connections from the last 6 months/);
+assert.match(contentSource, /DEFAULT_CONNECTION_LOOKBACK_DAYS = 30/);
+assert.match(contentSource, /MAX_CONNECTION_LOOKBACK_DAYS = 183/);
+assert.match(contentSource, /Checking connections from \$\{lookbackLabel\}/);
 assert.doesNotMatch(contentSource, /INSPECT_PREMIUM_ACCOUNT|LinkedIn kept the Premium page open/);
 assert.match(contentSource, /SET_AUTOMATION_CONTEXT/);
 assert.match(contentSource, /markAutomationContext/);
@@ -404,6 +460,13 @@ assert.match(backgroundSource, /CONNECTION_NOTE_MAX_ATTEMPTS = 2/);
 assert.match(backgroundSource, /The connection request will still continue without a note/);
 assert.doesNotMatch(backgroundSource, /PREMIUM_CHECK_TTL_MS|force: true|cached: true/);
 assert.match(backgroundSource, /maxProfiles: 1_000/);
+assert.match(backgroundSource, /DEFAULT_CONNECTION_REVIEW_LOOKBACK_DAYS = 30/);
+assert.match(backgroundSource, /lookbackDays,/);
+assert.match(backgroundSource, /connectionReviewLookbackDays/);
+assert.match(clientSource, /ACTION_TIMEOUT_MS = 45_000/);
+assert.match(clientSource, /AI_ACTION_TIMEOUT_MS = 90_000/);
+assert.match(clientSource, /signal: controller\.signal/);
+assert.match(clientSource, /Callum Scout lost its internet connection/);
 assert.match(backgroundSource, /recordCompletedLeadTiming/);
 assert.match(backgroundSource, /estimatedCompletionAt/);
 assert.match(popupScript, /ETA will appear after the first lead finishes/);
@@ -458,8 +521,8 @@ assert.match(backgroundSource, /remove\(\["temporaryLeadTest", "invitationNote"\
 assert.doesNotMatch(backgroundSource, /if \(!dashboard\.hasSentConnectionRequest\) return empty/);
 assert.match(backgroundSource, /CHECK_ACCEPTED_CONNECTIONS/);
 assert.match(backgroundSource, /forceReview: true/);
-assert.match(backgroundSource, /checkpoint: forceReview/);
-assert.match(backgroundSource, /cutoffDate: forceReview \? null/);
+assert.match(backgroundSource, /checkpoint: plan\.checkpoint/);
+assert.match(backgroundSource, /cutoffDate: plan\.cutoffDate/);
 assert.match(backgroundSource, /keepConnectionTab: true/);
 assert.match(backgroundSource, /collectContacts: true/);
 assert.match(backgroundSource, /canCloseReviewWindow/);
@@ -505,6 +568,7 @@ assert.match(contentSource, /No duplicate will be sent/);
 assert.match(contentSource, /openConnectionInvitation/);
 assert.match(contentSource, /the direct Connect button/);
 assert.match(contentSource, /Connect in the More menu/);
+assert.doesNotMatch(contentSource, /directAttempted/);
 assert.match(contentSource, /scroll: method !== "Connect in the More menu"/);
 assert.match(contentSource, /stateBeforeClick = findVisibleConnectionState/);
 assert.match(contentSource, /requestAlreadyPending: true/);
@@ -542,6 +606,8 @@ assert.match(backgroundSource, /pendingConnectionLeadIds\.add\(lead\.id\)/);
 assert.match(backgroundSource, /Resume will continue with the next lead while it syncs/);
 assert.match(backgroundSource, /chrome\.tabs\.onRemoved/);
 assert.match(backgroundSource, /The automation tab was closed/);
+assert.match(backgroundSource, /ensureAutomationTabGroup/);
+assert.match(backgroundSource, /protected tab group was repaired automatically/i);
 assert.match(backgroundSource, /dashboard\.usage\.requestRemaining/);
 assert.match(backgroundSource, /no recent posts\|no supported post permalink/);
 assert.match(backgroundSource, /failedLeads\.push/);
@@ -682,6 +748,8 @@ const storedAuth = {
 };
 let refreshCalls = 0;
 const clientContext = {
+  AbortController,
+  clearTimeout,
   console,
   LEADS_EXTENSION_CONFIG: {
     CONVEX_URL: "https://example.convex.cloud",
@@ -701,6 +769,7 @@ const clientContext = {
       },
     },
   },
+  setTimeout,
   async fetch(_url, request) {
     const body = JSON.parse(request.body);
     if (body.path === "auth:signIn") {
@@ -749,6 +818,17 @@ assert.equal(storedAuth.callumScoutAuth.token, "fresh-access-token");
 assert.deepEqual(
   refreshedResults.map((result) => result.path),
   ["scouts:getDashboard", "scouts:claimNextLead"],
+);
+const networkClientContext = {
+  ...clientContext,
+  async fetch() {
+    throw new TypeError("Failed to fetch");
+  },
+};
+vm.runInNewContext(clientSource, networkClientContext);
+await assert.rejects(
+  networkClientContext.ScoutApi.authenticatedAction("scouts:getDashboard"),
+  /lost its internet connection/,
 );
 
 const listenerStub = () => ({ addListener() {}, removeListener() {} });

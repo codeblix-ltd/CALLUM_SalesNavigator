@@ -43,6 +43,7 @@ const elements = {
   linkedinPlan: document.querySelector("#linkedin-plan"),
   connectionDailyLimit: document.querySelector("#connection-daily-limit"),
   postEngagements: document.querySelector("#post-engagements"),
+  connectionReviewLookback: document.querySelector("#connection-review-lookback"),
   settingsCalculation: document.querySelector("#settings-calculation"),
   settingsCapacity: document.querySelector("#settings-capacity"),
   settingsCapacityBar: document.querySelector("#settings-capacity-bar"),
@@ -751,8 +752,19 @@ function renderConnectionReviewStatus(review) {
   const windowNote = review.connectionWindowKeptOpen
     ? " The protected LinkedIn window is still open for review."
     : "";
+  const lookback = formatConnectionReviewLookback(review.lookbackDays);
+  const lookbackNote = lookback ? ` (${lookback})` : "";
   elements.connectionReviewStatus.textContent =
-    `Last checked ${relativeTime(review.checkedAt)}: ${scanned} scanned; ${matched} marked accepted; ${rejected}; ${emails} saved.${windowNote}`;
+    `Last checked ${relativeTime(review.checkedAt)}${lookbackNote}: ${scanned} scanned; ${matched} marked accepted; ${rejected}; ${emails} saved.${windowNote}`;
+}
+
+function formatConnectionReviewLookback(value) {
+  const days = Number(value);
+  if (days === 7) return "last week";
+  if (days === 30) return "last month";
+  if (days === 90) return "last 3 months";
+  if (days === 183) return "last 6 months";
+  return null;
 }
 
 async function handleAutoLeadOutcome(response) {
@@ -928,6 +940,9 @@ async function saveSettings(event) {
     });
     await chrome.storage.local.set({
       validateBeforeCommenting: elements.validateComment.checked,
+      connectionReviewLookbackDays: Number(
+        elements.connectionReviewLookback.value,
+      ),
     });
     await chrome.storage.local.remove("invitationNote");
     dashboard.settings = settings;
@@ -1193,10 +1208,15 @@ function renderSettings(settings) {
   updateLimitControls("settings");
   syncPremiumNoteGate();
   void chrome.storage.local
-    .get(["validateBeforeCommenting"])
+    .get(["validateBeforeCommenting", "connectionReviewLookbackDays"])
     .then((stored) => {
       elements.validateComment.checked =
         stored.validateBeforeCommenting ?? false;
+      elements.connectionReviewLookback.value = String(
+        [7, 30, 90, 183].includes(Number(stored.connectionReviewLookbackDays))
+          ? Number(stored.connectionReviewLookbackDays)
+          : 30,
+      );
     });
 }
 

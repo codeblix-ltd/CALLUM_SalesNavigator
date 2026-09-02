@@ -1,6 +1,13 @@
 const ScoutApi = (() => {
   const AUTH_KEY = "callumScoutAuth";
   const config = globalThis.LEADS_EXTENSION_CONFIG;
+  const ACTION_TIMEOUT_MS = 45_000;
+  const AI_ACTION_TIMEOUT_MS = 90_000;
+  const AI_ACTIONS = new Set([
+    "scouts:classifyLanguages",
+    "scouts:draftComment",
+    "scouts:draftConnectionNote",
+  ]);
   let refreshPromise = null;
 
   async function signIn(username, password) {
@@ -146,17 +153,43 @@ const ScoutApi = (() => {
       "Convex-Client": "callum-scout-extension-0.6.0",
     };
     if (token) headers.Authorization = `Bearer ${token}`;
-    const response = await fetch(`${convexUrl}/api/action`, {
-      method: "POST",
-      headers,
-      cache: "no-store",
-      body: JSON.stringify({
-        path,
-        format: "convex_encoded_json",
-        args: [args],
-      }),
-    });
-    const payload = await response.json().catch(() => null);
+    const controller = new AbortController();
+    const timeoutMs = AI_ACTIONS.has(path)
+      ? AI_ACTION_TIMEOUT_MS
+      : ACTION_TIMEOUT_MS;
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    let response;
+    let payload;
+    try {
+      response = await fetch(`${convexUrl}/api/action`, {
+        method: "POST",
+        headers,
+        cache: "no-store",
+        signal: controller.signal,
+        body: JSON.stringify({
+          path,
+          format: "convex_encoded_json",
+          args: [args],
+        }),
+      });
+      payload = await response.json().catch(() => null);
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        throw requestError(
+          `Callum Scout took longer than ${Math.round(timeoutMs / 1_000)} seconds to respond. Check your internet and retry this lead.`,
+          408,
+        );
+      }
+      if (/failed to fetch|networkerror|network request failed/i.test(String(error))) {
+        throw requestError(
+          "Callum Scout lost its internet connection. Check your connection and retry this lead.",
+          0,
+        );
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
     if (!payload) {
       throw requestError(
         "We couldn’t reach Callum Scout. Try again.",

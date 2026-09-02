@@ -18,6 +18,8 @@ const CONNECTION_NOTE_RETRY_DELAY_MS = 1_500;
 const LINKEDIN_TAB_LOAD_TIMEOUT_MS = 90_000;
 const LINKEDIN_TAB_READY_PROBE_MS = 1_000;
 const AUTOMATION_KEEP_AWAKE_LEVEL = "display";
+const DEFAULT_CONNECTION_REVIEW_LOOKBACK_DAYS = 30;
+const ALLOWED_CONNECTION_REVIEW_LOOKBACK_DAYS = new Set([7, 30, 90, 183]);
 
 let workflowPromise = null;
 let manualConnectionReviewPromise = null;
@@ -155,10 +157,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 async function initializeExtensionDefaults() {
-  const current = await chrome.storage.local.get(["validateBeforeCommenting"]);
+  const current = await chrome.storage.local.get([
+    "validateBeforeCommenting",
+    "connectionReviewLookbackDays",
+  ]);
   const defaults = {};
   if (current.validateBeforeCommenting === undefined) {
     defaults.validateBeforeCommenting = false;
+  }
+  if (current.connectionReviewLookbackDays === undefined) {
+    defaults.connectionReviewLookbackDays = DEFAULT_CONNECTION_REVIEW_LOOKBACK_DAYS;
   }
   if (Object.keys(defaults).length > 0) await chrome.storage.local.set(defaults);
   await chrome.storage.local.remove(["temporaryLeadTest", "invitationNote"]);
@@ -1239,6 +1247,7 @@ async function closeManagedAutomationWindow(windowId, homeTabId) {
 async function createAutomationTab(runContext, url, { active = true } = {}) {
   throwIfWorkflowControlled(runContext);
   await assertAutomationWindow(runContext);
+  let protectedGroupId = await ensureAutomationTabGroup(runContext);
   const tab = await chrome.tabs.create({
     windowId: runContext.automationWindowId,
     url,
@@ -1246,11 +1255,22 @@ async function createAutomationTab(runContext, url, { active = true } = {}) {
   });
   if (!tab?.id) throw new Error("The automation tab did not open.");
   try {
-    const groupId = await chrome.tabs.group({
-      tabIds: tab.id,
-      groupId: runContext.automationTabGroupId,
-    });
-    if (groupId !== runContext.automationTabGroupId) {
+    let groupId;
+    try {
+      groupId = await chrome.tabs.group({
+        tabIds: tab.id,
+        groupId: protectedGroupId,
+      });
+    } catch {
+      protectedGroupId = await ensureAutomationTabGroup(runContext, {
+        forceNew: true,
+      });
+      groupId = await chrome.tabs.group({
+        tabIds: tab.id,
+        groupId: protectedGroupId,
+      });
+    }
+    if (groupId !== protectedGroupId) {
       throw new Error("The automation tab opened outside its protected group.");
     }
   } catch (error) {
@@ -1259,6 +1279,37 @@ async function createAutomationTab(runContext, url, { active = true } = {}) {
   }
   setActiveWorkflowTab(runContext, tab.id);
   return tab;
+}
+
+async function ensureAutomationTabGroup(runContext, { forceNew = false } = {}) {
+  await assertAutomationWindow(runContext);
+  const windowId = Number(runContext.automationWindowId);
+  const homeTabId = Number(runContext.automationHomeTabId);
+  const homeTab = Number.isInteger(homeTabId)
+    ? await chrome.tabs.get(homeTabId).catch(() => null)
+    : null;
+  if (!isManagedAutomationHomeTab(homeTab, windowId)) {
+    throw new Error("The protected automation status tab is not available.");
+  }
+
+  let groupId = forceNew ? null : Number(runContext.automationTabGroupId);
+  const existingGroup = Number.isInteger(groupId) && groupId >= 0
+    ? await chrome.tabGroups.get(groupId).catch(() => null)
+    : null;
+  if (!existingGroup || existingGroup.windowId !== windowId) {
+    groupId = await chrome.tabs.group({
+      tabIds: homeTabId,
+      createProperties: { windowId },
+    });
+    await styleAutomationTabGroup(groupId);
+    runContext.automationTabGroupId = groupId;
+    await updateActiveRunState(runContext, {
+      automationTabGroupId: groupId,
+      message:
+        "The protected tab group was repaired automatically. Continuing safely...",
+    });
+  }
+  return groupId;
 }
 
 async function assertAutomationWindow(runContext) {
@@ -1394,6 +1445,7 @@ async function reviewAcceptedConnections(
     "scouts:getConnectionReviewPlan",
   );
   if (!forceReview && !plan.shouldReview) return empty;
+  const lookbackDays = await readConnectionReviewLookbackDays();
 
   const tab = await createAutomationTab(runContext, CONNECTIONS_URL);
   if (!tab?.id) throw new Error("We couldn’t open your LinkedIn connections.");
@@ -1409,10 +1461,9 @@ async function reviewAcceptedConnections(
     const scan = await sendAutomationMessageToTab(runContext, tab.id, {
       type: "SCAN_RECENT_CONNECTIONS",
       options: {
-        checkpoint: forceReview
-          ? { topProfileUrl: null, topConnectedOn: null }
-          : plan.checkpoint,
-        cutoffDate: forceReview ? null : plan.cutoffDate,
+        checkpoint: plan.checkpoint,
+        cutoffDate: plan.cutoffDate,
+        lookbackDays,
         maxProfiles: 1_000,
       },
     });
@@ -1430,6 +1481,7 @@ async function reviewAcceptedConnections(
     reviewResult = {
       ...reviewResult,
       connectionsScanned: scan.result.connections.length,
+      lookbackDays: scan.result.lookbackDays || lookbackDays,
     };
     throwIfWorkflowControlled(runContext);
   } finally {
@@ -1477,8 +1529,17 @@ async function reviewAcceptedConnections(
     contactsChecked,
     emailsCollected,
     connectionsScanned: Number(reviewResult.connectionsScanned || 0),
+    lookbackDays: Number(reviewResult.lookbackDays || lookbackDays),
     connectionTabId: keepConnectionTab ? tab.id : null,
   };
+}
+
+async function readConnectionReviewLookbackDays() {
+  const stored = await chrome.storage.local.get("connectionReviewLookbackDays");
+  const value = Number(stored.connectionReviewLookbackDays);
+  return ALLOWED_CONNECTION_REVIEW_LOOKBACK_DAYS.has(value)
+    ? value
+    : DEFAULT_CONNECTION_REVIEW_LOOKBACK_DAYS;
 }
 
 function checkAcceptedConnectionsManually() {

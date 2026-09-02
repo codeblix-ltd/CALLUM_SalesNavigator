@@ -265,12 +265,24 @@ html[data-callum-automation="true"]::after {
   box-sizing: border-box;
   font-family: inherit;
   font-size: 13px;
+  color: #1e293b !important;
+  -webkit-text-fill-color: #1e293b;
+  caret-color: #1e293b;
+  background: #ffffff !important;
+  opacity: 1;
   padding: 8px;
   border: 1px solid #94a3b8;
   border-radius: 6px;
   resize: vertical;
   min-height: 70px;
   margin-bottom: 10px;
+}
+
+.callum-review-timeout-note {
+  margin: -2px 0 10px;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .callum-textarea:focus {

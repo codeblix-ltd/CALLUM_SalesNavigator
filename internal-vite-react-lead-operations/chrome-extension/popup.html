@@ -152,7 +152,7 @@
           <p class="eyebrow">Today’s tasks</p>
           <h2>Work through today’s leads</h2>
           <p class="muted">
-            First, we check up to 6 months of connections and save available LinkedIn account emails. Then we confirm each lead is English, check only their latest 3 English posts, and send connection requests until you reach today’s limits.
+            First, we check only your chosen recent-connection period and save available LinkedIn account emails. Then we confirm each lead is English, check only their latest 3 English posts, and send connection requests until you reach today’s limits.
           </p>
           <div
             id="automation-run-status"
@@ -229,6 +229,16 @@
             Posts for each lead
             <input id="post-engagements" type="number" min="1" max="7" required />
             <span id="settings-post-help" class="field-help"></span>
+          </label>
+          <label>
+            Accepted connections to check
+            <select id="connection-review-lookback">
+              <option value="7">Last week</option>
+              <option value="30">Last month</option>
+              <option value="90">Last 3 months</option>
+              <option value="183">Last 6 months</option>
+            </select>
+            <span class="field-help">The next check also stops when it reaches the last connection already scanned.</span>
           </label>
           <div class="daily-calculation compact-calculation" aria-live="polite">
             <span>Likes each day</span>
@@ -324,7 +334,7 @@
               </div>
             </summary>
             <p class="tool-help connection-review-help">
-              Matches newly accepted requests, saves LinkedIn email addresses when available, and rejects matching sent requests older than 30 days.
+              Checks the recent period selected in Settings, matches newly accepted requests, saves LinkedIn email addresses when available, and rejects matching sent requests older than 30 days.
             </p>
             <button id="check-accepted-connections" class="secondary full-button" type="button">
               Check accepted connections

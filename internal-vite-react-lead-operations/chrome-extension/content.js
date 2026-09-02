@@ -10,7 +10,9 @@
   let automationEtaRefreshTimer = null;
   const MAX_POST_AGE_DAYS = 92;
   const TOP_POST_SCAN_LIMIT = 3;
-  const CONNECTION_LOOKBACK_DAYS = 183;
+  const DEFAULT_CONNECTION_LOOKBACK_DAYS = 30;
+  const MAX_CONNECTION_LOOKBACK_DAYS = 183;
+  const COMMENT_REVIEW_TIMEOUT_MS = 5 * 60 * 1_000;
 
   // Listen for messages from background script or popup
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -1144,7 +1146,13 @@
       throw new Error("LinkedIn’s Connections page did not open. Try again.");
     }
 
-    updateStatus("Checking connections from the last 6 months...");
+    const lookbackDays = clampInteger(
+      options.lookbackDays ?? DEFAULT_CONNECTION_LOOKBACK_DAYS,
+      7,
+      MAX_CONNECTION_LOOKBACK_DAYS,
+    );
+    const lookbackLabel = formatConnectionLookback(lookbackDays);
+    updateStatus(`Checking connections from ${lookbackLabel}...`);
     const maxProfiles = clampInteger(options.maxProfiles ?? 1_000, 1, 1_000);
     const checkpointUrl = normalizeLinkedInProfileHref(
       options.checkpoint?.topProfileUrl,
@@ -1153,12 +1161,12 @@
       options.checkpoint?.topConnectedOn || "",
     ).slice(0, 10);
     const requestedCutoffDate = String(options.cutoffDate || "").slice(0, 10);
-    const sixMonthCutoffDate = new Date(
-      Date.now() - CONNECTION_LOOKBACK_DAYS * 24 * 60 * 60 * 1_000,
+    const lookbackCutoffDate = new Date(
+      Date.now() - lookbackDays * 24 * 60 * 60 * 1_000,
     )
       .toISOString()
       .slice(0, 10);
-    const cutoffDate = [requestedCutoffDate, sixMonthCutoffDate]
+    const cutoffDate = [requestedCutoffDate, lookbackCutoffDate]
       .filter(Boolean)
       .sort()
       .at(-1);
@@ -1219,10 +1227,17 @@
     );
     addLog(
       "New connections",
-      `${connections.length} found within the 6-month limit`,
+      `${connections.length} found within ${lookbackLabel}`,
     );
     updateStatus("New connections checked.");
-    return { connections, top, reachedPriorScan };
+    return { connections, top, reachedPriorScan, lookbackDays };
+  }
+
+  function formatConnectionLookback(days) {
+    if (days === 7) return "the last week";
+    if (days === 30) return "the last month";
+    if (days === 183) return "the last 6 months";
+    return `the last ${days} days`;
   }
 
   async function runContactInfoExtraction(options = {}) {
@@ -2086,7 +2101,6 @@
     targetProfileSlug,
   }) {
     const attemptedMethods = [];
-    let directAttempted = false;
 
     for (let attempt = 0; attempt < 2; attempt++) {
       const stateBeforeClick = findVisibleConnectionState(targetProfileName);
@@ -2100,16 +2114,13 @@
 
       let trigger = null;
       let method = "";
-      if (!directAttempted) {
-        const directConnect = await waitForMatch(
-          () => findDirectConnectButton(targetProfileName),
-          attempt === 0 ? 5_000 : 2_000,
-        );
-        directAttempted = true;
-        if (directConnect) {
-          trigger = directConnect;
-          method = "the direct Connect button";
-        }
+      const directConnect = await waitForMatch(
+        () => findDirectConnectButton(targetProfileName),
+        attempt === 0 ? 5_000 : 2_000,
+      );
+      if (directConnect) {
+        trigger = directConnect;
+        method = "the direct Connect button";
       }
 
       if (!trigger) {
@@ -2131,7 +2142,7 @@
       }
 
       if (!trigger) continue;
-      attemptedMethods.push(method);
+      if (!attemptedMethods.includes(method)) attemptedMethods.push(method);
       updateStatus(`Opening the request using ${method}...`);
       // Scrolling a popover item can dismiss LinkedIn's More menu before its
       // Connect action receives the click.
@@ -2717,12 +2728,23 @@
       const container = document.getElementById("callum-validation-container");
       if (!container) return resolve(generatedDraft);
 
+      let settled = false;
+      let timeout = null;
+      const finishReview = (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        container.style.display = "none";
+        resolve(value);
+      };
+
       container.style.display = "block";
       container.innerHTML = `
         <div class="callum-validation-box">
           <span class="callum-validation-label">Check comment (Post ${postIndex})</span>
           <div class="callum-post-preview">"${escapeHtml(postExcerpt.substring(0, 150))}${postExcerpt.length > 150 ? "..." : ""}"</div>
           <textarea class="callum-textarea" id="callum-draft-editor">${escapeHtml(generatedDraft)}</textarea>
+          <p class="callum-review-timeout-note">Choose within 5 minutes. If no choice is made, this post will be skipped and the run will continue.</p>
           <div class="callum-actions">
             <button class="callum-btn callum-btn-primary" id="callum-approve-btn">Post comment</button>
             <button class="callum-btn callum-btn-danger" id="callum-skip-btn">Skip this post</button>
@@ -2730,15 +2752,19 @@
         </div>
       `;
 
+      timeout = setTimeout(() => {
+        addLog("Skipped", `Comment review for post ${postIndex} timed out after 5 minutes`);
+        updateStatus(`No review choice was made for post ${postIndex}. Skipping it safely...`);
+        finishReview(null);
+      }, COMMENT_REVIEW_TIMEOUT_MS);
+
       document.getElementById("callum-approve-btn")?.addEventListener("click", () => {
         const text = document.getElementById("callum-draft-editor")?.value.trim();
-        container.style.display = "none";
-        resolve(text || generatedDraft);
+        finishReview(text || generatedDraft);
       });
 
       document.getElementById("callum-skip-btn")?.addEventListener("click", () => {
-        container.style.display = "none";
-        resolve(null);
+        finishReview(null);
       });
     });
   }
