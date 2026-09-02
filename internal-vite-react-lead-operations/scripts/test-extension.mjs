@@ -54,7 +54,7 @@ const manifest = JSON.parse(manifestSource);
 const helpSource = await readExtensionFile("help.html");
 const helpStyles = await readExtensionFile("help.css");
 
-assert.equal(manifest.version, "0.10.26");
+assert.equal(manifest.version, "0.10.27");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -271,6 +271,59 @@ assert.match(contentStyles, /\.callum-review-timeout-note/);
 assert.match(contentSource, /COMMENT_REVIEW_TIMEOUT_MS = 5 \* 60 \* 1_000/);
 assert.match(contentSource, /If no choice is made, this post will be skipped/);
 assert.match(contentSource, /finishReview\(null\)/);
+let reviewTimeoutCallback = null;
+let reviewTimeoutDelay = null;
+const reviewEvents = [];
+const reviewContainer = { style: { display: "none" }, innerHTML: "" };
+const reviewEditor = { value: "Visible generated comment" };
+const reviewButton = { addEventListener() {} };
+const reviewContext = {
+  COMMENT_REVIEW_TIMEOUT_MS: 5 * 60 * 1_000,
+  addLog(...args) {
+    reviewEvents.push(["log", ...args]);
+  },
+  clearTimeout() {},
+  document: {
+    getElementById(id) {
+      if (id === "callum-validation-container") return reviewContainer;
+      if (id === "callum-draft-editor") return reviewEditor;
+      if (id === "callum-approve-btn" || id === "callum-skip-btn") {
+        return reviewButton;
+      }
+      return null;
+    },
+  },
+  escapeHtml(value) {
+    return String(value);
+  },
+  setTimeout(callback, delay) {
+    reviewTimeoutCallback = callback;
+    reviewTimeoutDelay = delay;
+    return 1;
+  },
+  updateStatus(value) {
+    reviewEvents.push(["status", value]);
+  },
+};
+const reviewFunctionSource = contentSource.slice(
+  contentSource.indexOf("function promptValidationUI"),
+  contentSource.indexOf("// --- Utility Functions ---"),
+);
+vm.runInNewContext(reviewFunctionSource, reviewContext);
+const pendingReview = reviewContext.promptValidationUI(
+  "Post excerpt",
+  "Visible generated comment",
+  1,
+);
+assert.equal(reviewContainer.style.display, "block");
+assert.match(reviewContainer.innerHTML, /Visible generated comment/);
+assert.equal(reviewTimeoutDelay, 5 * 60 * 1_000);
+reviewTimeoutCallback();
+assert.equal(await pendingReview, null);
+assert.equal(reviewContainer.style.display, "none");
+assert.ok(
+  reviewEvents.some((event) => /timed out after 5 minutes/.test(event.join(" "))),
+);
 assert.match(contentSource, /a\[href\^='mailto:'\]/);
 assert.match(contentSource, /ContactInfoDetailSection/);
 assert.match(contentSource, /contactDetailsStartedAt/);
@@ -311,6 +364,45 @@ assert.equal(
     "Gerard Seng",
   ),
   false,
+);
+assert.match(
+  contentSource,
+  /a\[aria-label\*='connect' i\]/,
+  "Direct Connect discovery must include LinkedIn's current plain anchor markup.",
+);
+connectLabelContext.connectOptionMatchesTarget = () => false;
+const liveTargetAnchor = {
+  textContent: "Connect",
+  getAttribute(name) {
+    if (name === "aria-label") return "Invite Jordi Pasqualin to connect";
+    if (name === "href") {
+      return "https://www.linkedin.com/in/jordi-pasqualin-9a314353/";
+    }
+    return null;
+  },
+};
+const unrelatedRecommendationButton = {
+  textContent: "Connect",
+  getAttribute(name) {
+    return name === "aria-label" ? "Invite Zuzu Vorcaro to connect" : null;
+  },
+};
+assert.equal(
+  connectLabelContext.isConnectActionLabel(
+    liveTargetAnchor,
+    "Jordi Pasqualin",
+    "jordi-pasqualin-9a314353",
+  ),
+  true,
+);
+assert.equal(
+  connectLabelContext.isConnectActionLabel(
+    unrelatedRecommendationButton,
+    "Jordi Pasqualin",
+    "jordi-pasqualin-9a314353",
+  ),
+  false,
+  "A recommendation card for another person must not match the current profile.",
 );
 let directConnectClicks = 0;
 const directConnectRetryContext = {
@@ -830,6 +922,30 @@ await assert.rejects(
   networkClientContext.ScoutApi.authenticatedAction("scouts:getDashboard"),
   /lost its internet connection/,
 );
+const timeoutDelays = [];
+const timeoutClientContext = {
+  ...clientContext,
+  clearTimeout() {},
+  setTimeout(_callback, delay) {
+    timeoutDelays.push(delay);
+    return timeoutDelays.length;
+  },
+  async fetch() {
+    const error = new Error("aborted");
+    error.name = "AbortError";
+    throw error;
+  },
+};
+vm.runInNewContext(clientSource, timeoutClientContext);
+await assert.rejects(
+  timeoutClientContext.ScoutApi.authenticatedAction("scouts:getDashboard"),
+  /longer than 45 seconds/,
+);
+await assert.rejects(
+  timeoutClientContext.ScoutApi.authenticatedAction("scouts:draftComment"),
+  /longer than 90 seconds/,
+);
+assert.deepEqual(timeoutDelays, [45_000, 90_000]);
 
 const listenerStub = () => ({ addListener() {}, removeListener() {} });
 const backgroundStorage = {};

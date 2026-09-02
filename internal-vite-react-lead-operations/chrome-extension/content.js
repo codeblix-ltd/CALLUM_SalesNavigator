@@ -2473,7 +2473,7 @@
     if (!main) return null;
     const candidates = uniqueElements([
       ...main.querySelectorAll(
-        "button, a[role='button'], [role='button'], a[href*='/preload/custom-invite/']",
+        "button, a[role='button'], [role='button'], a[href*='/preload/custom-invite/'], a[aria-label*='connect' i], a[componentkey*='_connect']",
       ),
     ]).filter(
       (element) =>
@@ -2534,16 +2534,23 @@
     targetProfileName = "",
     targetProfileSlug = "",
   ) {
-    const labels = [
-      element.getAttribute("aria-label"),
-      element.getAttribute("title"),
-      element.textContent,
-    ];
+    const ariaLabel = element.getAttribute("aria-label");
+    const title = element.getAttribute("title");
+    const labels = [ariaLabel, title, element.textContent];
+    const namedLabels = [ariaLabel, title].filter((label) =>
+      /^(?:connect\s+(?:with|to)\s+.+|invite\s+.+?\s+to\s+connect)$/i.test(
+        String(label || "").replace(/\s+/g, " ").trim(),
+      ),
+    );
     const href = element.getAttribute("href") || "";
     return (
-      labels.some((label) =>
-        connectActionLabelMatches(label, targetProfileName),
-      ) ||
+      (namedLabels.length > 0
+        ? namedLabels.some((label) =>
+            connectActionLabelMatches(label, targetProfileName),
+          )
+        : labels.some((label) =>
+            connectActionLabelMatches(label, targetProfileName),
+          )) ||
       (/\/preload\/custom-invite\//i.test(href) &&
         connectOptionMatchesTarget(
           element,
