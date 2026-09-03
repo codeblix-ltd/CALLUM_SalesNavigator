@@ -63,7 +63,7 @@ const { CodexAppServer, classifyLanguageLocally } = await import(
   pathToFileURL(gatewayClientPath).href
 );
 
-assert.equal(manifest.version, "0.10.27");
+assert.equal(manifest.version, "0.10.28");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -88,6 +88,12 @@ assert.doesNotMatch(
 );
 assert.match(popupSource, /id="start-auto-lead"/);
 assert.match(popupSource, /id="automation-run-status"/);
+assert.match(automationSource, /id="progress-leads"/);
+assert.match(automationScript, /\$\{requestsSent\} \/ \$\{requestTarget\} requests/);
+assert.match(automationScript, /\$\{formatCount\(processed, "lead"\)\} checked in this run\./);
+assert.match(popupScript, /planned requests sent in this run/);
+assert.doesNotMatch(popupScript, /of \$\{target\} leads finished/);
+assert.doesNotMatch(backgroundSource, /of \$\{availableRequestSlots\} leads finished/);
 assert.match(popupSource, /id="retry-failed-leads"/);
 assert.match(popupSource, /id="pause-auto-lead"/);
 assert.match(popupSource, /id="resume-auto-lead"/);
@@ -132,6 +138,74 @@ assert.match(automationScript, /Estimated finish/);
 assert.match(automationScript, /averageLeadDurationMs/);
 assert.match(automationStyles, /#100b27/);
 assert.match(automationStyles, /\.run-estimate/);
+const automationElements = new Map(
+  [
+    "run-card",
+    "run-label",
+    "run-detail",
+    "progress-label",
+    "progress-value",
+    "progress-bar",
+    "progress-leads",
+    "run-estimate",
+    "pause-run",
+    "resume-run",
+    "stop-run",
+    "control-message",
+  ].map((id) => [
+    `#${id}`,
+    {
+      dataset: {},
+      style: {},
+      hidden: false,
+      disabled: false,
+      textContent: "",
+      addEventListener() {},
+    },
+  ]),
+);
+const automationContext = vm.createContext({
+  chrome: {
+    runtime: { sendMessage: () => new Promise(() => {}) },
+    storage: { onChanged: { addListener() {} } },
+  },
+  document: {
+    querySelector(selector) {
+      return automationElements.get(selector) || null;
+    },
+  },
+  console,
+});
+vm.runInContext(automationScript, automationContext);
+automationContext.renderRunState({
+  status: "paused",
+  message: "Paused safely.",
+  currentLead: { fullName: "Cheresse Pentella" },
+  progress: {
+    processedLeads: 15,
+    requestsSent: 7,
+    targetRequests: 19,
+    averageLeadDurationMs: 60_000,
+    estimatedRemainingMs: 1_380_000,
+  },
+});
+assert.equal(
+  automationElements.get("#progress-label").textContent,
+  "Current lead: Cheresse Pentella",
+);
+assert.equal(
+  automationElements.get("#progress-value").textContent,
+  "7 / 19 requests",
+);
+assert.equal(
+  automationElements.get("#progress-leads").textContent,
+  "15 leads checked in this run.",
+);
+assert.equal(
+  automationElements.get("#progress-bar").style.width,
+  `${Math.min(100, (7 / 19) * 100)}%`,
+  "The progress bar must track requests, not leads checked.",
+);
 assert.match(dashboardSource, /All leads and steps/);
 assert.match(dashboardSource, /id="retry-failed-leads"/);
 assert.match(dashboardSource, /id="lead-drawer"/);

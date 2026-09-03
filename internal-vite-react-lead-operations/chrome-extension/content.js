@@ -234,7 +234,7 @@
     if (target <= 0) {
       return {
         finish: "Preparing...",
-        detail: "The time will appear after today’s lead target is ready.",
+        detail: "The time will appear after today’s request goal is ready.",
       };
     }
     const averageMs = Number(progress.averageLeadDurationMs || 0);

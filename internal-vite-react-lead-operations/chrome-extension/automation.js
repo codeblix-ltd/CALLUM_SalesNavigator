@@ -5,6 +5,7 @@ const elements = {
   progressLabel: document.querySelector("#progress-label"),
   progressValue: document.querySelector("#progress-value"),
   progressBar: document.querySelector("#progress-bar"),
+  progressLeads: document.querySelector("#progress-leads"),
   runEstimate: document.querySelector("#run-estimate"),
   pause: document.querySelector("#pause-run"),
   resume: document.querySelector("#resume-run"),
@@ -64,17 +65,23 @@ function renderRunState(state) {
   const status = String(state.status || "idle");
   const progress = state.progress || {};
   const processed = Math.max(0, Number(progress.processedLeads || 0));
-  const target = Math.max(0, Number(progress.targetRequests || 0));
-  const percentage = target > 0 ? Math.min(100, (processed / target) * 100) : 0;
+  const requestsSent = Math.max(0, Number(progress.requestsSent || 0));
+  const requestTarget = Math.max(0, Number(progress.targetRequests || 0));
+  const percentage = requestTarget > 0
+    ? Math.min(100, (requestsSent / requestTarget) * 100)
+    : 0;
 
   elements.runCard.dataset.status = status;
   elements.runLabel.textContent = statusLabels[status] || "Ready";
   elements.runDetail.textContent = state.message || "The protected window is ready.";
   elements.progressLabel.textContent = state.currentLead?.fullName
     ? `Current lead: ${state.currentLead.fullName}`
-    : "Run progress";
-  elements.progressValue.textContent = `${processed} / ${target}`;
+    : "Request goal for this run";
+  elements.progressValue.textContent = requestTarget > 0
+    ? `${requestsSent} / ${requestTarget} requests`
+    : `${requestsSent} requests sent`;
   elements.progressBar.style.width = `${percentage}%`;
+  elements.progressLeads.textContent = `${formatCount(processed, "lead")} checked in this run.`;
   elements.runEstimate.textContent = formatRunEta(progress, status);
 
   const running = status === "running";
@@ -88,7 +95,7 @@ function renderRunState(state) {
 
 function formatRunEta(progress, status) {
   const target = Number(progress.targetRequests || 0);
-  if (target <= 0) return "ETA appears after today’s lead target is ready.";
+  if (target <= 0) return "ETA appears after today’s request goal is ready.";
   const averageMs = Number(progress.averageLeadDurationMs || 0);
   if (averageMs <= 0) return "ETA appears after the first lead finishes.";
   const storedRemainingMs = Math.max(
@@ -109,6 +116,10 @@ function formatRunEta(progress, status) {
     minute: "2-digit",
   });
   return `Estimated finish: ${clock} · about ${formatEtaDuration(remainingMs)} left`;
+}
+
+function formatCount(count, singular) {
+  return `${count} ${singular}${count === 1 ? "" : "s"}`;
 }
 
 function formatEtaDuration(milliseconds) {

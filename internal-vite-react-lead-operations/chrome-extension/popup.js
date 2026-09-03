@@ -815,9 +815,14 @@ function renderAutoLeadRunState(state) {
   if (!state || typeof state !== "object") return;
   const status = String(state.status || "idle");
   const progress = state.progress || {};
-  const processed = Number(progress.processedLeads || 0);
-  const target = Number(progress.targetRequests || 0);
-  const progressText = target > 0 ? ` ${processed} of ${target} leads finished.` : "";
+  const processed = Math.max(0, Number(progress.processedLeads || 0));
+  const requestsSent = Math.max(0, Number(progress.requestsSent || 0));
+  const requestTarget = Math.max(0, Number(progress.targetRequests || 0));
+  const progressText = requestTarget > 0
+    ? ` ${formatCount(processed, "lead")} checked; ${requestsSent} of ${requestTarget} planned requests sent in this run.`
+    : processed > 0
+      ? ` ${formatCount(processed, "lead")} checked in this run.`
+      : "";
   const etaText = formatRunEta(progress, status);
   const labels = {
     idle: "Ready",

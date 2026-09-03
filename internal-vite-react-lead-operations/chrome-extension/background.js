@@ -611,7 +611,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
     recordCompletedLeadTiming(progress, Date.now() - leadStartedAt);
     await checkpointRun(runContext, progress, {
       phase: "working_leads",
-      message: `${progress.processedLeads} of ${availableRequestSlots} leads finished in this run.`,
+      message: "Lead finished. Continuing toward today’s request goal...",
       currentLead: null,
     });
     dashboard = await ScoutApi.authenticatedAction("scouts:getDashboard");
