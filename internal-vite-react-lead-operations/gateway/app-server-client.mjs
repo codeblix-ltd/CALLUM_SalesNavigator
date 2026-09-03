@@ -421,6 +421,23 @@ export class CodexAppServer extends EventEmitter {
   }
 
   async createLanguageCheck({ requestId, scoutId, context, samples }) {
+    const localResults = samples.map((sample) => ({
+      id: sample.id,
+      ...classifyLanguageLocally(sample.text),
+    }));
+    const unresolvedSamples = samples.filter(
+      (sample) =>
+        localResults.find((result) => result.id === sample.id)?.status ===
+        "uncertain",
+    );
+    if (unresolvedSamples.length === 0) {
+      return {
+        results: localResults,
+        threadId: null,
+        model: "local-heuristic",
+      };
+    }
+
     const account = await this.readAccount({ refreshToken: true });
     if (account.account?.type !== "chatgpt") {
       throw new GatewayError(
@@ -448,7 +465,7 @@ export class CodexAppServer extends EventEmitter {
             `Language check ${requestId} for scout ${scoutId}. Context: ${context}.\n` +
             "Classify each text sample independently. Preserve every supplied id exactly.\n\n" +
             "<LANGUAGE_SAMPLES>\n" +
-            JSON.stringify(samples) +
+            JSON.stringify(unresolvedSamples) +
             "\n</LANGUAGE_SAMPLES>",
         },
       ],
@@ -470,9 +487,26 @@ export class CodexAppServer extends EventEmitter {
       .at(-1);
     if (!text) throw new Error("Codex returned an empty language result.");
     const parsed = JSON.parse(text);
-    const results = normalizeLanguageResults(parsed.results, samples);
+    const modelResults = normalizeLanguageResults(
+      parsed.results,
+      unresolvedSamples,
+    );
+    const modelById = new Map(
+      modelResults.map((result) => [result.id, result]),
+    );
+    const results = localResults.map((result) =>
+      result.status === "uncertain"
+        ? modelById.get(result.id) || result
+        : result,
+    );
     await this.onAuthChanged();
-    return { results, threadId, model: this.model };
+    return {
+      results,
+      threadId,
+      model: localResults.some((result) => result.status !== "uncertain")
+        ? `${this.model}+local`
+        : this.model,
+    };
   }
 
   async createFirstDmDraft({ requestId, scoutId, profile }) {
@@ -843,6 +877,81 @@ export function normalizeLanguageSample(value) {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 8_000);
+}
+
+const ENGLISH_SIGNAL_WORDS = new Set([
+  "a",
+  "about",
+  "after",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "been",
+  "before",
+  "being",
+  "between",
+  "but",
+  "by",
+  "for",
+  "from",
+  "how",
+  "if",
+  "in",
+  "into",
+  "is",
+  "it",
+  "of",
+  "on",
+  "or",
+  "our",
+  "over",
+  "that",
+  "the",
+  "their",
+  "these",
+  "they",
+  "this",
+  "those",
+  "through",
+  "to",
+  "was",
+  "we",
+  "were",
+  "what",
+  "when",
+  "where",
+  "who",
+  "why",
+  "with",
+  "you",
+  "your",
+]);
+
+export function classifyLanguageLocally(value) {
+  const text = normalizeLanguageSample(value);
+  const letters = text.match(/\p{L}/gu) || [];
+  if (letters.length < 30) {
+    return { status: "uncertain", languageCode: "und", confidence: 0 };
+  }
+  if (containsDominantNonLatinScript(text)) {
+    return { status: "non_english", languageCode: "und", confidence: 0.99 };
+  }
+  const tokens = text.toLowerCase().match(/[a-z]+(?:'[a-z]+)?/g) || [];
+  const signalWords = tokens.filter((token) =>
+    ENGLISH_SIGNAL_WORDS.has(token),
+  );
+  const uniqueSignals = new Set(signalWords);
+  if (
+    tokens.length >= 8 &&
+    signalWords.length >= 4 &&
+    uniqueSignals.size >= 3 &&
+    signalWords.length / tokens.length >= 0.1
+  ) {
+    return { status: "english", languageCode: "en", confidence: 0.98 };
+  }
+  return { status: "uncertain", languageCode: "und", confidence: 0 };
 }
 
 export function containsDominantNonLatinScript(value) {

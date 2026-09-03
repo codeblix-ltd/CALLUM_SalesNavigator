@@ -59,7 +59,9 @@ const gatewayClientPath = path.join(
   "app-server-client.mjs",
 );
 const gatewayClientSource = await readFile(gatewayClientPath, "utf8");
-const { CodexAppServer } = await import(pathToFileURL(gatewayClientPath).href);
+const { CodexAppServer, classifyLanguageLocally } = await import(
+  pathToFileURL(gatewayClientPath).href
+);
 
 assert.equal(manifest.version, "0.10.27");
 assert.deepEqual(manifest.content_scripts[0].matches, [
@@ -740,6 +742,24 @@ assert.match(
 assert.match(gatewayClientSource, /LANGUAGE_TURN_TIMEOUT_MS = 12_000/);
 assert.match(gatewayClientSource, /TURN_TIMEOUT_MS = 75_000/);
 assert.match(gatewayClientSource, /"turn\/interrupt"/);
+assert.deepEqual(
+  classifyLanguageLocally(
+    "Founder and CEO at RockWood Advisory Partners and Partner, Head of Europe at Jensen Partners.",
+  ),
+  { status: "english", languageCode: "en", confidence: 0.98 },
+);
+assert.deepEqual(
+  classifyLanguageLocally(
+    "أساعد الشركات على تحسين العمليات وتطوير فرق القيادة واتخاذ قرارات استراتيجية أفضل بناء على معلومات واضحة.",
+  ),
+  { status: "non_english", languageCode: "und", confidence: 0.99 },
+);
+assert.equal(
+  classifyLanguageLocally(
+    "Founder | Conseil | Strategy | Liderazgo | AI | Growth",
+  ).status,
+  "uncertain",
+);
 const gatewayTimeoutProbe = new CodexAppServer({
   codexHome: "",
   model: "gpt-5.6-luna",
