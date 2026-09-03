@@ -2190,7 +2190,6 @@ function DailyEmailReport({ rows, scouts, range }: { rows: DailyScoutEmail[]; sc
     return totals;
   }, [rows]);
   const selectedTotals = totalsByDay.get(selectedDay) ?? { original: 0, work: 0, total: 0 };
-  const maxDailyTotal = Math.max(1, ...days.map((day) => totalsByDay.get(day)?.total ?? 0));
   const selectedByScout = new Map(rows.filter((row) => row.day === selectedDay).map((row) => [row.operatorId, row]));
   const knownScoutIds = new Set(scouts.map((scout) => scout.operatorId));
   const breakdown = [
@@ -2222,28 +2221,7 @@ function DailyEmailReport({ rows, scouts, range }: { rows: DailyScoutEmail[]; sc
         </label>
       </div>
 
-      <div className="daily-email-bars" aria-label="Daily email totals">
-        <div>
-          {days.map((day) => {
-            const total = totalsByDay.get(day)?.total ?? 0;
-            const selected = day === selectedDay;
-            return (
-              <button
-                type="button"
-                key={day}
-                className={selected ? "is-selected" : ""}
-                onClick={() => setSelectedDay(day)}
-                aria-label={`${formatReportDay(day, day === today)}: ${total} emails`}
-                aria-pressed={selected}
-                title={`${formatReportDay(day, day === today)} · ${formatNumber(total)} emails`}
-              >
-                <span className="daily-email-bar-track"><span style={{ height: `${Math.max(total ? 8 : 2, total / maxDailyTotal * 100)}%` }} /></span>
-                <small>{shortReportDay(day)}</small>
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      <div className="daily-email-selection-note"><Activity size={14} /> Showing the selected day only. Use <strong>View day</strong> to switch dates; the full history is not rendered until you choose it.</div>
 
       <div className="daily-email-summary">
         <div><span>Total collected</span><strong>{formatNumber(selectedTotals.total)}</strong></div>
@@ -2997,12 +2975,6 @@ function formatReportDay(value: string, isToday: boolean) {
   if (Number.isNaN(date.getTime())) return value;
   const formatted = new Intl.DateTimeFormat("en", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric", year: "numeric" }).format(date);
   return isToday ? `Today · ${formatted}` : formatted;
-}
-
-function shortReportDay(value: string) {
-  const date = new Date(`${value}T00:00:00Z`);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("en", { timeZone: "UTC", month: "short", day: "numeric" }).format(date);
 }
 
 function formatShortDate(value: string) {
