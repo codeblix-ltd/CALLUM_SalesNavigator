@@ -187,6 +187,42 @@ main { max-width: 1320px; margin: 0 auto; padding: 40px 24px 76px; }
 .chart-empty { min-height: 250px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #98a1b1; }
 .chart-empty p { margin: 8px 0 0; font-size: 11px; }
 
+.daily-email-panel { padding: 22px; overflow: hidden; }
+.daily-email-head { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.daily-email-head > label { display: grid; gap: 4px; flex: 0 0 210px; color: #7d879b; font-size: 8px; font-weight: 800; text-transform: uppercase; letter-spacing: .7px; }
+.daily-email-head select { min-height: 39px; padding: 0 31px 0 11px; color: #4c5870; background: white; border: 1px solid #dbe1ec; border-radius: 10px; outline: 0; font-size: 10px; font-weight: 700; text-transform: none; letter-spacing: 0; }
+.daily-email-head select:focus { border-color: #8067df; box-shadow: 0 0 0 3px rgba(112,79,225,.09); }
+.daily-email-bars { margin: 22px -2px 0; padding: 14px 12px 9px; overflow-x: auto; background: #f8f9fc; border: 1px solid #e4e8f0; border-radius: 12px; }
+.daily-email-bars > div { min-width: 100%; width: max-content; height: 104px; display: flex; align-items: flex-end; gap: 5px; }
+.daily-email-bars button { width: 32px; height: 100%; padding: 0 2px; display: grid; grid-template-rows: 1fr 18px; gap: 5px; color: #8791a4; background: transparent; border: 0; border-radius: 7px; }
+.daily-email-bars button:hover, .daily-email-bars button.is-selected { color: #5d45bd; background: #eeeafd; }
+.daily-email-bar-track { width: 8px; height: 100%; display: flex; align-items: flex-end; justify-self: center; overflow: hidden; background: #eaedf3; border-radius: 999px; }
+.daily-email-bar-track > span { width: 100%; display: block; background: linear-gradient(180deg, #7a5ade, #2b9b77); border-radius: inherit; transition: height .2s ease; }
+.daily-email-bars small { font-size: 7px; white-space: nowrap; transform: rotate(-35deg); transform-origin: center; }
+.daily-email-summary { margin-top: 14px; display: grid; grid-template-columns: repeat(3, minmax(0, 155px)) 1fr; gap: 9px; align-items: stretch; }
+.daily-email-summary > div { padding: 11px 13px; display: grid; gap: 3px; background: #f7f9fb; border: 1px solid #e1e6ed; border-radius: 10px; }
+.daily-email-summary span { color: #7f8a9d; font-size: 8px; font-weight: 700; }
+.daily-email-summary strong { color: #2c3850; font: 800 18px "Manrope", sans-serif; }
+.daily-email-summary > div:first-child { background: #f2effd; border-color: #ddd6f5; }
+.daily-email-summary > div:first-child strong { color: #5f45be; }
+.daily-email-summary > p { margin: 0; padding: 10px 12px; display: flex; align-items: center; color: #778399; font-size: 9px; line-height: 1.45; }
+.daily-email-table-scroll { max-height: 410px; margin: 15px -22px 0; overflow: auto; border-top: 1px solid #e2e6ee; border-bottom: 1px solid #e7eaf0; }
+.daily-email-table { width: 100%; min-width: 620px; border-collapse: collapse; }
+.daily-email-table th { padding: 10px 18px; position: sticky; top: 0; z-index: 1; color: #7d879b; background: #f8f9fc; border-bottom: 1px solid #dfe4ee; font-size: 8px; text-align: right; text-transform: uppercase; letter-spacing: .65px; }
+.daily-email-table th:first-child { text-align: left; }
+.daily-email-table td { padding: 11px 18px; color: #687388; border-bottom: 1px solid #edf0f4; font-size: 10px; text-align: right; }
+.daily-email-table tbody tr:last-child td { border-bottom: 0; }
+.daily-email-table tbody tr:hover { background: #fbfaff; }
+.daily-email-scout { display: flex; align-items: center; gap: 9px; text-align: left; }
+.daily-email-scout > span { width: 30px; height: 30px; flex: 0 0 auto; display: grid; place-items: center; color: #5d43c7; background: #eeeafd; border-radius: 9px; font-size: 9px; font-weight: 800; }
+.daily-email-scout > div { min-width: 0; display: grid; gap: 2px; }
+.daily-email-scout strong { color: #2d3851; font-size: 10px; }
+.daily-email-scout small { overflow: hidden; color: #949cac; font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
+.daily-email-total { min-width: 46px; display: inline-flex; align-items: center; justify-content: flex-end; gap: 5px; color: #929bad; font-weight: 800; }
+.daily-email-total.has-email { color: #238d67; }
+.daily-email-note { margin: 13px 0 0; color: #818b9e; font-size: 9px; line-height: 1.5; }
+.daily-email-note strong { color: #566179; }
+
 .funnel { margin-top: 24px; display: grid; gap: 16px; }
 .funnel-row > div:first-child { display: flex; justify-content: space-between; margin-bottom: 7px; }
 .funnel-row span { color: #68758d; font-size: 11px; }
@@ -806,6 +842,10 @@ footer span { display: flex; align-items: center; gap: 6px; }
   .scout-progress { grid-template-columns: 1fr; }
   .chart-legend { margin: 14px 0 3px; justify-content: flex-start; flex-wrap: wrap; }
   .activity-chart svg { height: 190px; }
+  .daily-email-head { align-items: stretch; flex-direction: column; }
+  .daily-email-head > label { flex-basis: auto; }
+  .daily-email-summary { grid-template-columns: repeat(3, 1fr); }
+  .daily-email-summary > p { grid-column: 1 / -1; }
   .filters { grid-template-columns: 1fr; padding: 0 17px 16px; }
   .operations-toolbar { align-items: flex-start; flex-direction: column; }
   .operations-toolbar > div:last-child { width: 100%; align-items: stretch; flex-direction: column; }
@@ -859,4 +899,6 @@ footer span { display: flex; align-items: center; gap: 6px; }
   .weekly-kpi-row { grid-template-columns: minmax(0, 1fr) 82px 30px; }
   .weekly-scoring-grid { grid-template-columns: 1fr; }
   .veblen-summary-grid { grid-template-columns: 1fr; }
+  .daily-email-summary { grid-template-columns: 1fr; }
+  .daily-email-summary > p { grid-column: auto; padding-inline: 2px; }
 }

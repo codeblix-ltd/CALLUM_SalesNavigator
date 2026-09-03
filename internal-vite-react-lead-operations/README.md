@@ -168,6 +168,12 @@ queues, engaged leads, connection requests, pending requests, acceptances,
 collected emails, failures, conversion rates, recent events, and searchable
 per-scout drill-downs.
 
+To audit email collection, open **Overview → Trends → Daily email collection**.
+Choose a day to see every scout, including scouts with zero collections. The
+report separates original LinkedIn contact-info emails from work emails found
+through Mailmeteor, uses Dubai calendar days, and follows the dashboard's
+7/30/90-day or all-time range control.
+
 Run the extension's deterministic production checks without opening LinkedIn
 or making model calls:
 

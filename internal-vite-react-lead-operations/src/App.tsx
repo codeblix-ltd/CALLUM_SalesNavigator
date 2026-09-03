@@ -111,6 +111,15 @@ type TrendPoint = {
   emails: number;
 };
 
+type DailyScoutEmail = {
+  day: string;
+  operatorId: string;
+  username: string;
+  originalEmails: number;
+  workEmails: number;
+  totalEmails: number;
+};
+
 type RecentActivity = {
   id: string;
   operatorId: string;
@@ -168,6 +177,7 @@ type Analytics = {
   summary: Summary;
   scouts: ScoutMetrics[];
   trend: TrendPoint[];
+  dailyScoutEmails: DailyScoutEmail[];
   recentActivity: RecentActivity[];
   postActivities: PostActivity[];
 };
@@ -1760,6 +1770,13 @@ function Overview({
           <Funnel summary={summary} />
         </article>
       </section>
+      <section className="panel daily-email-panel">
+        <DailyEmailReport
+          rows={analytics.dailyScoutEmails}
+          scouts={analytics.scouts}
+          range={analytics.range}
+        />
+      </section>
       </>}
 
       {section === "scouts" && <>
@@ -2149,6 +2166,109 @@ function ScoutTable({ scouts, selectedScout, setSelectedScout, onToggleActive, t
       </table>
       {bulkScout && <BulkUnassignModal scout={bulkScout} busy={bulkBusy} error={bulkError} result={bulkResult} close={() => { if (!bulkBusy) { setBulkScout(null); setBulkError(""); } }} confirm={() => void confirmBulkUnassign()} />}
     </div>
+  );
+}
+
+function DailyEmailReport({ rows, scouts, range }: { rows: DailyScoutEmail[]; scouts: ScoutMetrics[]; range: Range }) {
+  const today = dubaiDateKey();
+  const days = useMemo(() => dailyReportDays(range, rows, today), [range, rows, today]);
+  const [selectedDay, setSelectedDay] = useState(today);
+
+  useEffect(() => {
+    if (!days.includes(selectedDay)) setSelectedDay(days.at(-1) ?? today);
+  }, [days, selectedDay, today]);
+
+  const totalsByDay = useMemo(() => {
+    const totals = new Map<string, { original: number; work: number; total: number }>();
+    for (const row of rows) {
+      const current = totals.get(row.day) ?? { original: 0, work: 0, total: 0 };
+      current.original += row.originalEmails;
+      current.work += row.workEmails;
+      current.total += row.totalEmails;
+      totals.set(row.day, current);
+    }
+    return totals;
+  }, [rows]);
+  const selectedTotals = totalsByDay.get(selectedDay) ?? { original: 0, work: 0, total: 0 };
+  const maxDailyTotal = Math.max(1, ...days.map((day) => totalsByDay.get(day)?.total ?? 0));
+  const selectedByScout = new Map(rows.filter((row) => row.day === selectedDay).map((row) => [row.operatorId, row]));
+  const knownScoutIds = new Set(scouts.map((scout) => scout.operatorId));
+  const breakdown = [
+    ...scouts.map((scout) => selectedByScout.get(scout.operatorId) ?? {
+      day: selectedDay,
+      operatorId: scout.operatorId,
+      username: scout.username,
+      originalEmails: 0,
+      workEmails: 0,
+      totalEmails: 0,
+    }),
+    ...[...selectedByScout.values()].filter((row) => !knownScoutIds.has(row.operatorId)),
+  ].sort((left, right) => right.totalEmails - left.totalEmails || left.username.localeCompare(right.username));
+
+  return (
+    <>
+      <div className="daily-email-head">
+        <PanelHeading
+          eyebrow="Collection audit"
+          title="Daily email collection"
+          description="Dubai day · every scout, with original and work emails separated"
+          icon={<Mail size={18} />}
+        />
+        <label>
+          <span>View day</span>
+          <select value={selectedDay} onChange={(event) => setSelectedDay(event.target.value)}>
+            {[...days].reverse().map((day) => <option key={day} value={day}>{formatReportDay(day, day === today)}</option>)}
+          </select>
+        </label>
+      </div>
+
+      <div className="daily-email-bars" aria-label="Daily email totals">
+        <div>
+          {days.map((day) => {
+            const total = totalsByDay.get(day)?.total ?? 0;
+            const selected = day === selectedDay;
+            return (
+              <button
+                type="button"
+                key={day}
+                className={selected ? "is-selected" : ""}
+                onClick={() => setSelectedDay(day)}
+                aria-label={`${formatReportDay(day, day === today)}: ${total} emails`}
+                aria-pressed={selected}
+                title={`${formatReportDay(day, day === today)} · ${formatNumber(total)} emails`}
+              >
+                <span className="daily-email-bar-track"><span style={{ height: `${Math.max(total ? 8 : 2, total / maxDailyTotal * 100)}%` }} /></span>
+                <small>{shortReportDay(day)}</small>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="daily-email-summary">
+        <div><span>Total collected</span><strong>{formatNumber(selectedTotals.total)}</strong></div>
+        <div><span>Original LinkedIn</span><strong>{formatNumber(selectedTotals.original)}</strong></div>
+        <div><span>Work emails</span><strong>{formatNumber(selectedTotals.work)}</strong></div>
+        <p>{selectedDay === today ? "Today" : formatReportDay(selectedDay, false)} · scouts with zero collections are included below.</p>
+      </div>
+
+      <div className="daily-email-table-scroll">
+        <table className="daily-email-table">
+          <thead><tr><th>Scout</th><th>Original LinkedIn</th><th>Work email</th><th>Total</th></tr></thead>
+          <tbody>
+            {breakdown.map((row) => (
+              <tr key={row.operatorId}>
+                <td><div className="daily-email-scout"><span>{initials(row.username)}</span><div><strong>{row.username}</strong><small>{row.operatorId === "unassigned" ? "Not assigned to a scout" : row.operatorId}</small></div></div></td>
+                <td>{formatNumber(row.originalEmails)}</td>
+                <td>{formatNumber(row.workEmails)}</td>
+                <td><span className={row.totalEmails ? "daily-email-total has-email" : "daily-email-total"}><Mail size={12} />{formatNumber(row.totalEmails)}</span></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="daily-email-note"><strong>What is counted:</strong> Original means the email saved from LinkedIn contact info by a scout. Work means a Mailmeteor result matched to that scout’s assigned lead. One lead can add two addresses when both are found.</p>
+    </>
   );
 }
 
@@ -2839,6 +2959,50 @@ function formatChartDate(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat("en", { month: "short", day: date.getUTCDate() === 1 ? undefined : "numeric", year: date.getUTCMonth() === 0 && date.getUTCDate() === 1 ? "2-digit" : undefined }).format(date);
+}
+
+function dubaiDateKey() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Dubai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${value.year}-${value.month}-${value.day}`;
+}
+
+function dailyReportDays(range: Range, rows: DailyScoutEmail[], today: string) {
+  const todayDate = new Date(`${today}T00:00:00Z`);
+  const requestedDays = range === "7d" ? 7 : range === "30d" ? 30 : range === "90d" ? 90 : null;
+  const earliestStoredDay = rows
+    .map((row) => row.day)
+    .filter((day) => /^\d{4}-\d{2}-\d{2}$/.test(day) && day <= today)
+    .sort()[0];
+  const dayCount = requestedDays ?? Math.max(
+    1,
+    earliestStoredDay
+      ? Math.floor((todayDate.getTime() - new Date(`${earliestStoredDay}T00:00:00Z`).getTime()) / 86_400_000) + 1
+      : 1,
+  );
+  return Array.from({ length: dayCount }, (_value, index) => {
+    const date = new Date(todayDate);
+    date.setUTCDate(date.getUTCDate() - (dayCount - index - 1));
+    return date.toISOString().slice(0, 10);
+  });
+}
+
+function formatReportDay(value: string, isToday: boolean) {
+  const date = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return value;
+  const formatted = new Intl.DateTimeFormat("en", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric", year: "numeric" }).format(date);
+  return isToday ? `Today · ${formatted}` : formatted;
+}
+
+function shortReportDay(value: string) {
+  const date = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("en", { timeZone: "UTC", month: "short", day: "numeric" }).format(date);
 }
 
 function formatShortDate(value: string) {

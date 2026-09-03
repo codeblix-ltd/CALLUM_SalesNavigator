@@ -62,6 +62,15 @@ const trendPointValidator = v.object({
   emails: v.number(),
 });
 
+const dailyScoutEmailValidator = v.object({
+  day: v.string(),
+  operatorId: v.string(),
+  username: v.string(),
+  originalEmails: v.number(),
+  workEmails: v.number(),
+  totalEmails: v.number(),
+});
+
 const activityValidator = v.object({
   id: v.string(),
   operatorId: v.string(),
@@ -240,6 +249,14 @@ type AnalyticsResult = {
     accepted: number;
     emails: number;
   }>;
+  dailyScoutEmails: Array<{
+    day: string;
+    operatorId: string;
+    username: string;
+    originalEmails: number;
+    workEmails: number;
+    totalEmails: number;
+  }>;
   recentActivity: Array<{
     id: string;
     operatorId: string;
@@ -303,6 +320,7 @@ export const getOverview = action({
     summary: summaryValidator,
     scouts: v.array(scoutMetricsValidator),
     trend: v.array(trendPointValidator),
+    dailyScoutEmails: v.array(dailyScoutEmailValidator),
     recentActivity: v.array(activityValidator),
     postActivities: v.array(postActivityValidator),
   }),
@@ -320,6 +338,7 @@ export const getOverview = action({
       metricResult,
       eventResult,
       trendResult,
+      dailyScoutEmailResult,
       recentResult,
       postResult,
     ] =
@@ -459,6 +478,43 @@ export const getOverview = action({
           [since, args.range === "all" ? 24 : 90],
         ),
         database.query(
+          `WITH collected AS (
+             SELECT
+               (l.original_email_collected_at AT TIME ZONE 'Asia/Dubai')::DATE AS day,
+               coalesce(a.operator_id, 'unassigned') AS operator_id,
+               1 AS original_emails,
+               0 AS work_emails
+             FROM leads AS l
+             LEFT JOIN lead_assignments AS a ON a.lead_id = l.id
+             WHERE l.original_email_collected_at IS NOT NULL
+               AND ($1::TIMESTAMPTZ IS NULL OR l.original_email_collected_at >= $1::TIMESTAMPTZ)
+               AND l.original_email_collected_at <= now()
+
+             UNION ALL
+
+             SELECT
+               (l.work_email_collected_at AT TIME ZONE 'Asia/Dubai')::DATE AS day,
+               coalesce(a.operator_id, 'unassigned') AS operator_id,
+               0 AS original_emails,
+               1 AS work_emails
+             FROM leads AS l
+             LEFT JOIN lead_assignments AS a ON a.lead_id = l.id
+             WHERE l.work_email_collected_at IS NOT NULL
+               AND ($1::TIMESTAMPTZ IS NULL OR l.work_email_collected_at >= $1::TIMESTAMPTZ)
+               AND l.work_email_collected_at <= now()
+           )
+           SELECT
+             day::STRING AS day,
+             operator_id,
+             sum(original_emails)::FLOAT8 AS original_emails,
+             sum(work_emails)::FLOAT8 AS work_emails,
+             sum(original_emails + work_emails)::FLOAT8 AS total_emails
+           FROM collected
+           GROUP BY day, operator_id
+           ORDER BY day DESC, operator_id`,
+          [since],
+        ),
+        database.query(
           `SELECT
              e.id::STRING AS id,
              e.operator_id,
@@ -587,6 +643,19 @@ export const getOverview = action({
         accepted: toNumber(row.accepted),
         emails: toNumber(row.emails),
       })),
+      dailyScoutEmails: dailyScoutEmailResult.rows.map((row) => {
+        const operatorId = String(row.operator_id);
+        return {
+          day: String(row.day),
+          operatorId,
+          username: operatorId === "unassigned"
+            ? "Unassigned"
+            : accountByOperator.get(operatorId)?.username ?? operatorId,
+          originalEmails: toNumber(row.original_emails),
+          workEmails: toNumber(row.work_emails),
+          totalEmails: toNumber(row.total_emails),
+        };
+      }),
       recentActivity: recentResult.rows.map((row) => ({
         id: String(row.id),
         operatorId: String(row.operator_id),
