@@ -3,6 +3,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
+  ACCOUNTING_BANK_OUTPUT_SCHEMA,
+  ACCOUNTING_RECEIPT_OUTPUT_SCHEMA,
+  ACCOUNTING_SYSTEM_PROMPT,
   COMMUNITY_MATCH_OUTPUT_SCHEMA,
   FIRST_DM_SYSTEM_PROMPT,
   FLIPPA_SYSTEM_PROMPT,
@@ -86,6 +89,14 @@ if (
 ) {
   throw new Error("The Veblen matching prompt or output contract is incomplete.");
 }
+if (
+  !ACCOUNTING_SYSTEM_PROMPT.includes("accounting data-extraction") ||
+  !ACCOUNTING_SYSTEM_PROMPT.includes("untrusted data") ||
+  !ACCOUNTING_RECEIPT_OUTPUT_SCHEMA.properties.items.items.properties.category.enum.includes("Fixed Assets") ||
+  !ACCOUNTING_BANK_OUTPUT_SCHEMA.properties.items.items.properties.classification.enum.includes("Sales")
+) {
+  throw new Error("The accounting extraction contracts are incomplete.");
+}
 
 const sharedSecret = process.env.CODEX_GATEWAY_SHARED_SECRET;
 if (!sharedSecret) {
@@ -98,6 +109,7 @@ const temporaryHome = await mkdtemp(
 const port = 8791;
 const extensionToken = "smoke-extension-token-1234567890";
 const veblenToken = "smoke-veblen-token-1234567890";
+const accountingToken = "smoke-accounting-token-1234567890";
 const child = spawn(process.execPath, ["gateway/server.mjs"], {
   cwd: path.resolve("."),
   env: {
@@ -107,6 +119,7 @@ const child = spawn(process.execPath, ["gateway/server.mjs"], {
     CODEX_DISABLE_AUTH_BACKUP: "1",
     CODEX_GATEWAY_EXTENSION_TOKEN: extensionToken,
     CODEX_GATEWAY_VEBLEN_TOKEN: veblenToken,
+    CODEX_GATEWAY_ACCOUNTING_TOKEN: accountingToken,
   },
   stdio: ["ignore", "pipe", "pipe"],
   windowsHide: true,
@@ -173,6 +186,17 @@ try {
   if (invalidFlippaDraft.status !== 400) {
     throw new Error("The Flippa route did not validate its request contract.");
   }
+  const forbiddenExtensionAccounting = await fetch(
+    `http://127.0.0.1:${port}/v1/accounting/receipt`,
+    {
+      method: "POST",
+      headers: { ...extensionHeaders, "content-type": "application/json" },
+      body: JSON.stringify({}),
+    },
+  );
+  if (forbiddenExtensionAccounting.status !== 403) {
+    throw new Error("The extension token could use the accounting route.");
+  }
   const invalidLanguageCheck = await fetch(
     `http://127.0.0.1:${port}/v1/linkedin/language-check`,
     {
@@ -238,6 +262,61 @@ try {
   if (invalidVeblenMatch.status !== 400) {
     throw new Error("The Veblen route did not validate its request contract.");
   }
+  const accountingHeaders = {
+    authorization: `Bearer ${accountingToken}`,
+    "content-type": "application/json",
+  };
+  const accountingStatus = await getJson(
+    `http://127.0.0.1:${port}/v1/status`,
+    { headers: accountingHeaders },
+  );
+  if (accountingStatus.model !== "gpt-5.6-luna") {
+    throw new Error("The accounting token could not read subscription status.");
+  }
+  const forbiddenAccountingFlippa = await fetch(
+    `http://127.0.0.1:${port}/v1/flippa/comments/draft`,
+    {
+      method: "POST",
+      headers: accountingHeaders,
+      body: JSON.stringify({}),
+    },
+  );
+  if (forbiddenAccountingFlippa.status !== 403) {
+    throw new Error("The accounting token could use the Flippa route.");
+  }
+  const invalidAccountingReceipt = await fetch(
+    `http://127.0.0.1:${port}/v1/accounting/receipt`,
+    {
+      method: "POST",
+      headers: accountingHeaders,
+      body: JSON.stringify({
+        requestId: "smoke-accounting-receipt",
+        fileName: "invoice.png",
+        categoryHint: "Sales",
+        images: [],
+      }),
+    },
+  );
+  if (invalidAccountingReceipt.status !== 400) {
+    throw new Error("The accounting receipt route did not validate its pages.");
+  }
+  const invalidAccountingStatement = await fetch(
+    `http://127.0.0.1:${port}/v1/accounting/statement`,
+    {
+      method: "POST",
+      headers: accountingHeaders,
+      body: JSON.stringify({
+        requestId: "smoke-accounting-statement",
+        fileName: "statement.csv",
+        statementText: "2026-01-01,Example,100",
+        partNumber: 2,
+        partCount: 1,
+      }),
+    },
+  );
+  if (invalidAccountingStatement.status !== 400) {
+    throw new Error("The accounting statement route accepted an invalid part range.");
+  }
   const preflight = await fetch(
     `http://127.0.0.1:${port}/v1/flippa/comments/draft`,
     {
@@ -267,7 +346,7 @@ try {
     throw new Error("The official device-login start contract failed.");
   }
   console.log(
-    "Gateway smoke passed: auth scopes, language, CORS, Flippa and Veblen validation, and official device login.",
+    "Gateway smoke passed: auth scopes, language, CORS, Flippa, Veblen, accounting validation, and official device login.",
   );
 } catch (error) {
   throw new Error(`${error.message}\nGateway output:\n${output.slice(-4_000)}`);

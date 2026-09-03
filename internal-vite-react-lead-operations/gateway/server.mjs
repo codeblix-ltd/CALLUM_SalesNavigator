@@ -77,7 +77,7 @@ async function route(request, response) {
   const accessScope = authorize(request);
 
   if (request.method === "GET" && url.pathname === "/v1/status") {
-    requireAnyScope(accessScope, ["admin", "extension"]);
+    requireAnyScope(accessScope, ["admin", "extension", "accounting"]);
     const result = await codex.readAccount();
     sendJson(response, 200, {
       connected: result.account?.type === "chatgpt",
@@ -94,13 +94,13 @@ async function route(request, response) {
   }
 
   if (request.method === "POST" && url.pathname === "/v1/auth/device/start") {
-    requireAnyScope(accessScope, ["admin", "extension"]);
+    requireAnyScope(accessScope, ["admin", "extension", "accounting"]);
     sendJson(response, 200, await codex.startDeviceLogin());
     return;
   }
 
   if (request.method === "GET" && url.pathname === "/v1/auth/device/status") {
-    requireAnyScope(accessScope, ["admin", "extension"]);
+    requireAnyScope(accessScope, ["admin", "extension", "accounting"]);
     const loginId = url.searchParams.get("loginId")?.trim();
     if (!loginId || loginId.length > 200) {
       throw new GatewayError(400, "A valid loginId is required.");
@@ -110,7 +110,7 @@ async function route(request, response) {
   }
 
   if (request.method === "POST" && url.pathname === "/v1/auth/logout") {
-    requireScope(accessScope, "admin");
+    requireAnyScope(accessScope, ["admin", "accounting"]);
     await codex.logout();
     await authStore.clear();
     sendJson(response, 200, { ok: true });
@@ -235,6 +235,61 @@ async function route(request, response) {
     return;
   }
 
+  if (
+    request.method === "POST" &&
+    url.pathname === "/v1/accounting/receipt"
+  ) {
+    requireAnyScope(accessScope, ["admin", "accounting"]);
+    const body = await readJson(request, 36 * 1024 * 1024);
+    const requestId = requiredString(body.requestId, "requestId", 200);
+    const fileName = requiredString(body.fileName, "fileName", 300);
+    const categoryHint = readAccountingCategory(body.categoryHint);
+    const images = readAccountingImages(body.images);
+    sendJson(
+      response,
+      200,
+      await codex.enqueueAccountingReceipt({
+        requestId,
+        fileName,
+        categoryHint,
+        images,
+      }),
+    );
+    return;
+  }
+
+  if (
+    request.method === "POST" &&
+    url.pathname === "/v1/accounting/statement"
+  ) {
+    requireAnyScope(accessScope, ["admin", "accounting"]);
+    const body = await readJson(request);
+    const requestId = requiredString(body.requestId, "requestId", 200);
+    const fileName = requiredString(body.fileName, "fileName", 300);
+    const statementText = requiredString(
+      body.statementText,
+      "statementText",
+      40_000,
+    );
+    const partNumber = readPositiveInteger(body.partNumber, "partNumber", 100);
+    const partCount = readPositiveInteger(body.partCount, "partCount", 100);
+    if (partNumber > partCount) {
+      throw new GatewayError(400, "partNumber cannot exceed partCount.");
+    }
+    sendJson(
+      response,
+      200,
+      await codex.enqueueAccountingStatement({
+        requestId,
+        fileName,
+        statementText,
+        partNumber,
+        partCount,
+      }),
+    );
+    return;
+  }
+
   throw new GatewayError(404, "Route not found.");
 }
 
@@ -243,6 +298,7 @@ function readConfig() {
   const sharedSecret = requiredEnvironment("CODEX_GATEWAY_SHARED_SECRET");
   const extensionToken = process.env.CODEX_GATEWAY_EXTENSION_TOKEN?.trim() || null;
   const veblenToken = process.env.CODEX_GATEWAY_VEBLEN_TOKEN?.trim() || null;
+  const accountingToken = process.env.CODEX_GATEWAY_ACCOUNTING_TOKEN?.trim() || null;
   const encryptionKey = requiredEnvironment("CODEX_AUTH_ENCRYPTION_KEY");
   const model = process.env.CODEX_MODEL?.trim() || "gpt-5.6-luna";
   if (model !== "gpt-5.6-luna") {
@@ -257,6 +313,7 @@ function readConfig() {
     sharedSecret,
     extensionToken,
     veblenToken,
+    accountingToken,
     allowedOrigins: new Set(
       (process.env.CODEX_GATEWAY_ALLOWED_ORIGINS ?? "")
         .split(",")
@@ -285,6 +342,10 @@ function authorize(request) {
     config.veblenToken &&
     safeTokenEqual(received, config.veblenToken)
   ) return "veblen";
+  if (
+    config.accountingToken &&
+    safeTokenEqual(received, config.accountingToken)
+  ) return "accounting";
   throw new GatewayError(401, "Unauthorized.");
 }
 
@@ -323,12 +384,12 @@ function applyCors(request, response) {
   return true;
 }
 
-async function readJson(request) {
+async function readJson(request, maximumBytes = 524_288) {
   const chunks = [];
   let size = 0;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > 524_288) {
+    if (size > maximumBytes) {
       throw new GatewayError(413, "Request body is too large.");
     }
     chunks.push(chunk);
@@ -367,6 +428,57 @@ function optionalString(value, name, maximumLength) {
     );
   }
   return normalized;
+}
+
+function readAccountingCategory(value) {
+  if (value !== "Purchases" && value !== "Sales") {
+    throw new GatewayError(400, "categoryHint must be Purchases or Sales.");
+  }
+  return value;
+}
+
+function readAccountingImages(value) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 12) {
+    throw new GatewayError(400, "images must contain between 1 and 12 pages.");
+  }
+  let totalBytes = 0;
+  return value.map((image, index) => {
+    if (!image || typeof image !== "object" || Array.isArray(image)) {
+      throw new GatewayError(400, `images[${index}] must be an object.`);
+    }
+    const mimeType = requiredString(
+      image.mimeType,
+      `images[${index}].mimeType`,
+      50,
+    ).toLowerCase();
+    if (!["image/png", "image/jpeg", "image/webp"].includes(mimeType)) {
+      throw new GatewayError(400, `images[${index}] has an unsupported image type.`);
+    }
+    const data = requiredString(
+      image.base64,
+      `images[${index}].base64`,
+      34 * 1024 * 1024,
+    );
+    if (!/^[a-z0-9+/]+={0,2}$/i.test(data)) {
+      throw new GatewayError(400, `images[${index}] is not valid base64.`);
+    }
+    const bytes = Buffer.from(data, "base64");
+    if (!bytes.length || bytes.length > 25 * 1024 * 1024) {
+      throw new GatewayError(413, `images[${index}] is too large.`);
+    }
+    totalBytes += bytes.length;
+    if (totalBytes > 25 * 1024 * 1024) {
+      throw new GatewayError(413, "The combined document pages exceed 25 MB.");
+    }
+    return { mimeType, bytes };
+  });
+}
+
+function readPositiveInteger(value, name, maximum) {
+  if (!Number.isInteger(value) || value < 1 || value > maximum) {
+    throw new GatewayError(400, `${name} must be an integer from 1 to ${maximum}.`);
+  }
+  return value;
 }
 
 function readFirstDmProfile(value) {
