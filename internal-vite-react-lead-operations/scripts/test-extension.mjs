@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import vm from "node:vm";
 
 const projectRoot = path.resolve(
@@ -53,6 +53,13 @@ const [
 const manifest = JSON.parse(manifestSource);
 const helpSource = await readExtensionFile("help.html");
 const helpStyles = await readExtensionFile("help.css");
+const gatewayClientPath = path.join(
+  projectRoot,
+  "gateway",
+  "app-server-client.mjs",
+);
+const gatewayClientSource = await readFile(gatewayClientPath, "utf8");
+const { CodexAppServer } = await import(pathToFileURL(gatewayClientPath).href);
 
 assert.equal(manifest.version, "0.10.27");
 assert.deepEqual(manifest.content_scripts[0].matches, [
@@ -723,6 +730,45 @@ assert.match(clientSource, /clearAuthIfUnchanged/);
 assert.match(scoutSource, /export const getScoutOperations/);
 assert.match(scoutSource, /export const draftConnectionNote/);
 assert.match(scoutSource, /export const classifyLanguages/);
+assert.match(scoutSource, /LANGUAGE_CHECK_GATEWAY_TIMEOUT_MS = 20_000/);
+assert.match(scoutSource, /language_check_unavailable/);
+assert.match(scoutSource, /model: "unavailable-fallback"/);
+assert.match(
+  scoutSource,
+  /catch \(error\)[\s\S]*status: "uncertain" as const[\s\S]*confidence: 0/,
+);
+assert.match(gatewayClientSource, /LANGUAGE_TURN_TIMEOUT_MS = 12_000/);
+assert.match(gatewayClientSource, /TURN_TIMEOUT_MS = 75_000/);
+assert.match(gatewayClientSource, /"turn\/interrupt"/);
+const gatewayTimeoutProbe = new CodexAppServer({
+  codexHome: "",
+  model: "gpt-5.6-luna",
+  safeWorkspace: "",
+  async onAuthChanged() {},
+});
+const interruptRequests = [];
+gatewayTimeoutProbe.request = async (method, params, timeoutMs) => {
+  interruptRequests.push({ method, params, timeoutMs });
+  return {};
+};
+await assert.rejects(
+  gatewayTimeoutProbe.waitForTurnAndInterrupt(
+    "thread-language-timeout",
+    "turn-language-timeout",
+    1,
+  ),
+  /Timed out while waiting for the Codex draft/,
+);
+assert.deepEqual(interruptRequests, [
+  {
+    method: "turn/interrupt",
+    params: {
+      threadId: "thread-language-timeout",
+      turnId: "turn-language-timeout",
+    },
+    timeoutMs: 5_000,
+  },
+]);
 assert.match(scoutSource, /export const recordLeadLanguageDecision/);
 assert.match(scoutSource, /language_filtered/);
 assert.match(scoutSource, /profile_language_checked_at/);

@@ -6,7 +6,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REQUEST_TIMEOUT_MS = 30_000;
-const TURN_TIMEOUT_MS = 120_000;
+const TURN_TIMEOUT_MS = 75_000;
+const LANGUAGE_TURN_TIMEOUT_MS = 12_000;
+const TURN_INTERRUPT_TIMEOUT_MS = 5_000;
 
 export const LUNA_SYSTEM_PROMPT =
   "You write one short LinkedIn comment in clear, everyday English. " +
@@ -385,7 +387,10 @@ export class CodexAppServer extends EventEmitter {
       effort: "low",
       outputSchema: LINKEDIN_DRAFT_OUTPUT_SCHEMA,
     });
-    const turn = await this.waitForTurn(turnResult.turn.id);
+    const turn = await this.waitForTurnAndInterrupt(
+      threadId,
+      turnResult.turn.id,
+    );
     if (turn.status !== "completed") {
       throw new Error(turn.error?.message || `Codex turn ${turn.status}.`);
     }
@@ -450,7 +455,11 @@ export class CodexAppServer extends EventEmitter {
       effort: "low",
       outputSchema: LANGUAGE_CHECK_OUTPUT_SCHEMA,
     });
-    const turn = await this.waitForTurn(turnResult.turn.id);
+    const turn = await this.waitForTurnAndInterrupt(
+      threadId,
+      turnResult.turn.id,
+      LANGUAGE_TURN_TIMEOUT_MS,
+    );
     if (turn.status !== "completed") {
       throw new Error(turn.error?.message || `Codex turn ${turn.status}.`);
     }
@@ -500,7 +509,10 @@ export class CodexAppServer extends EventEmitter {
       ],
       effort: "low",
     });
-    const turn = await this.waitForTurn(turnResult.turn.id);
+    const turn = await this.waitForTurnAndInterrupt(
+      threadId,
+      turnResult.turn.id,
+    );
     if (turn.status !== "completed") {
       throw new Error(turn.error?.message || `Codex turn ${turn.status}.`);
     }
@@ -572,7 +584,10 @@ export class CodexAppServer extends EventEmitter {
       ],
       effort: "xhigh",
     });
-    const turn = await this.waitForTurn(turnResult.turn.id);
+    const turn = await this.waitForTurnAndInterrupt(
+      threadId,
+      turnResult.turn.id,
+    );
     if (turn.status !== "completed") {
       throw new Error(turn.error?.message || `Codex turn ${turn.status}.`);
     }
@@ -632,7 +647,10 @@ export class CodexAppServer extends EventEmitter {
       effort: "medium",
       outputSchema: COMMUNITY_MATCH_OUTPUT_SCHEMA,
     });
-    const turn = await this.waitForTurn(turnResult.turn.id);
+    const turn = await this.waitForTurnAndInterrupt(
+      threadId,
+      turnResult.turn.id,
+    );
     if (turn.status !== "completed") {
       throw new Error(turn.error?.message || `Codex turn ${turn.status}.`);
     }
@@ -654,7 +672,29 @@ export class CodexAppServer extends EventEmitter {
     };
   }
 
-  waitForTurn(turnId) {
+  async waitForTurnAndInterrupt(
+    threadId,
+    turnId,
+    timeoutMs = TURN_TIMEOUT_MS,
+  ) {
+    try {
+      return await this.waitForTurn(turnId, timeoutMs);
+    } catch (error) {
+      await this.request(
+        "turn/interrupt",
+        { threadId, turnId },
+        TURN_INTERRUPT_TIMEOUT_MS,
+      ).catch((interruptError) => {
+        console.error(
+          `[gateway] Could not interrupt timed-out turn ${turnId}: ${interruptError.message}`,
+        );
+      });
+      this.completedTurns.delete(turnId);
+      throw error;
+    }
+  }
+
+  waitForTurn(turnId, timeoutMs = TURN_TIMEOUT_MS) {
     const completed = this.completedTurns.get(turnId);
     if (completed) {
       this.completedTurns.delete(turnId);
@@ -664,7 +704,7 @@ export class CodexAppServer extends EventEmitter {
       const timeout = setTimeout(() => {
         this.turnWaiters.delete(turnId);
         reject(new Error("Timed out while waiting for the Codex draft."));
-      }, TURN_TIMEOUT_MS);
+      }, timeoutMs);
       this.turnWaiters.set(turnId, {
         resolve: (turn) => {
           clearTimeout(timeout);
