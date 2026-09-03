@@ -338,7 +338,6 @@ export const getOverview = action({
       metricResult,
       eventResult,
       trendResult,
-      dailyScoutEmailResult,
       recentResult,
       postResult,
     ] =
@@ -478,43 +477,6 @@ export const getOverview = action({
           [since, args.range === "all" ? 24 : 90],
         ),
         database.query(
-          `WITH collected AS (
-             SELECT
-               (l.original_email_collected_at AT TIME ZONE 'Asia/Dubai')::DATE AS day,
-               coalesce(a.operator_id, 'unassigned') AS operator_id,
-               1 AS original_emails,
-               0 AS work_emails
-             FROM leads AS l
-             LEFT JOIN lead_assignments AS a ON a.lead_id = l.id
-             WHERE l.original_email_collected_at IS NOT NULL
-               AND ($1::TIMESTAMPTZ IS NULL OR l.original_email_collected_at >= $1::TIMESTAMPTZ)
-               AND l.original_email_collected_at <= now()
-
-             UNION ALL
-
-             SELECT
-               (l.work_email_collected_at AT TIME ZONE 'Asia/Dubai')::DATE AS day,
-               coalesce(a.operator_id, 'unassigned') AS operator_id,
-               0 AS original_emails,
-               1 AS work_emails
-             FROM leads AS l
-             LEFT JOIN lead_assignments AS a ON a.lead_id = l.id
-             WHERE l.work_email_collected_at IS NOT NULL
-               AND ($1::TIMESTAMPTZ IS NULL OR l.work_email_collected_at >= $1::TIMESTAMPTZ)
-               AND l.work_email_collected_at <= now()
-           )
-           SELECT
-             day::STRING AS day,
-             operator_id,
-             sum(original_emails)::FLOAT8 AS original_emails,
-             sum(work_emails)::FLOAT8 AS work_emails,
-             sum(original_emails + work_emails)::FLOAT8 AS total_emails
-           FROM collected
-           GROUP BY day, operator_id
-           ORDER BY day DESC, operator_id`,
-          [since],
-        ),
-        database.query(
           `SELECT
              e.id::STRING AS id,
              e.operator_id,
@@ -643,19 +605,9 @@ export const getOverview = action({
         accepted: toNumber(row.accepted),
         emails: toNumber(row.emails),
       })),
-      dailyScoutEmails: dailyScoutEmailResult.rows.map((row) => {
-        const operatorId = String(row.operator_id);
-        return {
-          day: String(row.day),
-          operatorId,
-          username: operatorId === "unassigned"
-            ? "Unassigned"
-            : accountByOperator.get(operatorId)?.username ?? operatorId,
-          originalEmails: toNumber(row.original_emails),
-          workEmails: toNumber(row.work_emails),
-          totalEmails: toNumber(row.total_emails),
-        };
-      }),
+      // Keep the old response field temporarily so cached dashboard bundles do
+      // not crash while the new selected-day endpoint rolls out.
+      dailyScoutEmails: [],
       recentActivity: recentResult.rows.map((row) => ({
         id: String(row.id),
         operatorId: String(row.operator_id),
@@ -675,6 +627,86 @@ export const getOverview = action({
         liked: Boolean(row.liked),
         at: String(row.at),
       })),
+    };
+  },
+});
+
+export const getDailyEmailReport = action({
+  args: { day: v.string() },
+  returns: v.object({
+    day: v.string(),
+    generatedAt: v.string(),
+    rows: v.array(dailyScoutEmailValidator),
+  }),
+  handler: async (ctx, args) => {
+    await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
+    const day = args.day.trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error("Choose a valid report day.");
+    const selectedDate = new Date(`${day}T00:00:00Z`);
+    if (Number.isNaN(selectedDate.getTime()) || selectedDate.toISOString().slice(0, 10) !== day) {
+      throw new Error("Choose a valid report day.");
+    }
+    const nextDate = new Date(selectedDate);
+    nextDate.setUTCDate(nextDate.getUTCDate() + 1);
+    const dayStart = `${day}T00:00:00+04:00`;
+    const dayEnd = `${nextDate.toISOString().slice(0, 10)}T00:00:00+04:00`;
+    const scoutAccounts: { scouts: ScoutAccount[]; truncated: boolean } = await ctx.runQuery(
+      internal.adminIdentity.listScouts,
+      {},
+    );
+    const accountByOperator = new Map<string, ScoutAccount>(
+      scoutAccounts.scouts.map((scout) => [scout.operatorId, scout]),
+    );
+    const result = await getPool().query(
+      `WITH collected AS (
+         SELECT
+           coalesce(a.operator_id, 'unassigned') AS operator_id,
+           1 AS original_emails,
+           0 AS work_emails
+         FROM leads AS l
+         LEFT JOIN lead_assignments AS a ON a.lead_id = l.id
+         WHERE l.original_email_collected_at >= $1::TIMESTAMPTZ
+           AND l.original_email_collected_at < $2::TIMESTAMPTZ
+           AND l.original_email_collected_at <= now()
+
+         UNION ALL
+
+         SELECT
+           coalesce(a.operator_id, 'unassigned') AS operator_id,
+           0 AS original_emails,
+           1 AS work_emails
+         FROM leads AS l
+         LEFT JOIN lead_assignments AS a ON a.lead_id = l.id
+         WHERE l.work_email_collected_at >= $1::TIMESTAMPTZ
+           AND l.work_email_collected_at < $2::TIMESTAMPTZ
+           AND l.work_email_collected_at <= now()
+       )
+       SELECT
+         operator_id,
+         sum(original_emails)::FLOAT8 AS original_emails,
+         sum(work_emails)::FLOAT8 AS work_emails,
+         sum(original_emails + work_emails)::FLOAT8 AS total_emails
+       FROM collected
+       GROUP BY operator_id
+       ORDER BY total_emails DESC, operator_id`,
+      [dayStart, dayEnd],
+    );
+    return {
+      day,
+      generatedAt: new Date().toISOString(),
+      rows: result.rows.map((row) => {
+        const operatorId = String(row.operator_id);
+        return {
+          day,
+          operatorId,
+          username: operatorId === "unassigned"
+            ? "Unassigned"
+            : accountByOperator.get(operatorId)?.username ?? operatorId,
+          originalEmails: toNumber(row.original_emails),
+          workEmails: toNumber(row.work_emails),
+          totalEmails: toNumber(row.total_emails),
+        };
+      }),
     };
   },
 });

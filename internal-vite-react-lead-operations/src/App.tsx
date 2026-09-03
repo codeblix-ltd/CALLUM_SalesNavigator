@@ -177,7 +177,6 @@ type Analytics = {
   summary: Summary;
   scouts: ScoutMetrics[];
   trend: TrendPoint[];
-  dailyScoutEmails: DailyScoutEmail[];
   recentActivity: RecentActivity[];
   postActivities: PostActivity[];
 };
@@ -514,7 +513,7 @@ function Dashboard({ adminName }: { adminName: string }) {
   const [weeklySection, setWeeklySection] = useState<WeeklySection>("board");
   const [operationsSection, setOperationsSection] = useState<OperationsSection>("summary");
   const [directorySection, setDirectorySection] = useState<DirectorySection>("leads");
-  const [range, setRange] = useState<Range>("all");
+  const [range, setRange] = useState<Range>("30d");
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(true);
   const [analyticsError, setAnalyticsError] = useState("");
@@ -1771,11 +1770,7 @@ function Overview({
         </article>
       </section>
       <section className="panel daily-email-panel">
-        <DailyEmailReport
-          rows={analytics.dailyScoutEmails}
-          scouts={analytics.scouts}
-          range={analytics.range}
-        />
+        <DailyEmailReport scouts={analytics.scouts} />
       </section>
       </>}
 
@@ -2169,28 +2164,37 @@ function ScoutTable({ scouts, selectedScout, setSelectedScout, onToggleActive, t
   );
 }
 
-function DailyEmailReport({ rows, scouts, range }: { rows: DailyScoutEmail[]; scouts: ScoutMetrics[]; range: Range }) {
+function DailyEmailReport({ scouts }: { scouts: ScoutMetrics[] }) {
+  const getDailyEmailReport = useAction(api.adminAnalytics.getDailyEmailReport);
   const today = dubaiDateKey();
-  const days = useMemo(() => dailyReportDays(range, rows, today), [range, rows, today]);
   const [selectedDay, setSelectedDay] = useState(today);
+  const [rows, setRows] = useState<DailyScoutEmail[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    if (!days.includes(selectedDay)) setSelectedDay(days.at(-1) ?? today);
-  }, [days, selectedDay, today]);
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    setRows([]);
+    void getDailyEmailReport({ day: selectedDay }).then((result) => {
+      if (!cancelled) setRows(result.rows);
+    }).catch((reportError) => {
+      if (!cancelled) setError(readError(reportError));
+    }).finally(() => {
+      if (!cancelled) setLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [getDailyEmailReport, selectedDay]);
 
-  const totalsByDay = useMemo(() => {
-    const totals = new Map<string, { original: number; work: number; total: number }>();
-    for (const row of rows) {
-      const current = totals.get(row.day) ?? { original: 0, work: 0, total: 0 };
-      current.original += row.originalEmails;
-      current.work += row.workEmails;
-      current.total += row.totalEmails;
-      totals.set(row.day, current);
-    }
-    return totals;
-  }, [rows]);
-  const selectedTotals = totalsByDay.get(selectedDay) ?? { original: 0, work: 0, total: 0 };
-  const selectedByScout = new Map(rows.filter((row) => row.day === selectedDay).map((row) => [row.operatorId, row]));
+  const selectedTotals = rows.reduce((totals, row) => ({
+    original: totals.original + row.originalEmails,
+    work: totals.work + row.workEmails,
+    total: totals.total + row.totalEmails,
+  }), { original: 0, work: 0, total: 0 });
+  const selectedByScout = new Map(rows.map((row) => [row.operatorId, row]));
   const knownScoutIds = new Set(scouts.map((scout) => scout.operatorId));
   const breakdown = [
     ...scouts.map((scout) => selectedByScout.get(scout.operatorId) ?? {
@@ -2215,13 +2219,14 @@ function DailyEmailReport({ rows, scouts, range }: { rows: DailyScoutEmail[]; sc
         />
         <label>
           <span>View day</span>
-          <select value={selectedDay} onChange={(event) => setSelectedDay(event.target.value)}>
-            {[...days].reverse().map((day) => <option key={day} value={day}>{formatReportDay(day, day === today)}</option>)}
-          </select>
+          <input type="date" value={selectedDay} max={today} onChange={(event) => setSelectedDay(event.target.value || today)} />
         </label>
       </div>
 
-      <div className="daily-email-selection-note"><Activity size={14} /> Showing the selected day only. Use <strong>View day</strong> to switch dates; the full history is not rendered until you choose it.</div>
+      <div className="daily-email-selection-note">
+        {loading ? <RefreshCw size={14} className="spin" /> : error ? <AlertTriangle size={14} /> : <Activity size={14} />}
+        {loading ? "Loading the selected day…" : error ? error : <span>Showing <strong>{formatReportDay(selectedDay, selectedDay === today)}</strong> only.</span>}
+      </div>
 
       <div className="daily-email-summary">
         <div><span>Total collected</span><strong>{formatNumber(selectedTotals.total)}</strong></div>
@@ -2948,26 +2953,6 @@ function dubaiDateKey() {
   }).formatToParts(new Date());
   const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   return `${value.year}-${value.month}-${value.day}`;
-}
-
-function dailyReportDays(range: Range, rows: DailyScoutEmail[], today: string) {
-  const todayDate = new Date(`${today}T00:00:00Z`);
-  const requestedDays = range === "7d" ? 7 : range === "30d" ? 30 : range === "90d" ? 90 : null;
-  const earliestStoredDay = rows
-    .map((row) => row.day)
-    .filter((day) => /^\d{4}-\d{2}-\d{2}$/.test(day) && day <= today)
-    .sort()[0];
-  const dayCount = requestedDays ?? Math.max(
-    1,
-    earliestStoredDay
-      ? Math.floor((todayDate.getTime() - new Date(`${earliestStoredDay}T00:00:00Z`).getTime()) / 86_400_000) + 1
-      : 1,
-  );
-  return Array.from({ length: dayCount }, (_value, index) => {
-    const date = new Date(todayDate);
-    date.setUTCDate(date.getUTCDate() - (dayCount - index - 1));
-    return date.toISOString().slice(0, 10);
-  });
 }
 
 function formatReportDay(value: string, isToday: boolean) {

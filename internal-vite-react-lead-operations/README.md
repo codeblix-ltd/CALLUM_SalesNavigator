@@ -172,7 +172,8 @@ To audit email collection, open **Overview → Trends → Daily email collection
 Choose a day to see every scout, including scouts with zero collections. The
 report separates original LinkedIn contact-info emails from work emails found
 through Mailmeteor, uses Dubai calendar days, and follows the dashboard's
-7/30/90-day or all-time range control.
+selected date. The daily report loads only when Trends is open and queries one
+day at a time, so the main dashboard does not scan email history on startup.
 
 Run the extension's deterministic production checks without opening LinkedIn
 or making model calls:

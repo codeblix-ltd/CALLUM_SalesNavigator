@@ -187,6 +187,14 @@ CREATE INDEX IF NOT EXISTS leads_search_text_trgm_idx
 CREATE INDEX IF NOT EXISTS leads_by_work_email_status
   ON leads (work_email_status, work_email_checked_at, id);
 
+CREATE INDEX IF NOT EXISTS leads_by_original_email_collected_at
+  ON leads (original_email_collected_at DESC, id)
+  WHERE original_email_collected_at IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS leads_by_work_email_collected_at
+  ON leads (work_email_collected_at DESC, id)
+  WHERE work_email_collected_at IS NOT NULL;
+
 -- Veblen community members are maintained from the authenticated member
 -- directory. Leads remain in the inventory for auditability, but every live
 -- assignment and automation queue excludes matching LinkedIn URLs or emails.
