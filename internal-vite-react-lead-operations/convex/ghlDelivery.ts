@@ -4,8 +4,10 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalAction } from "./_generated/server";
 import {
+  auditGhlOutboxRows,
   deliverGhlOutboxRows,
   ensureGhlScoutTags,
+  ghlAuditBatchSize,
   ghlBatchSize,
   ghlMaxAutomaticAttempts,
   ghlRetryDelayMs,
@@ -74,5 +76,28 @@ export const ensureScoutTags = internalAction({
     }
     const tags = await ensureGhlScoutTags(operatorIds);
     return { tags };
+  },
+});
+
+export const auditContactLinks = internalAction({
+  args: { cascade: v.boolean() },
+  returns: v.object({
+    attempted: v.number(),
+    linked: v.number(),
+    missing: v.number(),
+    duplicate: v.number(),
+    failed: v.number(),
+    scheduled: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    const result = await auditGhlOutboxRows(ghlAuditBatchSize());
+    let scheduled = false;
+    if (args.cascade && result.attempted > 0 && result.failed === 0) {
+      await ctx.scheduler.runAfter(1_000, internal.ghlDelivery.auditContactLinks, {
+        cascade: true,
+      });
+      scheduled = true;
+    }
+    return { ...result, scheduled };
   },
 });

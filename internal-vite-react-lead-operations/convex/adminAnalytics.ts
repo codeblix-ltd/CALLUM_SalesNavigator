@@ -199,6 +199,65 @@ const crmRowValidator = v.object({
   createdAt: v.string(),
 });
 
+const ghlHistoryStatusValidator = v.union(
+  v.literal("all"),
+  v.literal("sent"),
+  v.literal("pending"),
+  v.literal("failed"),
+);
+
+const ghlHistoryRangeValidator = v.union(
+  v.literal("24h"),
+  v.literal("7d"),
+  v.literal("30d"),
+  v.literal("all"),
+);
+
+const ghlHistoryRowValidator = v.object({
+  id: v.string(),
+  operatorId: v.string(),
+  leadName: v.union(v.string(), v.null()),
+  email: v.string(),
+  linkedinUrl: v.union(v.string(), v.null()),
+  status: v.union(v.literal("sent"), v.literal("pending"), v.literal("failed")),
+  deliveryOutcome: v.union(v.literal("created"), v.literal("updated"), v.null()),
+  attemptCount: v.number(),
+  lastError: v.union(v.string(), v.null()),
+  lookupError: v.union(v.string(), v.null()),
+  createdAt: v.string(),
+  lastAttemptAt: v.union(v.string(), v.null()),
+  sentAt: v.union(v.string(), v.null()),
+  ghlContactUrl: v.union(v.string(), v.null()),
+});
+
+const ghlHistoryResultValidator = v.object({
+  generatedAt: v.string(),
+  summary: v.object({
+    total: v.number(),
+    sent: v.number(),
+    sentLast24Hours: v.number(),
+    pending: v.number(),
+    failed: v.number(),
+    created: v.number(),
+    updated: v.number(),
+    linked: v.number(),
+    lookupIssues: v.number(),
+    lastSentAt: v.union(v.string(), v.null()),
+  }),
+  statusCounts: v.object({
+    total: v.number(),
+    sent: v.number(),
+    pending: v.number(),
+    failed: v.number(),
+  }),
+  scouts: v.array(v.string()),
+  total: v.number(),
+  page: v.number(),
+  pageSize: v.number(),
+  pageCount: v.number(),
+  rows: v.array(ghlHistoryRowValidator),
+});
+
 const adminOldRequestValidator = v.object({
   operatorId: v.string(),
   leadName: v.union(v.string(), v.null()),
@@ -1259,6 +1318,166 @@ export const retryCrmDelivery = action({
   },
 });
 
+export const getGhlSyncHistory = action({
+  args: {
+    status: ghlHistoryStatusValidator,
+    range: ghlHistoryRangeValidator,
+    search: v.string(),
+    operatorId: v.string(),
+    page: v.number(),
+    pageSize: v.number(),
+  },
+  returns: ghlHistoryResultValidator,
+  handler: async (ctx, args) => {
+    await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
+    const database = getPool();
+    const pageSize = Math.max(10, Math.min(50, Math.trunc(args.pageSize)));
+    const page = Math.max(1, Math.trunc(args.page));
+    const search = args.search.trim().slice(0, 120);
+    const operatorId = args.operatorId.trim().slice(0, 80);
+    const startAt = ghlHistoryStartAt(args.range);
+    const filters = [args.status, startAt, search, operatorId];
+    const whereSql = `
+      WHERE ($1::STRING = 'all' OR o.status = $1::STRING)
+        AND ($2::TIMESTAMPTZ IS NULL OR coalesce(o.sent_at, o.updated_at) >= $2::TIMESTAMPTZ)
+        AND (
+          $3::STRING = ''
+          OR lower(coalesce(l.full_name, '')) LIKE '%' || lower($3::STRING) || '%'
+          OR lower(coalesce(l.original_email, '')) LIKE '%' || lower($3::STRING) || '%'
+        )
+        AND ($4::STRING = '' OR o.operator_id = $4::STRING)`;
+
+    const [summaryResult, scoutsResult, statusCountsResult, totalResult, rowsResult] = await Promise.all([
+      database.query(
+        `SELECT
+           count(*)::FLOAT8 AS total,
+           count(*) FILTER (WHERE status = 'sent')::FLOAT8 AS sent,
+           count(*) FILTER (
+             WHERE status = 'sent' AND sent_at >= now() - INTERVAL '24 hours'
+           )::FLOAT8 AS sent_last_24_hours,
+           count(*) FILTER (WHERE status = 'pending')::FLOAT8 AS pending,
+           count(*) FILTER (WHERE status = 'failed')::FLOAT8 AS failed,
+           count(*) FILTER (WHERE delivery_outcome = 'created')::FLOAT8 AS created,
+           count(*) FILTER (WHERE delivery_outcome = 'updated')::FLOAT8 AS updated,
+           count(*) FILTER (
+             WHERE status = 'sent' AND ghl_contact_id IS NOT NULL
+           )::FLOAT8 AS linked,
+           count(*) FILTER (
+             WHERE status = 'sent'
+               AND ghl_checked_at IS NOT NULL
+               AND ghl_contact_id IS NULL
+           )::FLOAT8 AS lookup_issues,
+           max(sent_at)::STRING AS last_sent_at
+         FROM crm_delivery_outbox`,
+      ),
+      database.query(
+        `SELECT DISTINCT operator_id
+           FROM crm_delivery_outbox
+          ORDER BY operator_id`,
+      ),
+      database.query(
+        `SELECT
+           count(*)::FLOAT8 AS total,
+           count(*) FILTER (WHERE o.status = 'sent')::FLOAT8 AS sent,
+           count(*) FILTER (WHERE o.status = 'pending')::FLOAT8 AS pending,
+           count(*) FILTER (WHERE o.status = 'failed')::FLOAT8 AS failed
+           FROM crm_delivery_outbox AS o
+           INNER JOIN leads AS l ON l.id = o.lead_id
+          ${whereSql}`,
+        ["all", startAt, search, operatorId],
+      ),
+      database.query(
+        `SELECT count(*)::FLOAT8 AS total
+           FROM crm_delivery_outbox AS o
+           INNER JOIN leads AS l ON l.id = o.lead_id
+          ${whereSql}`,
+        filters,
+      ),
+      database.query(
+        `SELECT
+           o.id::STRING AS id,
+           o.operator_id,
+           l.full_name,
+           l.original_email AS email,
+           coalesce(a.resolved_linkedin_url, l.linkedin_url) AS linkedin_url,
+           o.status,
+           o.delivery_outcome,
+           o.attempt_count::FLOAT8 AS attempt_count,
+           o.last_error,
+           o.ghl_lookup_error,
+           o.ghl_contact_id,
+           o.created_at::STRING AS created_at,
+           o.last_attempt_at::STRING AS last_attempt_at,
+           o.sent_at::STRING AS sent_at
+         FROM crm_delivery_outbox AS o
+         INNER JOIN leads AS l ON l.id = o.lead_id
+         LEFT JOIN lead_assignments AS a
+           ON a.lead_id = o.lead_id AND a.operator_id = o.operator_id
+         ${whereSql}
+         ORDER BY coalesce(o.sent_at, o.updated_at) DESC, o.id DESC
+         LIMIT $5 OFFSET $6`,
+        [...filters, pageSize, (page - 1) * pageSize],
+      ),
+    ]);
+    const summary = summaryResult.rows[0] ?? {};
+    const statusCounts = statusCountsResult.rows[0] ?? {};
+    const total = toNumber(totalResult.rows[0]?.total);
+    const locationId = process.env.GHL_LOCATION_ID?.trim() ?? "";
+    return {
+      generatedAt: new Date().toISOString(),
+      summary: {
+        total: toNumber(summary.total),
+        sent: toNumber(summary.sent),
+        sentLast24Hours: toNumber(summary.sent_last_24_hours),
+        pending: toNumber(summary.pending),
+        failed: toNumber(summary.failed),
+        created: toNumber(summary.created),
+        updated: toNumber(summary.updated),
+        linked: toNumber(summary.linked),
+        lookupIssues: toNumber(summary.lookup_issues),
+        lastSentAt: nullableString(summary.last_sent_at),
+      },
+      statusCounts: {
+        total: toNumber(statusCounts.total),
+        sent: toNumber(statusCounts.sent),
+        pending: toNumber(statusCounts.pending),
+        failed: toNumber(statusCounts.failed),
+      },
+      scouts: scoutsResult.rows.map((row) => String(row.operator_id)),
+      total,
+      page,
+      pageSize,
+      pageCount: Math.max(1, Math.ceil(total / pageSize)),
+      rows: rowsResult.rows.map((row) => {
+        const contactId = nullableString(row.ghl_contact_id);
+        const status = String(row.status) as "sent" | "pending" | "failed";
+        const outcomeValue = nullableString(row.delivery_outcome);
+        const deliveryOutcome: "created" | "updated" | null = outcomeValue === "created" || outcomeValue === "updated"
+          ? outcomeValue
+          : null;
+        return {
+          id: String(row.id),
+          operatorId: String(row.operator_id),
+          leadName: nullableString(row.full_name),
+          email: String(row.email),
+          linkedinUrl: nullableString(row.linkedin_url),
+          status,
+          deliveryOutcome,
+          attemptCount: toNumber(row.attempt_count),
+          lastError: nullableString(row.last_error),
+          lookupError: nullableString(row.ghl_lookup_error),
+          createdAt: String(row.created_at),
+          lastAttemptAt: nullableString(row.last_attempt_at),
+          sentAt: nullableString(row.sent_at),
+          ghlContactUrl: contactId && locationId
+            ? `https://app.gohighlevel.com/v2/location/${encodeURIComponent(locationId)}/contacts/detail/${encodeURIComponent(contactId)}`
+            : null,
+        };
+      }),
+    };
+  },
+});
+
 function mapMetric(row: MetricRow) {
   return {
     assigned: toNumber(row.assigned),
@@ -1340,6 +1559,12 @@ function nullableString(value: unknown) {
 
 function isCleanEmail(value: string) {
   return Boolean(value && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value));
+}
+
+function ghlHistoryStartAt(range: "24h" | "7d" | "30d" | "all") {
+  if (range === "all") return null;
+  const hours = range === "24h" ? 24 : range === "7d" ? 7 * 24 : 30 * 24;
+  return new Date(Date.now() - hours * 60 * 60 * 1_000).toISOString();
 }
 
 function cleanNames(firstValue: unknown, lastValue: unknown, fullValue: unknown) {

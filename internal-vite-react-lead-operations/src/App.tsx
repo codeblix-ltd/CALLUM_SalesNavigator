@@ -357,6 +357,52 @@ type Operations = {
   }>;
 };
 
+type GhlHistoryStatus = "all" | "sent" | "pending" | "failed";
+type GhlHistoryRange = "24h" | "7d" | "30d" | "all";
+
+type GhlSyncHistory = {
+  generatedAt: string;
+  summary: {
+    total: number;
+    sent: number;
+    sentLast24Hours: number;
+    pending: number;
+    failed: number;
+    created: number;
+    updated: number;
+    linked: number;
+    lookupIssues: number;
+    lastSentAt: string | null;
+  };
+  statusCounts: {
+    total: number;
+    sent: number;
+    pending: number;
+    failed: number;
+  };
+  scouts: string[];
+  total: number;
+  page: number;
+  pageSize: number;
+  pageCount: number;
+  rows: Array<{
+    id: string;
+    operatorId: string;
+    leadName: string | null;
+    email: string;
+    linkedinUrl: string | null;
+    status: "sent" | "pending" | "failed";
+    deliveryOutcome: "created" | "updated" | null;
+    attemptCount: number;
+    lastError: string | null;
+    lookupError: string | null;
+    createdAt: string;
+    lastAttemptAt: string | null;
+    sentAt: string | null;
+    ghlContactUrl: string | null;
+  }>;
+};
+
 function App() {
   const { isAuthenticated, isLoading } = useConvexAuth();
   const admin = useQuery(
@@ -2016,20 +2062,7 @@ function OperationsCenter({
         </>}
 
         {section === "crm" && <>
-        <article className="panel operations-panel operations-wide">
-          <PanelHeading eyebrow="GHL queue" title="Duplicate-safe contact sync" description="Only valid emails are upserted; existing contacts keep all of their other tags" icon={<Database size={18} />} />
-          <div className="operations-list crm-rows">
-            {operations.crmRows.length === 0 ? (
-              <p className="operations-empty">No GHL records are waiting.</p>
-            ) : operations.crmRows.map((item) => (
-              <article key={item.id}>
-                <div><strong>{item.leadName || item.email}</strong><span>{item.operatorId} · {item.status === "failed" ? "Needs attention" : "Waiting"}</span></div>
-                <p>{item.email}</p>
-                {item.lastError && <small>{item.lastError}</small>}
-              </article>
-            ))}
-          </div>
-        </article>
+          <GhlSyncHistoryPanel />
         </>}
       </section>
       }
@@ -2162,6 +2195,170 @@ function ScoutTable({ scouts, selectedScout, setSelectedScout, onToggleActive, t
       </table>
       {bulkScout && <BulkUnassignModal scout={bulkScout} busy={bulkBusy} error={bulkError} result={bulkResult} close={() => { if (!bulkBusy) { setBulkScout(null); setBulkError(""); } }} confirm={() => void confirmBulkUnassign()} />}
     </div>
+  );
+}
+
+function GhlSyncHistoryPanel() {
+  const getHistory = useAction(api.adminAnalytics.getGhlSyncHistory);
+  const retryDelivery = useAction(api.adminAnalytics.retryCrmDelivery);
+  const [data, setData] = useState<GhlSyncHistory | null>(null);
+  const [status, setStatus] = useState<GhlHistoryStatus>("all");
+  const [range, setRange] = useState<GhlHistoryRange>("all");
+  const [operatorId, setOperatorId] = useState("");
+  const [searchDraft, setSearchDraft] = useState("");
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [retryingId, setRetryingId] = useState<string | null>(null);
+  const pageSize = 25;
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      setData(await getHistory({ status, range, search, operatorId, page, pageSize }));
+    } catch (loadError) {
+      setError(readError(loadError));
+    } finally {
+      setLoading(false);
+    }
+  }, [getHistory, operatorId, page, range, search, status]);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      setSearch(searchDraft.trim());
+      setPage(1);
+    }, 300);
+    return () => window.clearTimeout(timeout);
+  }, [searchDraft]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => void load(), 30_000);
+    return () => window.clearInterval(interval);
+  }, [load]);
+
+  async function retryRow(outboxId: string) {
+    setRetryingId(outboxId);
+    setError("");
+    try {
+      await retryDelivery({ outboxId });
+      await load();
+    } catch (retryError) {
+      setError(readError(retryError));
+    } finally {
+      setRetryingId(null);
+    }
+  }
+
+  const summary = data?.summary;
+  const firstRow = data && data.total > 0 ? (data.page - 1) * data.pageSize + 1 : 0;
+  const lastRow = data ? Math.min(data.page * data.pageSize, data.total) : 0;
+
+  return (
+    <article className="panel operations-panel operations-wide ghl-history-panel">
+      <div className="ghl-history-heading">
+        <PanelHeading
+          eyebrow="GHL sync history"
+          title="Every contact delivery, in one place"
+          description="Track successful upserts, waiting contacts, failures, scouts, timestamps, and verified GHL records"
+          icon={<Database size={18} />}
+        />
+        <div className="ghl-history-health">
+          <span className={summary?.pending || summary?.failed ? "needs-attention" : "healthy"}>
+            {summary?.pending || summary?.failed ? <AlertTriangle size={13} /> : <CheckCircle2 size={13} />}
+            {summary?.pending || summary?.failed ? "Needs attention" : "All caught up"}
+          </span>
+          <small>{summary?.lastSentAt ? `Last sync ${formatRelativeTime(summary.lastSentAt)}` : "No successful sync yet"}</small>
+        </div>
+      </div>
+
+      <section className="ghl-sync-summary" aria-label="GHL synchronization summary">
+        <article><span className="ghl-summary-icon sent"><CheckCircle2 size={16} /></span><div><small>Successfully synced</small><strong>{formatNumber(summary?.sent ?? 0)}</strong><p>{formatNumber(summary?.linked ?? 0)} verified GHL links</p></div></article>
+        <article><span className="ghl-summary-icon recent"><Activity size={16} /></span><div><small>Last 24 hours</small><strong>{formatNumber(summary?.sentLast24Hours ?? 0)}</strong><p>Tracked: {formatNumber(summary?.created ?? 0)} created · {formatNumber(summary?.updated ?? 0)} updated</p></div></article>
+        <article><span className="ghl-summary-icon pending"><Clock3 size={16} /></span><div><small>Waiting</small><strong>{formatNumber(summary?.pending ?? 0)}</strong><p>Auto-refreshes every 30 seconds</p></div></article>
+        <article><span className="ghl-summary-icon failed"><AlertTriangle size={16} /></span><div><small>Needs attention</small><strong>{formatNumber((summary?.failed ?? 0) + (summary?.lookupIssues ?? 0))}</strong><p>{summary?.lookupIssues ?? 0} verification issue{summary?.lookupIssues === 1 ? "" : "s"}</p></div></article>
+      </section>
+
+      <div className="ghl-history-controls">
+        <div className="ghl-status-tabs" role="tablist" aria-label="Filter GHL history by status">
+          {([
+            ["all", "All", data?.statusCounts.total ?? 0],
+            ["sent", "Synced", data?.statusCounts.sent ?? 0],
+            ["pending", "Waiting", data?.statusCounts.pending ?? 0],
+            ["failed", "Failed", data?.statusCounts.failed ?? 0],
+          ] as Array<[GhlHistoryStatus, string, number]>).map(([value, label, count]) => (
+            <button
+              type="button"
+              key={value}
+              className={status === value ? "active" : ""}
+              onClick={() => { setStatus(value); setPage(1); }}
+              role="tab"
+              aria-selected={status === value}
+            >
+              {label}<span>{formatNumber(count)}</span>
+            </button>
+          ))}
+        </div>
+        <div className="ghl-filter-row">
+          <label className="search-field ghl-history-search">
+            <Search size={15} />
+            <input value={searchDraft} onChange={(event) => setSearchDraft(event.target.value)} placeholder="Search name or email" aria-label="Search GHL synchronization history" />
+            {searchDraft && <button type="button" onClick={() => setSearchDraft("")} aria-label="Clear GHL history search"><X size={13} /></button>}
+          </label>
+          <select value={operatorId} onChange={(event) => { setOperatorId(event.target.value); setPage(1); }} aria-label="Filter by scout">
+            <option value="">All scouts</option>
+            {(data?.scouts ?? []).map((scout) => <option value={scout} key={scout}>{scout}</option>)}
+          </select>
+          <select value={range} onChange={(event) => { setRange(event.target.value as GhlHistoryRange); setPage(1); }} aria-label="Filter by synchronization date">
+            <option value="24h">Last 24 hours</option>
+            <option value="7d">Last 7 days</option>
+            <option value="30d">Last 30 days</option>
+            <option value="all">All time</option>
+          </select>
+          <button type="button" className="secondary-button" onClick={() => void load()} disabled={loading}>
+            <RefreshCw size={14} className={loading ? "spin" : ""} /> Refresh
+          </button>
+        </div>
+      </div>
+
+      {error && <div className="ghl-history-error"><AlertTriangle size={15} /><span>{error}</span></div>}
+      <div className={`ghl-history-table-wrap ${loading ? "is-loading" : ""}`}>
+        <table className="ghl-history-table">
+          <thead><tr><th>Contact</th><th>Scout</th><th>Status</th><th>Result</th><th>Attempts</th><th>Timeline</th><th>Open</th></tr></thead>
+          <tbody>
+            {(data?.rows ?? []).map((item) => (
+              <tr key={item.id}>
+                <td><strong>{item.leadName || "Unnamed contact"}</strong><span>{item.email}</span>{(item.lastError || item.lookupError) && <small>{item.lastError || item.lookupError}</small>}</td>
+                <td><span className="ghl-scout-pill">{item.operatorId}</span></td>
+                <td><span className={`ghl-status-pill ${item.status}`}>{ghlStatusLabel(item.status)}</span></td>
+                <td><span className={`ghl-outcome-pill ${item.deliveryOutcome ?? "historical"}`}>{ghlOutcomeLabel(item)}</span></td>
+                <td><strong className="ghl-attempt-count">{item.attemptCount}</strong></td>
+                <td><strong>{item.sentAt ? formatDateTime(item.sentAt) : "Not synced yet"}</strong><span>{item.sentAt ? formatRelativeTime(item.sentAt) : `Queued ${formatRelativeTime(item.createdAt)}`}</span></td>
+                <td>
+                  <div className="ghl-row-actions">
+                    {item.ghlContactUrl && <a href={item.ghlContactUrl} target="_blank" rel="noreferrer" title="Open contact in GHL"><ExternalLink size={13} /> GHL</a>}
+                    {item.linkedinUrl && <a href={item.linkedinUrl} target="_blank" rel="noreferrer" title="Open LinkedIn profile"><ExternalLink size={13} /> LinkedIn</a>}
+                    {item.status === "failed" && <button type="button" onClick={() => void retryRow(item.id)} disabled={retryingId === item.id}>{retryingId === item.id ? <RefreshCw size={13} className="spin" /> : <RefreshCw size={13} />} Retry</button>}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!loading && data?.rows.length === 0 && <div className="ghl-history-empty"><Database size={20} /><strong>No sync records match these filters.</strong><span>Try another status, scout, date range, or search.</span></div>}
+        {loading && !data && <div className="ghl-history-empty"><RefreshCw size={19} className="spin" /><strong>Loading GHL history…</strong></div>}
+      </div>
+
+      {data && <div className="pagination history-pagination ghl-history-pagination">
+        <p>Showing {firstRow}–{lastRow} of {formatNumber(data.total)} records · Updated {formatRelativeTime(data.generatedAt)}</p>
+        <div><button type="button" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={data.page <= 1 || loading}><ArrowLeft size={14} /> Previous</button><button type="button" onClick={() => setPage((value) => Math.min(data.pageCount, value + 1))} disabled={data.page >= data.pageCount || loading}>Next <ArrowRight size={14} /></button></div>
+      </div>}
+    </article>
   );
 }
 
@@ -2931,6 +3128,19 @@ function leadStatusLabel(status: string) {
   return labels[status] ?? status.replaceAll("_", " ");
 }
 
+function ghlStatusLabel(status: "sent" | "pending" | "failed") {
+  if (status === "sent") return "Synced";
+  if (status === "pending") return "Waiting";
+  return "Failed";
+}
+
+function ghlOutcomeLabel(item: GhlSyncHistory["rows"][number]) {
+  if (item.deliveryOutcome === "created") return "Created in GHL";
+  if (item.deliveryOutcome === "updated") return "Updated in GHL";
+  if (item.status === "sent") return "Historical sync";
+  return "Not delivered";
+}
+
 function formatNumber(value: number) {
   return new Intl.NumberFormat("en-US").format(value);
 }
@@ -2967,6 +3177,16 @@ function formatShortDate(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
   return new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: "numeric" }).format(date);
+}
+
+function formatDateTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat("en", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Asia/Dubai",
+  }).format(date);
 }
 
 function formatRelativeTime(value: string) {

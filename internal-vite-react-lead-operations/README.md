@@ -76,6 +76,13 @@ field is updated through the contact upsert; the integration never deletes a
 contact or removes a tag. Failed rows remain visible in **Operations → GHL
 queue**, and the button there safely resumes the durable background queue.
 
+The same screen includes a paginated sync-history ledger with status, scout,
+date-range, name, and email filters. New deliveries record whether GHL created
+or updated the contact and retain the returned GHL contact ID for a direct
+dashboard link. Historical deliveries can be reconciled with the internal
+`ghlDelivery:auditContactLinks` action; it performs read-only exact-email
+lookups and records missing or duplicate matches as visible verification issues.
+
 ## Run the Codex gateway on a VPS
 
 The gateway is the one persistent process used by all scouts. Convex calls it;

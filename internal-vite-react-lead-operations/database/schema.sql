@@ -609,10 +609,31 @@ CREATE TABLE IF NOT EXISTS crm_delivery_outbox (
   last_attempt_at TIMESTAMPTZ NULL,
   sent_at TIMESTAMPTZ NULL,
   last_error STRING NULL,
+  ghl_contact_id STRING NULL,
+  delivery_outcome STRING NULL
+    CHECK (delivery_outcome IS NULL OR delivery_outcome IN ('created', 'updated')),
+  ghl_trace_id STRING NULL,
+  ghl_checked_at TIMESTAMPTZ NULL,
+  ghl_lookup_error STRING NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (lead_id, operator_id)
 );
+
+ALTER TABLE crm_delivery_outbox
+  ADD COLUMN IF NOT EXISTS ghl_contact_id STRING NULL;
+
+ALTER TABLE crm_delivery_outbox
+  ADD COLUMN IF NOT EXISTS delivery_outcome STRING NULL;
+
+ALTER TABLE crm_delivery_outbox
+  ADD COLUMN IF NOT EXISTS ghl_trace_id STRING NULL;
+
+ALTER TABLE crm_delivery_outbox
+  ADD COLUMN IF NOT EXISTS ghl_checked_at TIMESTAMPTZ NULL;
+
+ALTER TABLE crm_delivery_outbox
+  ADD COLUMN IF NOT EXISTS ghl_lookup_error STRING NULL;
 
 CREATE INDEX IF NOT EXISTS crm_delivery_outbox_by_status_and_created_at
   ON crm_delivery_outbox (status, created_at, id);

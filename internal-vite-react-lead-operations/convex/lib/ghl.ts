@@ -6,6 +6,7 @@ const GHL_API_BASE_URL = "https://services.leadconnectorhq.com";
 const GHL_API_VERSION = "v3";
 const GHL_BASE_TAG = "dro_va";
 const GHL_BATCH_SIZE = 20;
+const GHL_AUDIT_BATCH_SIZE = 50;
 const GHL_MAX_AUTOMATIC_ATTEMPTS = 5;
 const GHL_OUTBOX_LEASE_MINUTES = 2;
 const GHL_REQUEST_SPACING_MS = 150;
@@ -46,6 +47,13 @@ type GhlUpsertResponse = {
   traceId?: string;
 };
 
+type GhlContactSearchResponse = {
+  contacts?: Array<{
+    id?: string;
+    email?: string;
+  }>;
+};
+
 type DeliveryRow = {
   id: string;
   lead_id: string;
@@ -67,6 +75,14 @@ export type GhlDeliveryResult = {
   maxAttemptCount: number;
 };
 
+export type GhlAuditResult = {
+  attempted: number;
+  linked: number;
+  missing: number;
+  duplicate: number;
+  failed: number;
+};
+
 let knownTags: Set<string> | null = null;
 let knownTagsExpiresAt = 0;
 let nextGhlRequestAt = 0;
@@ -74,6 +90,10 @@ let requestSlot = Promise.resolve();
 
 export function ghlBatchSize() {
   return GHL_BATCH_SIZE;
+}
+
+export function ghlAuditBatchSize() {
+  return GHL_AUDIT_BATCH_SIZE;
 }
 
 export function ghlMaxAutomaticAttempts() {
@@ -158,6 +178,50 @@ export async function deliverGhlOutboxRows(args: {
     updated: outcomes.filter((outcome) => outcome.status === "sent" && !outcome.created).length,
     maxAttemptCount: maximumAttemptCount(rows),
   };
+}
+
+export async function auditGhlOutboxRows(limit = GHL_AUDIT_BATCH_SIZE): Promise<GhlAuditResult> {
+  const database = getPool();
+  const result = await database.query(
+    `SELECT o.id::STRING AS id, lower(l.original_email) AS email
+       FROM crm_delivery_outbox AS o
+       INNER JOIN leads AS l ON l.id = o.lead_id
+      WHERE o.status = 'sent'
+        AND o.ghl_checked_at IS NULL
+        AND l.original_email IS NOT NULL
+      ORDER BY o.sent_at, o.id
+      LIMIT $1`,
+    [Math.max(1, Math.min(GHL_AUDIT_BATCH_SIZE, Math.trunc(limit)))],
+  );
+  const rows = result.rows.map((row) => ({
+    id: String(row.id),
+    email: String(row.email ?? "").trim().toLowerCase(),
+  }));
+  if (rows.length === 0) {
+    return { attempted: 0, linked: 0, missing: 0, duplicate: 0, failed: 0 };
+  }
+
+  const idsByEmail = new Map<string, string[]>();
+  for (const row of rows) {
+    const ids = idsByEmail.get(row.email) ?? [];
+    ids.push(row.id);
+    idsByEmail.set(row.email, ids);
+  }
+  const outcomes = await mapWithConcurrency(
+    [...idsByEmail.entries()],
+    4,
+    async ([email, ids]) => auditGhlEmail(database, email, ids),
+  );
+  return outcomes.reduce<GhlAuditResult>(
+    (summary, outcome) => ({
+      attempted: summary.attempted + outcome.attempted,
+      linked: summary.linked + outcome.linked,
+      missing: summary.missing + outcome.missing,
+      duplicate: summary.duplicate + outcome.duplicate,
+      failed: summary.failed + outcome.failed,
+    }),
+    { attempted: 0, linked: 0, missing: 0, duplicate: 0, failed: 0 },
+  );
 }
 
 async function claimDeliveryRows(args: {
@@ -276,7 +340,12 @@ async function deliverGhlRow(row: DeliveryRow) {
       },
       "contacts.write",
     );
-    await markDeliverySent(row.id);
+    await markDeliverySent(
+      row.id,
+      contactId,
+      upsert.new === true ? "created" : "updated",
+      nullableTrimmedString(upsert.traceId),
+    );
     return { status: "sent" as const, created: upsert.new === true };
   } catch (error) {
     await markDeliveryFailed(row.id, errorMessage(error));
@@ -390,13 +459,88 @@ async function reserveGhlRequestSlot() {
   release();
 }
 
-async function markDeliverySent(outboxId: string) {
+async function markDeliverySent(
+  outboxId: string,
+  contactId: string,
+  outcome: "created" | "updated",
+  traceId: string | null,
+) {
   await getPool().query(
     `UPDATE crm_delivery_outbox
-        SET status = 'sent', sent_at = now(), last_error = NULL, updated_at = now()
+        SET status = 'sent',
+            sent_at = now(),
+            last_error = NULL,
+            ghl_contact_id = $2,
+            delivery_outcome = $3,
+            ghl_trace_id = $4,
+            ghl_checked_at = now(),
+            ghl_lookup_error = NULL,
+            updated_at = now()
       WHERE id = $1::UUID`,
-    [outboxId],
+    [outboxId, contactId, outcome, traceId],
   );
+}
+
+async function auditGhlEmail(
+  database: ReturnType<typeof getPool>,
+  email: string,
+  outboxIds: string[],
+): Promise<GhlAuditResult> {
+  const attempted = outboxIds.length;
+  try {
+    const config = ghlConfig();
+    const query = new URLSearchParams({
+      locationId: config.locationId,
+      query: email,
+      limit: "100",
+    });
+    const response = await ghlRequest<GhlContactSearchResponse>(
+      `/contacts/?${query.toString()}`,
+      { method: "GET" },
+      "contacts.readonly",
+    );
+    const exactMatches = (response.contacts ?? []).filter(
+      (contact) => String(contact.email ?? "").trim().toLowerCase() === email,
+    );
+    if (exactMatches.length === 1) {
+      const contactId = String(exactMatches[0]?.id ?? "").trim();
+      if (!contactId) throw new Error("GHL contact search returned an empty contact ID.");
+      await database.query(
+        `UPDATE crm_delivery_outbox
+            SET ghl_contact_id = $2,
+                ghl_checked_at = now(),
+                ghl_lookup_error = NULL,
+                updated_at = now()
+          WHERE id = ANY($1::UUID[])`,
+        [outboxIds, contactId],
+      );
+      return { attempted, linked: attempted, missing: 0, duplicate: 0, failed: 0 };
+    }
+
+    const missing = exactMatches.length === 0 ? attempted : 0;
+    const duplicate = exactMatches.length > 1 ? attempted : 0;
+    const message = exactMatches.length === 0
+      ? "No exact GHL contact was found for this sent email."
+      : `GHL contains ${exactMatches.length} exact contacts for this email.`;
+    await database.query(
+      `UPDATE crm_delivery_outbox
+          SET ghl_contact_id = NULL,
+              ghl_checked_at = now(),
+              ghl_lookup_error = $2,
+              updated_at = now()
+        WHERE id = ANY($1::UUID[])`,
+      [outboxIds, message],
+    );
+    return { attempted, linked: 0, missing, duplicate, failed: 0 };
+  } catch (error) {
+    await database.query(
+      `UPDATE crm_delivery_outbox
+          SET ghl_lookup_error = $2, updated_at = now()
+        WHERE id = ANY($1::UUID[])`,
+      [outboxIds, errorMessage(error)],
+    );
+    return { attempted, linked: 0, missing: 0, duplicate: 0, failed: attempted };
+  }
 }
 
 async function markDeliveryFailed(outboxId: string, message: string) {
@@ -461,6 +605,11 @@ function cleanNames(firstValue: unknown, lastValue: unknown, fullValue: unknown)
   }
   const fullName = suppliedFullName || [firstName, lastName].filter(Boolean).join(" ");
   return { firstName, lastName, fullName };
+}
+
+function nullableTrimmedString(value: unknown) {
+  const normalized = String(value ?? "").trim();
+  return normalized || null;
 }
 
 function maximumAttemptCount(rows: DeliveryRow[]) {
