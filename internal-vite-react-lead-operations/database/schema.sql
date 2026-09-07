@@ -625,6 +625,9 @@ SELECT lead_id, operator_id, 'pending'
  WHERE email IS NOT NULL
    AND email LIKE '%_@_%._%'
    AND email NOT LIKE '% %'
+   AND split_part(email, '@', 1) NOT LIKE '.%'
+   AND split_part(email, '@', 1) NOT LIKE '%.'
+   AND split_part(email, '@', 1) NOT LIKE '%..%'
 ON CONFLICT (lead_id, operator_id) DO NOTHING;
 
 -- Simulation runs are deliberately isolated from lead_assignments. The local

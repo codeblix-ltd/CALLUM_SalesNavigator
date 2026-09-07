@@ -45,6 +45,37 @@ pnpm run extension:config
 shared secret, and a 32-byte credential-encryption key. It copies only the
 secrets Convex needs to the linked deployment.
 
+## GHL contact sync
+
+When a scout collects a valid LinkedIn contact-info email, the backend queues
+the lead and automatically syncs it to the configured HighLevel sub-account.
+Delivery is duplicate-safe at two levels: the CockroachDB outbox is unique per
+lead/scout, and GHL receives an email upsert with duplicate creation explicitly
+disabled. A retry therefore updates the same contact instead of creating a
+second one.
+
+The sync writes first name, last name, full name, email, and the LinkedIn
+profile URL. It then uses GHL's additive tag endpoint for `dro_va` and
+`dro/va/<scout>` so an existing contact's unrelated tags are never overwritten.
+Known full-name scout usernames are mapped to the established GHL first-name
+tag convention; a future scout created in the dashboard gets a tag from the
+same mapping automatically.
+
+Configure these server-only values on every Convex deployment that should send
+contacts:
+
+```powershell
+pnpm exec convex env set GHL_PRIVATE_INTEGRATION_TOKEN "<private-integration-token>"
+pnpm exec convex env set GHL_LOCATION_ID "<sub-account-location-id>"
+pnpm exec convex env set GHL_LINKEDIN_CUSTOM_FIELD_ID "<linkedin-profile-field-id>"
+```
+
+Required GHL scopes are `contacts.readonly`, `contacts.write`,
+`locations/tags.readonly`, and `locations/tags.write`. The configured LinkedIn
+field is updated through the contact upsert; the integration never deletes a
+contact or removes a tag. Failed rows remain visible in **Operations → GHL
+queue**, and the button there safely resumes the durable background queue.
+
 ## Run the Codex gateway on a VPS
 
 The gateway is the one persistent process used by all scouts. Convex calls it;

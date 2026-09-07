@@ -30,6 +30,8 @@ const [
   leadDirectorySource,
   adminAppSource,
   schemaSource,
+  ghlSource,
+  ghlDeliverySource,
 ] =
   await Promise.all([
     readExtensionFile("manifest.json"),
@@ -49,6 +51,8 @@ const [
     readFile(path.join(projectRoot, "convex", "leads.ts"), "utf8"),
     readFile(path.join(projectRoot, "src", "App.tsx"), "utf8"),
     readFile(path.join(projectRoot, "database", "schema.sql"), "utf8"),
+    readFile(path.join(projectRoot, "convex", "lib", "ghl.ts"), "utf8"),
+    readFile(path.join(projectRoot, "convex", "ghlDelivery.ts"), "utf8"),
   ]);
 const manifest = JSON.parse(manifestSource);
 const helpSource = await readExtensionFile("help.html");
@@ -995,6 +999,14 @@ assert.match(backgroundSource, /resumeExisting: retryFailedOnly \? false : resum
 assert.match(backgroundSource, /resumeExistingLead = false/);
 assert.match(adminSource, /export const exportCleanCsv/);
 assert.match(adminSource, /export const retryCrmDelivery/);
+assert.match(adminSource, /internal\.ghlDelivery\.processBatch/);
+assert.match(scoutSource, /ctx\.scheduler\.runAfter\(0, internal\.ghlDelivery\.processBatch/);
+assert.match(ghlDeliverySource, /export const ensureScoutTags = internalAction/);
+assert.match(ghlSource, /createNewIfDuplicateAllowed: false/);
+assert.match(ghlSource, /\/contacts\/\$\{encodeURIComponent\(contactId\)\}\/tags/);
+assert.match(ghlSource, /GHL_BASE_TAG = "dro_va"/);
+assert.match(ghlSource, /export function isGhlCompatibleEmail/);
+assert.match(ghlSource, /rymaelie: "rymealie"/);
 assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS lead_followup_tasks/);
 assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS operator_daily_tasks/);
 assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS scout_escalations/);

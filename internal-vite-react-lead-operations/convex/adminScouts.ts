@@ -58,6 +58,21 @@ export const createScout = action({
       shouldLinkViaPhone: false,
     });
 
+    try {
+      await ctx.runAction(internal.ghlDelivery.ensureScoutTags, {
+        operatorIds: [username],
+      });
+    } catch (error) {
+      await getPool().query(
+        `INSERT INTO scout_escalations (operator_id, subject, message)
+         VALUES ($1, 'GHL scout tag setup failed', $2)`,
+        [
+          username,
+          String(error instanceof Error ? error.message : error).slice(0, 1000),
+        ],
+      );
+    }
+
     return { username, password };
   },
 });

@@ -890,8 +890,8 @@ function Dashboard({ adminName }: { adminName: string }) {
       const result = await retryCrmDelivery({ outboxId: null });
       setOperationsNotice(
         result.attempted === 0
-          ? "There are no CRM records waiting."
-          : `Sent ${result.sent} of ${result.attempted} records. ${result.failed} need attention.`,
+          ? "There are no GHL records ready to sync."
+          : `Synced ${result.sent} of ${result.attempted} records (${result.created} new, ${result.updated} updated). ${result.failed} need attention.${result.scheduled ? " The remaining queue is continuing safely in the background." : ""}`,
       );
       await refreshOperations();
     } catch (error) {
@@ -932,7 +932,7 @@ function Dashboard({ adminName }: { adminName: string }) {
       : view === "weekly"
         ? weeklySection === "board" ? "Leaderboard" : "Comments & posts"
         : view === "operations"
-          ? operationsSection === "summary" ? "Work summary" : operationsSection === "questions" ? "Scout questions" : operationsSection === "requests" ? "Old requests" : "CRM queue"
+          ? operationsSection === "summary" ? "Work summary" : operationsSection === "questions" ? "Scout questions" : operationsSection === "requests" ? "Old requests" : "GHL queue"
           : directorySection === "leads" ? "All leads" : "Veblen exclusions";
   const heroContent = view === "scouts"
     ? {
@@ -950,7 +950,7 @@ function Dashboard({ adminName }: { adminName: string }) {
       ? {
           eyebrow: "Daily operations",
           title: <>Keep daily work<br /><span>moving forward.</span></>,
-          copy: "Review questions, follow-ups, CRM delivery, and operational exceptions in one place.",
+          copy: "Review questions, follow-ups, GHL delivery, and operational exceptions in one place.",
         }
       : view === "leads"
         ? {
@@ -996,7 +996,7 @@ function Dashboard({ adminName }: { adminName: string }) {
             { label: "Work summary", icon: <BarChart3 size={15} />, active: view === "operations" && operationsSection === "summary", onClick: () => { setOperationsSection("summary"); navigateTo("operations"); } },
             { label: "Scout questions", icon: <Users size={15} />, active: view === "operations" && operationsSection === "questions", onClick: () => { setOperationsSection("questions"); navigateTo("operations"); } },
             { label: "Old requests", icon: <Clock3 size={15} />, active: view === "operations" && operationsSection === "requests", onClick: () => { setOperationsSection("requests"); navigateTo("operations"); } },
-            { label: "CRM queue", icon: <Database size={15} />, active: view === "operations" && operationsSection === "crm", onClick: () => { setOperationsSection("crm"); navigateTo("operations"); } },
+            { label: "GHL queue", icon: <Database size={15} />, active: view === "operations" && operationsSection === "crm", onClick: () => { setOperationsSection("crm"); navigateTo("operations"); } },
           ]} />
           <button className={view === "leads" ? "active" : ""} onClick={() => { setDirectorySection("leads"); navigateTo("leads"); }} aria-current={view === "leads" ? "page" : undefined}><Database size={17} /> Lead directory</button>
           <SidebarSectionNav ariaLabel="Lead directory sections" items={[
@@ -1964,7 +1964,7 @@ function OperationsCenter({
             <Download size={15} /> Download clean CSV
           </button>
           <button className="primary-button" onClick={() => void sendToCrm()} disabled={busy || waitingForCrm === 0}>
-            <Send size={15} /> Send waiting CRM rows
+            <Send size={15} /> Sync waiting rows to GHL
           </button>
         </div>
       </div>
@@ -1976,7 +1976,7 @@ function OperationsCenter({
         <article><Target size={18} /><span>Old requests</span><strong>{formatNumber(summary.oldRequests)}</strong><small>30 days or older</small></article>
         <article><CheckCircle2 size={18} /><span>Checklist</span><strong>{summary.checklistDone} / {summary.checklistTotal}</strong><small>Finished today</small></article>
         <article><Users size={18} /><span>Leads to check</span><strong>{formatNumber(summary.leadsToCheck)}</strong><small>Role and recent post</small></article>
-        <article><Mail size={18} /><span>CRM waiting</span><strong>{formatNumber(waitingForCrm)}</strong><small>{summary.crmSent} already sent</small></article>
+        <article><Mail size={18} /><span>GHL waiting</span><strong>{formatNumber(waitingForCrm)}</strong><small>{summary.crmSent} already synced</small></article>
         <article><ShieldCheck size={18} /><span>Scout questions</span><strong>{formatNumber(summary.openEscalations)}</strong><small>Waiting for the team</small></article>
       </section>}
 
@@ -2017,10 +2017,10 @@ function OperationsCenter({
 
         {section === "crm" && <>
         <article className="panel operations-panel operations-wide">
-          <PanelHeading eyebrow="CRM queue" title="Clean lead delivery" description="Only valid emails are queued; bad values never leave the app" icon={<Database size={18} />} />
+          <PanelHeading eyebrow="GHL queue" title="Duplicate-safe contact sync" description="Only valid emails are upserted; existing contacts keep all of their other tags" icon={<Database size={18} />} />
           <div className="operations-list crm-rows">
             {operations.crmRows.length === 0 ? (
-              <p className="operations-empty">No CRM records are waiting.</p>
+              <p className="operations-empty">No GHL records are waiting.</p>
             ) : operations.crmRows.map((item) => (
               <article key={item.id}>
                 <div><strong>{item.leadName || item.email}</strong><span>{item.operatorId} · {item.status === "failed" ? "Needs attention" : "Waiting"}</span></div>

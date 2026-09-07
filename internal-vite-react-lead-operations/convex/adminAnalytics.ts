@@ -129,6 +129,15 @@ const weeklyCommentValidator = v.object({
   at: v.string(),
 });
 
+type CrmDeliveryActionResult = {
+  attempted: number;
+  sent: number;
+  failed: number;
+  created: number;
+  updated: number;
+  scheduled: boolean;
+};
+
 const scoutAssignedLeadValidator = v.object({
   id: v.string(),
   fullName: v.union(v.string(), v.null()),
@@ -1221,92 +1230,32 @@ export const resolveEscalation = action({
 
 export const retryCrmDelivery = action({
   args: { outboxId: v.union(v.string(), v.null()) },
-  returns: v.object({ attempted: v.number(), sent: v.number(), failed: v.number() }),
-  handler: async (ctx, args) => {
+  returns: v.object({
+    attempted: v.number(),
+    sent: v.number(),
+    failed: v.number(),
+    created: v.number(),
+    updated: v.number(),
+    scheduled: v.boolean(),
+  }),
+  handler: async (ctx, args): Promise<CrmDeliveryActionResult> => {
     await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
-    const webhookUrl = crmWebhookUrl();
-    const database = getPool();
-    const result = await database.query(
-      `SELECT
-         o.id::STRING AS id,
-         o.lead_id::STRING AS lead_id,
-         o.operator_id,
-         l.first_name,
-         l.last_name,
-         l.full_name,
-         l.current_title,
-         l.company_name,
-         coalesce(a.resolved_linkedin_url, l.linkedin_url) AS linkedin_url,
-         l.original_email,
-         l.work_email,
-         a.accepted_at::STRING AS accepted_at
-       FROM crm_delivery_outbox AS o
-       INNER JOIN leads AS l ON l.id = o.lead_id
-       INNER JOIN lead_assignments AS a
-         ON a.lead_id = o.lead_id AND a.operator_id = o.operator_id
-       WHERE o.status IN ('pending', 'failed')
-         AND ($1::UUID IS NULL OR o.id = $1::UUID)
-       ORDER BY o.created_at, o.id
-       LIMIT 25`,
-      [args.outboxId],
+    const result: CrmDeliveryActionResult & { maxAttemptCount: number } = await ctx.runAction(
+      internal.ghlDelivery.processBatch,
+      {
+        outboxId: args.outboxId,
+        includeFailed: true,
+        cascade: args.outboxId === null,
+      },
     );
-    let sent = 0;
-    let failed = 0;
-    for (const row of result.rows) {
-      await database.query(
-        `UPDATE crm_delivery_outbox
-            SET attempt_count = attempt_count + 1,
-                last_attempt_at = now(),
-                updated_at = now()
-          WHERE id = $1::UUID`,
-        [row.id],
-      );
-      try {
-        const originalEmail = String(row.original_email ?? "").trim().toLowerCase();
-        const workEmailValue = String(row.work_email ?? "").trim().toLowerCase();
-        const workEmail = isCleanEmail(workEmailValue) ? workEmailValue : null;
-        if (!isCleanEmail(originalEmail)) throw new Error("The saved original email is not valid.");
-        const response = await fetch(webhookUrl, {
-          method: "POST",
-          headers: crmWebhookHeaders(),
-          body: JSON.stringify({
-            id: String(row.lead_id),
-            firstName: nullableString(row.first_name),
-            lastName: nullableString(row.last_name),
-            fullName: nullableString(row.full_name),
-            title: nullableString(row.current_title),
-            company: nullableString(row.company_name),
-            linkedinUrl: String(row.linkedin_url),
-            email: originalEmail,
-            originalEmail,
-            workEmail,
-            scout: String(row.operator_id),
-            acceptedAt: nullableString(row.accepted_at),
-          }),
-          signal: AbortSignal.timeout(15_000),
-        });
-        if (!response.ok) {
-          const detail = (await response.text()).trim().slice(0, 300);
-          throw new Error(`CRM returned ${response.status}${detail ? `: ${detail}` : ""}`);
-        }
-        await database.query(
-          `UPDATE crm_delivery_outbox
-              SET status = 'sent', sent_at = now(), last_error = NULL, updated_at = now()
-            WHERE id = $1::UUID`,
-          [row.id],
-        );
-        sent += 1;
-      } catch (error) {
-        await database.query(
-          `UPDATE crm_delivery_outbox
-              SET status = 'failed', last_error = $2, updated_at = now()
-            WHERE id = $1::UUID`,
-          [row.id, String(error instanceof Error ? error.message : error).slice(0, 1000)],
-        );
-        failed += 1;
-      }
-    }
-    return { attempted: result.rows.length, sent, failed };
+    return {
+      attempted: result.attempted,
+      sent: result.sent,
+      failed: result.failed,
+      created: result.created,
+      updated: result.updated,
+      scheduled: result.scheduled,
+    };
   },
 });
 
@@ -1408,23 +1357,4 @@ function csvLine(values: unknown[]) {
   return values
     .map((value) => `"${String(value ?? "").replaceAll('"', '""')}"`)
     .join(",");
-}
-
-function crmWebhookUrl() {
-  const value = process.env.CRM_WEBHOOK_URL?.trim();
-  if (!value) {
-    throw new Error(
-      "CRM delivery is not set up yet. Add CRM_WEBHOOK_URL, or use the clean CSV download.",
-    );
-  }
-  const url = new URL(value);
-  if (url.protocol !== "https:") throw new Error("CRM_WEBHOOK_URL must use HTTPS.");
-  return url.toString();
-}
-
-function crmWebhookHeaders() {
-  const headers: Record<string, string> = { "content-type": "application/json" };
-  const secret = process.env.CRM_WEBHOOK_SECRET?.trim();
-  if (secret) headers.authorization = `Bearer ${secret}`;
-  return headers;
 }

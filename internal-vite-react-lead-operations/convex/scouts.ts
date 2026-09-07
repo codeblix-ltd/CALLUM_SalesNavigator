@@ -7,6 +7,7 @@ import { internal } from "./_generated/api";
 import { action } from "./_generated/server";
 import { requestCodexGateway } from "./lib/codexGateway";
 import { getPool } from "./lib/cockroach";
+import { isGhlCompatibleEmail } from "./lib/ghl";
 import { upsertVeblenLeadMatches, veblenMatchExistsSql } from "./lib/veblenExclusions";
 
 type ScoutIdentity = {
@@ -1688,11 +1689,12 @@ export const recordContactInfo = action({
     );
     const profileUrl = normalizeLinkedInProfileUrl(args.profileUrl);
     const email = args.email?.trim().toLowerCase() || null;
-    if (email && !isValidEmail(email)) {
+    if (email && !isGhlCompatibleEmail(email)) {
       throw new Error("LinkedIn returned an invalid email address.");
     }
     const database = getPool();
     const client = await database.connect();
+    let crmOutboxId: string | null = null;
     try {
       await client.query("BEGIN");
       const current = await client.query(
@@ -1756,7 +1758,7 @@ export const recordContactInfo = action({
           "email_collected",
           { profileUrl, email },
         );
-        await client.query(
+        const queued = await client.query(
           `INSERT INTO crm_delivery_outbox (lead_id, operator_id, status, updated_at)
            VALUES ($1::UUID, $2, 'pending', now())
            ON CONFLICT (lead_id, operator_id) DO UPDATE SET
@@ -1768,11 +1770,34 @@ export const recordContactInfo = action({
                WHEN crm_delivery_outbox.status = 'sent' THEN crm_delivery_outbox.last_error
                ELSE NULL
              END,
-             updated_at = now()`,
+             updated_at = now()
+           RETURNING id::STRING AS id`,
           [args.leadId, scout.operatorId],
         );
+        crmOutboxId = String(queued.rows[0]?.id ?? "") || null;
       }
       await client.query("COMMIT");
+      if (crmOutboxId) {
+        try {
+          await ctx.scheduler.runAfter(0, internal.ghlDelivery.processBatch, {
+            outboxId: crmOutboxId,
+            includeFailed: true,
+            cascade: false,
+          });
+        } catch (error) {
+          await database.query(
+            `UPDATE crm_delivery_outbox
+                SET status = 'failed', last_error = $2, updated_at = now()
+              WHERE id = $1::UUID`,
+            [
+              crmOutboxId,
+              `Automatic GHL delivery could not be scheduled: ${String(
+                error instanceof Error ? error.message : error,
+              ).slice(0, 800)}`,
+            ],
+          );
+        }
+      }
       return { status: nextStatus, email: finalEmail };
     } catch (error) {
       await client.query("ROLLBACK");
@@ -3176,10 +3201,6 @@ function normalizePersonName(value: unknown) {
 function clampInteger(value: number, minimum: number, maximum: number) {
   if (!Number.isFinite(value)) throw new Error("Settings must be valid numbers.");
   return Math.max(minimum, Math.min(maximum, Math.trunc(value)));
-}
-
-function isValidEmail(value: string | null): value is string {
-  return Boolean(value && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value));
 }
 
 function isAllowedTransition(current: string, next: string) {
