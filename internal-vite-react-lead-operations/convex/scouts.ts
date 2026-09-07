@@ -35,7 +35,7 @@ type DailyUsage = {
   engagementRemaining: number;
 };
 
-const LANGUAGE_CHECK_GATEWAY_TIMEOUT_MS = 20_000;
+const SCOUT_AI_GATEWAY_TIMEOUT_MS = 570_000;
 
 type ScoutLead = {
   id: string;
@@ -2545,7 +2545,7 @@ export const classifyLanguages = action({
       };
     }
 
-    let result: {
+    const result = await requestCodexGateway<{
       results: Array<{
         id: string;
         status: string;
@@ -2553,47 +2553,16 @@ export const classifyLanguages = action({
         confidence: number;
       }>;
       model: string;
-    };
-    try {
-      result = await requestCodexGateway("/v1/linkedin/language-check", {
-        method: "POST",
-        timeoutMs: LANGUAGE_CHECK_GATEWAY_TIMEOUT_MS,
-        body: {
-          requestId: randomUUID(),
-          scoutId: scout.userId,
-          context: args.context,
-          samples,
-        },
-      });
-    } catch (error) {
-      const message = error instanceof Error
-        ? error.message.slice(0, 500)
-        : "The language service was unavailable.";
-      console.warn(
-        `Language check unavailable for ${scout.operatorId}/${args.leadId}: ${message}`,
-      );
-      await database.query(
-        `INSERT INTO lead_assignment_events (lead_id, operator_id, event_type, details)
-         SELECT lead_id, operator_id, 'language_check_unavailable', $3::JSONB
-           FROM lead_assignments
-          WHERE lead_id = $1::UUID AND operator_id = $2`,
-        [
-          args.leadId,
-          scout.operatorId,
-          JSON.stringify({ context: args.context, message }),
-        ],
-      );
-      return {
-        results: samples.map((sample) => ({
-          id: sample.id,
-          status: "uncertain" as const,
-          languageCode: "und",
-          confidence: 0,
-        })),
-        cached: false,
-        model: "unavailable-fallback",
-      };
-    }
+    }>("/v1/linkedin/language-check", {
+      method: "POST",
+      timeoutMs: SCOUT_AI_GATEWAY_TIMEOUT_MS,
+      body: {
+        requestId: randomUUID(),
+        scoutId: scout.userId,
+        context: args.context,
+        samples,
+      },
+    });
     const results = normalizeLanguageResults(result.results, samples);
     if (args.context === "profile") {
       const profileResult = results[0];
@@ -2740,7 +2709,7 @@ export const draftComment = action({
       model: string;
     }>("/v1/drafts", {
       method: "POST",
-      timeoutMs: 125_000,
+      timeoutMs: SCOUT_AI_GATEWAY_TIMEOUT_MS,
       body: {
         requestId: randomUUID(),
         scoutId: scout.userId,
@@ -2823,7 +2792,7 @@ export const draftConnectionNote = action({
       model: string;
     }>("/v1/drafts", {
       method: "POST",
-      timeoutMs: 125_000,
+      timeoutMs: SCOUT_AI_GATEWAY_TIMEOUT_MS,
       body: {
         requestId: randomUUID(),
         scoutId: scout.userId,

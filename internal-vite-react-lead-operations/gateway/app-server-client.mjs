@@ -6,10 +6,14 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const REQUEST_TIMEOUT_MS = 30_000;
-const TURN_TIMEOUT_MS = 75_000;
-const LANGUAGE_TURN_TIMEOUT_MS = 12_000;
+const REQUEST_TIMEOUT_MS = 60_000;
+const TURN_TIMEOUT_MS = 150_000;
+const LANGUAGE_TURN_TIMEOUT_MS = 90_000;
 const TURN_INTERRUPT_TIMEOUT_MS = 5_000;
+const DEFAULT_SCOUT_CONCURRENCY = 24;
+const ACCOUNT_REFRESH_CACHE_MS = 60_000;
+const STATUS_ACCOUNT_CACHE_MS = 5 * 60_000;
+const AUTH_BACKUP_COOLDOWN_MS = 30_000;
 
 export const LUNA_SYSTEM_PROMPT =
   "You write one short LinkedIn comment in clear, everyday English. " +
@@ -246,7 +250,13 @@ export const ACCOUNTING_BANK_OUTPUT_SCHEMA = {
 };
 
 export class CodexAppServer extends EventEmitter {
-  constructor({ codexHome, model, safeWorkspace, onAuthChanged }) {
+  constructor({
+    codexHome,
+    model,
+    safeWorkspace,
+    onAuthChanged,
+    maxScoutConcurrency = DEFAULT_SCOUT_CONCURRENCY,
+  }) {
     super();
     this.codexHome = codexHome;
     this.model = model;
@@ -259,10 +269,20 @@ export class CodexAppServer extends EventEmitter {
     this.turnWaiters = new Map();
     this.loginAttempts = new Map();
     this.draftRequests = new Map();
-    this.draftTail = Promise.resolve();
+    this.maxScoutConcurrency = maxScoutConcurrency;
+    this.scoutActive = 0;
+    this.scoutWaiters = [];
     this.accountingActive = 0;
     this.accountingWaiters = [];
     this.queuedDrafts = 0;
+    this.turnAccount = null;
+    this.turnAccountExpiresAt = 0;
+    this.accountRefreshPromise = null;
+    this.statusAccount = null;
+    this.statusAccountExpiresAt = 0;
+    this.statusAccountPromise = null;
+    this.authBackupPromise = null;
+    this.lastAuthBackupAt = 0;
   }
 
   async start() {
@@ -328,11 +348,64 @@ export class CodexAppServer extends EventEmitter {
   }
 
   async readAccount({ refreshToken = false } = {}) {
-    return this.request("account/read", { refreshToken });
+    const account = await this.request("account/read", { refreshToken });
+    this.statusAccount = account;
+    this.statusAccountExpiresAt = Date.now() + STATUS_ACCOUNT_CACHE_MS;
+    return account;
+  }
+
+  async readStatusAccount() {
+    if (this.statusAccount && Date.now() < this.statusAccountExpiresAt) {
+      return this.statusAccount;
+    }
+    if (!this.statusAccountPromise) {
+      this.statusAccountPromise = this.readAccount().finally(() => {
+        this.statusAccountPromise = null;
+      });
+    }
+    return this.statusAccountPromise;
+  }
+
+  async readTurnAccount() {
+    if (this.turnAccount && Date.now() < this.turnAccountExpiresAt) {
+      return this.turnAccount;
+    }
+    if (!this.accountRefreshPromise) {
+      this.accountRefreshPromise = this.readAccount({ refreshToken: true })
+        .then((account) => {
+          this.turnAccount = account;
+          this.turnAccountExpiresAt = Date.now() + ACCOUNT_REFRESH_CACHE_MS;
+          return account;
+        })
+        .finally(() => {
+          this.accountRefreshPromise = null;
+        });
+    }
+    return this.accountRefreshPromise;
+  }
+
+  async persistAuthIfNeeded({ force = false } = {}) {
+    if (
+      !force &&
+      this.lastAuthBackupAt > 0 &&
+      Date.now() - this.lastAuthBackupAt < AUTH_BACKUP_COOLDOWN_MS
+    ) {
+      return;
+    }
+    if (!this.authBackupPromise) {
+      this.authBackupPromise = Promise.resolve(this.onAuthChanged())
+        .then(() => {
+          this.lastAuthBackupAt = Date.now();
+        })
+        .finally(() => {
+          this.authBackupPromise = null;
+        });
+    }
+    return this.authBackupPromise;
   }
 
   async startDeviceLogin() {
-    const account = await this.readAccount();
+    const account = await this.readStatusAccount();
     if (account.account?.type === "chatgpt") {
       return { connected: true, account: publicAccount(account.account) };
     }
@@ -370,6 +443,10 @@ export class CodexAppServer extends EventEmitter {
   async logout() {
     await this.request("account/logout", {});
     this.loginAttempts.clear();
+    this.turnAccount = null;
+    this.turnAccountExpiresAt = 0;
+    this.statusAccount = null;
+    this.statusAccountExpiresAt = 0;
   }
 
   enqueueDraft({ requestId, scoutId, postText }) {
@@ -466,17 +543,52 @@ export class CodexAppServer extends EventEmitter {
     const existing = this.draftRequests.get(requestKey);
     if (existing) return existing;
     this.queuedDrafts += 1;
-    const run = this.draftTail.then(create);
-    this.draftRequests.set(requestKey, run);
-    if (this.draftRequests.size > 200) {
-      this.draftRequests.delete(this.draftRequests.keys().next().value);
-    }
-    this.draftTail = run.catch(() => {});
+    const run = this.withScoutSlot(() => this.withScoutRetry(create));
     const tracked = run.finally(() => {
       this.queuedDrafts -= 1;
     });
     this.draftRequests.set(requestKey, tracked);
+    void tracked.catch(() => {
+      if (this.draftRequests.get(requestKey) === tracked) {
+        this.draftRequests.delete(requestKey);
+      }
+    });
+    if (this.draftRequests.size > 200) {
+      this.draftRequests.delete(this.draftRequests.keys().next().value);
+    }
     return tracked;
+  }
+
+  async withScoutSlot(create) {
+    if (this.scoutActive >= this.maxScoutConcurrency) {
+      await new Promise((resolve) => this.scoutWaiters.push(resolve));
+    } else {
+      this.scoutActive += 1;
+    }
+    try {
+      return await create();
+    } finally {
+      const next = this.scoutWaiters.shift();
+      if (next) next();
+      else this.scoutActive -= 1;
+    }
+  }
+
+  async withScoutRetry(create) {
+    try {
+      return await create();
+    } catch (error) {
+      if (
+        error instanceof GatewayError ||
+        /timed out|not running|stopped unexpectedly/i.test(
+          String(error?.message ?? error),
+        )
+      ) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      return create();
+    }
   }
 
   enqueueAccountingRequest(requestKey, create) {
@@ -515,14 +627,14 @@ export class CodexAppServer extends EventEmitter {
     categoryHint,
     images,
   }) {
-    const account = await this.readAccount({ refreshToken: true });
+    const account = await this.readTurnAccount();
     if (account.account?.type !== "chatgpt") {
       throw new GatewayError(
         409,
         "The ChatGPT subscription is not connected. Open the accountant /connect page.",
       );
     }
-    await this.onAuthChanged();
+    await this.persistAuthIfNeeded();
 
     const temporaryDirectory = await mkdtemp(
       path.join(os.tmpdir(), "tamweel-accounting-"),
@@ -540,7 +652,7 @@ export class CodexAppServer extends EventEmitter {
         ACCOUNTING_RECEIPT_OUTPUT_SCHEMA,
         imagePaths,
       );
-      await this.onAuthChanged();
+      await this.persistAuthIfNeeded();
       return { ...result, model: this.model };
     } finally {
       await rm(temporaryDirectory, { recursive: true, force: true });
@@ -554,19 +666,19 @@ export class CodexAppServer extends EventEmitter {
     partNumber,
     partCount,
   }) {
-    const account = await this.readAccount({ refreshToken: true });
+    const account = await this.readTurnAccount();
     if (account.account?.type !== "chatgpt") {
       throw new GatewayError(
         409,
         "The ChatGPT subscription is not connected. Open the accountant /connect page.",
       );
     }
-    await this.onAuthChanged();
+    await this.persistAuthIfNeeded();
     const result = await this.runAccountingTurn(
       `Request ${requestId}. Convert part ${partNumber} of ${partCount} from Mauritius bank statement ${JSON.stringify(fileName)} into transaction rows. Output only transactions present in this part. Preserve each transaction exactly once. Ignore headings, opening-balance rows, continuation-detail rows, and total rows. Determine Credit versus Debit from the source columns. Classify using only: Sales, Bank Charges, Utilities, Salaries, Donations, Cost of Sales, Loans, Motor Vehicle, Insurance, Other. A second description line belongs to the transaction immediately above it.\n\n<BANK_STATEMENT_PART>\n${statementText}\n</BANK_STATEMENT_PART>`,
       ACCOUNTING_BANK_OUTPUT_SCHEMA,
     );
-    await this.onAuthChanged();
+    await this.persistAuthIfNeeded();
     return { ...result, model: this.model };
   }
 
@@ -610,14 +722,14 @@ export class CodexAppServer extends EventEmitter {
   }
 
   async createDraft({ requestId, scoutId, postText }) {
-    const account = await this.readAccount({ refreshToken: true });
+    const account = await this.readTurnAccount();
     if (account.account?.type !== "chatgpt") {
       throw new GatewayError(
         409,
         "The ChatGPT subscription is not connected. Connect it in the admin app.",
       );
     }
-    await this.onAuthChanged();
+    await this.persistAuthIfNeeded();
 
     const threadResult = await this.request("thread/start", {
       model: this.model,
@@ -668,7 +780,7 @@ export class CodexAppServer extends EventEmitter {
     ) {
       throw new Error("The generated comment did not pass the English-language check.");
     }
-    await this.onAuthChanged();
+    await this.persistAuthIfNeeded();
     return {
       draft,
       languageStatus: "english",
@@ -695,14 +807,14 @@ export class CodexAppServer extends EventEmitter {
       };
     }
 
-    const account = await this.readAccount({ refreshToken: true });
+    const account = await this.readTurnAccount();
     if (account.account?.type !== "chatgpt") {
       throw new GatewayError(
         409,
         "The ChatGPT subscription is not connected. Connect it in the admin app.",
       );
     }
-    await this.onAuthChanged();
+    await this.persistAuthIfNeeded();
 
     const threadResult = await this.request("thread/start", {
       model: this.model,
@@ -756,7 +868,7 @@ export class CodexAppServer extends EventEmitter {
         ? modelById.get(result.id) || result
         : result,
     );
-    await this.onAuthChanged();
+    await this.persistAuthIfNeeded();
     return {
       results,
       threadId,
@@ -767,14 +879,14 @@ export class CodexAppServer extends EventEmitter {
   }
 
   async createFirstDmDraft({ requestId, scoutId, profile }) {
-    const account = await this.readAccount({ refreshToken: true });
+    const account = await this.readTurnAccount();
     if (account.account?.type !== "chatgpt") {
       throw new GatewayError(
         409,
         "The ChatGPT subscription is not connected. Connect it in the admin app.",
       );
     }
-    await this.onAuthChanged();
+    await this.persistAuthIfNeeded();
 
     const threadResult = await this.request("thread/start", {
       model: this.model,
@@ -817,7 +929,7 @@ export class CodexAppServer extends EventEmitter {
     if (!draft || draft.length > 700) {
       throw new Error("Codex returned an unexpectedly long First DM draft.");
     }
-    await this.onAuthChanged();
+    await this.persistAuthIfNeeded();
     return { draft, threadId, model: this.model };
   }
 
@@ -829,14 +941,14 @@ export class CodexAppServer extends EventEmitter {
     description,
     previousComments,
   }) {
-    const account = await this.readAccount({ refreshToken: true });
+    const account = await this.readTurnAccount();
     if (account.account?.type !== "chatgpt") {
       throw new GatewayError(
         409,
         "The ChatGPT subscription is not connected. Connect it in the extension.",
       );
     }
-    await this.onAuthChanged();
+    await this.persistAuthIfNeeded();
 
     const threadResult = await this.request("thread/start", {
       model: this.model,
@@ -892,7 +1004,7 @@ export class CodexAppServer extends EventEmitter {
     if (draft.length < 30 || draft.length > 1_500) {
       throw new Error("Codex returned an invalid Flippa comment draft length.");
     }
-    await this.onAuthChanged();
+    await this.persistAuthIfNeeded();
     return { draft, threadId, model: this.model, effort: "xhigh" };
   }
 
@@ -903,14 +1015,14 @@ export class CodexAppServer extends EventEmitter {
     reports,
     actions,
   }) {
-    const account = await this.readAccount({ refreshToken: true });
+    const account = await this.readTurnAccount();
     if (account.account?.type !== "chatgpt") {
       throw new GatewayError(
         409,
         "The ChatGPT subscription is not connected. Ask the administrator to reconnect the Luna gateway.",
       );
     }
-    await this.onAuthChanged();
+    await this.persistAuthIfNeeded();
 
     const threadResult = await this.request("thread/start", {
       model: this.model,
@@ -955,7 +1067,7 @@ export class CodexAppServer extends EventEmitter {
     if (!Array.isArray(result.matches) || result.matches.length > 12) {
       throw new Error("Codex returned an invalid community match result.");
     }
-    await this.onAuthChanged();
+    await this.persistAuthIfNeeded();
     return {
       ...result,
       model: this.model,
@@ -1098,7 +1210,11 @@ export class CodexAppServer extends EventEmitter {
         attempt.error = params.error ?? null;
       }
       if (params.success) {
-        void this.onAuthChanged().catch((error) => {
+        this.turnAccount = null;
+        this.turnAccountExpiresAt = 0;
+        this.statusAccount = null;
+        this.statusAccountExpiresAt = 0;
+        void this.persistAuthIfNeeded({ force: true }).catch((error) => {
           console.error(`[gateway] Auth backup failed: ${error.message}`);
         });
       }

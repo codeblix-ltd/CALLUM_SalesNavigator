@@ -2,7 +2,7 @@ const ScoutApi = (() => {
   const AUTH_KEY = "callumScoutAuth";
   const config = globalThis.LEADS_EXTENSION_CONFIG;
   const ACTION_TIMEOUT_MS = 45_000;
-  const AI_ACTION_TIMEOUT_MS = 90_000;
+  const AI_ACTION_TIMEOUT_MS = 595_000;
   const AI_ACTIONS = new Set([
     "scouts:classifyLanguages",
     "scouts:draftComment",

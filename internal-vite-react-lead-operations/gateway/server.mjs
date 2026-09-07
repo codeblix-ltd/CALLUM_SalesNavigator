@@ -27,6 +27,7 @@ if (restored) console.log("[gateway] Restored encrypted Codex auth backup.");
 const codex = new CodexAppServer({
   codexHome: config.codexHome,
   model: config.model,
+  maxScoutConcurrency: config.maxScoutConcurrency,
   safeWorkspace: path.join(config.codexHome, "empty-workspace"),
   onAuthChanged: () => authStore.backupIfPresent(),
 });
@@ -47,11 +48,11 @@ const server = createServer(async (request, response) => {
     });
   }
 });
-server.requestTimeout = 130_000;
+server.requestTimeout = 590_000;
 server.headersTimeout = 10_000;
 server.listen(config.port, config.host, () => {
   console.log(
-    `[gateway] Listening on http://${config.host}:${config.port} with ${config.model}.`,
+    `[gateway] Listening on http://${config.host}:${config.port} with ${config.model} and ${config.maxScoutConcurrency} parallel scout slots.`,
   );
 });
 
@@ -78,7 +79,7 @@ async function route(request, response) {
 
   if (request.method === "GET" && url.pathname === "/v1/status") {
     requireAnyScope(accessScope, ["admin", "extension", "accounting"]);
-    const result = await codex.readAccount();
+    const result = await codex.readStatusAccount();
     sendJson(response, 200, {
       connected: result.account?.type === "chatgpt",
       account: result.account?.type === "chatgpt"
@@ -89,6 +90,7 @@ async function route(request, response) {
         : null,
       model: config.model,
       queuedDrafts: codex.queuedDrafts,
+      maxScoutConcurrency: codex.maxScoutConcurrency,
     });
     return;
   }
@@ -324,6 +326,13 @@ function readConfig() {
     codexHome:
       process.env.CODEX_HOME?.trim() || path.join(projectRoot, ".codex-gateway"),
     model,
+    maxScoutConcurrency: readBoundedInteger(
+      process.env.CODEX_GATEWAY_SCOUT_CONCURRENCY,
+      24,
+      1,
+      64,
+      "CODEX_GATEWAY_SCOUT_CONCURRENCY",
+    ),
     disableAuthBackup,
     host: process.env.HOST?.trim() || "0.0.0.0",
     port: readPort(process.env.PORT),
@@ -351,6 +360,17 @@ function authorize(request) {
 
 function requireScope(actual, expected) {
   if (actual !== expected) throw new GatewayError(403, "Forbidden.");
+}
+
+function readBoundedInteger(value, fallback, minimum, maximum, name) {
+  if (value === undefined || value === null || String(value).trim() === "") {
+    return fallback;
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new Error(`${name} must be an integer from ${minimum} to ${maximum}.`);
+  }
+  return parsed;
 }
 
 function requireAnyScope(actual, allowed) {

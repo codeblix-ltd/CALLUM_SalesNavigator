@@ -15,6 +15,7 @@ type GatewayStatus = {
   account: Account | null;
   model: string;
   queuedDrafts: number;
+  maxScoutConcurrency?: number;
 };
 
 const accountValidator = v.object({
@@ -26,6 +27,7 @@ const statusValidator = v.object({
   account: v.union(accountValidator, v.null()),
   model: v.string(),
   queuedDrafts: v.number(),
+  maxScoutConcurrency: v.optional(v.number()),
 });
 const loginValidator = v.object({
   connected: v.boolean(),

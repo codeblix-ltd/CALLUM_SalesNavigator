@@ -63,7 +63,7 @@ const { CodexAppServer, classifyLanguageLocally } = await import(
   pathToFileURL(gatewayClientPath).href
 );
 
-assert.equal(manifest.version, "0.10.28");
+assert.equal(manifest.version, "0.10.29");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -639,7 +639,7 @@ assert.match(backgroundSource, /DEFAULT_CONNECTION_REVIEW_LOOKBACK_DAYS = 30/);
 assert.match(backgroundSource, /lookbackDays,/);
 assert.match(backgroundSource, /connectionReviewLookbackDays/);
 assert.match(clientSource, /ACTION_TIMEOUT_MS = 45_000/);
-assert.match(clientSource, /AI_ACTION_TIMEOUT_MS = 90_000/);
+assert.match(clientSource, /AI_ACTION_TIMEOUT_MS = 595_000/);
 assert.match(clientSource, /signal: controller\.signal/);
 assert.match(clientSource, /Callum Scout lost its internet connection/);
 assert.match(backgroundSource, /recordCompletedLeadTiming/);
@@ -806,15 +806,13 @@ assert.match(clientSource, /clearAuthIfUnchanged/);
 assert.match(scoutSource, /export const getScoutOperations/);
 assert.match(scoutSource, /export const draftConnectionNote/);
 assert.match(scoutSource, /export const classifyLanguages/);
-assert.match(scoutSource, /LANGUAGE_CHECK_GATEWAY_TIMEOUT_MS = 20_000/);
-assert.match(scoutSource, /language_check_unavailable/);
-assert.match(scoutSource, /model: "unavailable-fallback"/);
-assert.match(
-  scoutSource,
-  /catch \(error\)[\s\S]*status: "uncertain" as const[\s\S]*confidence: 0/,
-);
-assert.match(gatewayClientSource, /LANGUAGE_TURN_TIMEOUT_MS = 12_000/);
-assert.match(gatewayClientSource, /TURN_TIMEOUT_MS = 75_000/);
+assert.match(scoutSource, /SCOUT_AI_GATEWAY_TIMEOUT_MS = 570_000/);
+assert.doesNotMatch(scoutSource, /language_check_unavailable/);
+assert.doesNotMatch(scoutSource, /model: "unavailable-fallback"/);
+assert.match(gatewayClientSource, /LANGUAGE_TURN_TIMEOUT_MS = 90_000/);
+assert.match(gatewayClientSource, /TURN_TIMEOUT_MS = 150_000/);
+assert.doesNotMatch(gatewayClientSource, /draftTail/);
+assert.match(gatewayClientSource, /maxScoutConcurrency = DEFAULT_SCOUT_CONCURRENCY/);
 assert.match(gatewayClientSource, /"turn\/interrupt"/);
 assert.deepEqual(
   classifyLanguageLocally(
@@ -840,6 +838,57 @@ const gatewayTimeoutProbe = new CodexAppServer({
   safeWorkspace: "",
   async onAuthChanged() {},
 });
+const gatewayConcurrencyProbe = new CodexAppServer({
+  codexHome: "",
+  model: "gpt-5.6-luna",
+  safeWorkspace: "",
+  maxScoutConcurrency: 24,
+  async onAuthChanged() {},
+});
+let activeScoutTurns = 0;
+let peakScoutTurns = 0;
+const scoutTurnReleases = [];
+const scoutTurnTasks = Array.from({ length: 30 }, (_, index) =>
+  gatewayConcurrencyProbe.enqueueRequest(`parallel-probe:${index}`, async () => {
+    activeScoutTurns += 1;
+    peakScoutTurns = Math.max(peakScoutTurns, activeScoutTurns);
+    await new Promise((resolve) => scoutTurnReleases.push(resolve));
+    activeScoutTurns -= 1;
+    return index;
+  }),
+);
+await new Promise((resolve) => setImmediate(resolve));
+assert.equal(peakScoutTurns, 24);
+assert.equal(activeScoutTurns, 24);
+assert.equal(gatewayConcurrencyProbe.queuedDrafts, 30);
+assert.equal(gatewayConcurrencyProbe.scoutWaiters.length, 6);
+scoutTurnReleases.slice(0, 24).forEach((release) => release());
+await new Promise((resolve) => setImmediate(resolve));
+assert.equal(scoutTurnReleases.length, 30);
+assert.equal(activeScoutTurns, 6);
+scoutTurnReleases.slice(24).forEach((release) => release());
+assert.deepEqual(await Promise.all(scoutTurnTasks), Array.from({ length: 30 }, (_, index) => index));
+assert.equal(gatewayConcurrencyProbe.queuedDrafts, 0);
+assert.equal(gatewayConcurrencyProbe.scoutActive, 0);
+
+const accountRefreshProbe = new CodexAppServer({
+  codexHome: "",
+  model: "gpt-5.6-luna",
+  safeWorkspace: "",
+  async onAuthChanged() {},
+});
+let accountRefreshes = 0;
+accountRefreshProbe.readAccount = async () => {
+  accountRefreshes += 1;
+  await new Promise((resolve) => setImmediate(resolve));
+  return { account: { type: "chatgpt" } };
+};
+await Promise.all(
+  Array.from({ length: 24 }, () => accountRefreshProbe.readTurnAccount()),
+);
+await accountRefreshProbe.readTurnAccount();
+assert.equal(accountRefreshes, 1);
+
 const interruptRequests = [];
 gatewayTimeoutProbe.request = async (method, params, timeoutMs) => {
   interruptRequests.push({ method, params, timeoutMs });
@@ -1083,9 +1132,9 @@ await assert.rejects(
 );
 await assert.rejects(
   timeoutClientContext.ScoutApi.authenticatedAction("scouts:draftComment"),
-  /longer than 90 seconds/,
+  /longer than 595 seconds/,
 );
-assert.deepEqual(timeoutDelays, [45_000, 90_000]);
+assert.deepEqual(timeoutDelays, [45_000, 595_000]);
 
 const listenerStub = () => ({ addListener() {}, removeListener() {} });
 const backgroundStorage = {};

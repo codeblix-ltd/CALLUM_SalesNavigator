@@ -79,9 +79,12 @@ URL and one-time code. After approval, the gateway stores the live Codex
 session in its private Docker volume and mirrors an AES-256-GCM encrypted
 backup to `codex_gateway_auth` in CockroachDB.
 
-Keep exactly one gateway replica running. Draft requests are intentionally
-serialized through that process so one managed ChatGPT session has only one
-writer.
+Keep exactly one gateway replica running so the encrypted ChatGPT subscription
+session has one owner. Within that process, scout AI work runs through a bounded
+parallel pool. `CODEX_GATEWAY_SCOUT_CONCURRENCY` defaults to 24 and accepts 1 to
+64; keep it at 24 initially and tune it only after checking VPS memory and Codex
+turn latency under real load. Requests beyond the active pool wait safely instead
+of timing out after a few seconds.
 
 ## Create scouts
 
