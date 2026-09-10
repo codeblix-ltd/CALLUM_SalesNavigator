@@ -17,6 +17,80 @@ $("version").textContent = `v${version}`;
 $("occurred").value = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 
 function stopCapture() { stream?.getTracks().forEach(track => track.stop()); stream = null; }
+// Capture the stream itself, not a compositor callback. The report tab commonly
+// becomes backgrounded when Chrome focuses the tab selected in its picker.
+async function captureFrame(mediaStream) {
+  const track = mediaStream.getVideoTracks()[0];
+  if (!track || track.readyState === "ended") throw new Error("Screen sharing stopped. Choose the screen again.");
+  if (typeof ImageCapture === "function") {
+    let expired = false;
+    let timer;
+    try {
+      const pending = new ImageCapture(track).grabFrame().then(bitmap => {
+        if (expired) { bitmap.close(); throw new Error("Frame arrived after capture ended."); }
+        return bitmap;
+      });
+      const bitmap = await Promise.race([pending, new Promise((_, reject) => {
+        timer = setTimeout(() => { expired = true; reject(new Error("Direct frame capture timed out.")); }, 4000);
+      })]);
+      return { source: bitmap, width: bitmap.width, height: bitmap.height, close: () => bitmap.close() };
+    } catch {
+      // Some Chrome/platform combinations do not support grabFrame on display
+      // tracks. Fall back to decoded video data, without requestVideoFrameCallback.
+    } finally { clearTimeout(timer); }
+  }
+  return captureVideoFrame(mediaStream, track);
+}
+
+function captureVideoFrame(mediaStream, track) {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    video.muted = true; video.playsInline = true; video.autoplay = true;
+    video.setAttribute("aria-hidden", "true");
+    video.style.cssText = "position:fixed;bottom:0;right:0;width:1px;height:1px;opacity:0.01;pointer-events:none";
+    let done = false;
+    let timer;
+    let poll;
+    const cleanup = () => {
+      clearTimeout(timer); clearInterval(poll);
+      video.removeEventListener("loadeddata", check);
+      video.removeEventListener("canplay", check);
+      video.removeEventListener("error", failed);
+      track.removeEventListener("ended", ended);
+      video.pause(); video.srcObject = null; video.remove();
+    };
+    const fail = message => { if (!done) { done = true; cleanup(); reject(new Error(message)); } };
+    const ended = () => fail("Screen sharing stopped. Choose the screen again.");
+    const failed = () => fail("Chrome could not read this screen. Try attaching a screenshot instead.");
+    function check() {
+      if (done) return;
+      if (track.readyState === "ended") return ended();
+      if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) return;
+      try {
+        // Copy before releasing the video/track. A decoded first frame is enough;
+        // static screens need not produce a second frame or a paint callback.
+        const canvas = document.createElement("canvas");
+        const scale = Math.min(1, 1920 / Math.max(video.videoWidth, video.videoHeight));
+        canvas.width = Math.round(video.videoWidth * scale); canvas.height = Math.round(video.videoHeight * scale);
+        canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+        done = true; cleanup();
+        resolve({ source: canvas, width: canvas.width, height: canvas.height, close() {} });
+      } catch { failed(); }
+    }
+    video.addEventListener("loadeddata", check);
+    video.addEventListener("canplay", check);
+    video.addEventListener("error", failed);
+    track.addEventListener("ended", ended);
+    timer = setTimeout(() => fail("Chrome did not provide an image. Sharing has stopped. Try again or use Attach image."), 8000);
+    poll = setInterval(check, 100);
+    document.body.append(video);
+    video.srcObject = mediaStream;
+    // Do not await play(): it can remain pending in a background tab even when
+    // current frame data is already available.
+    video.play().catch(failed);
+    check();
+  });
+}
 window.addEventListener("pagehide", stopCapture);
 window.addEventListener("beforeunload", event => {
   if (pictures.length || $("description").value) { event.preventDefault(); event.returnValue = ""; }
@@ -66,17 +140,16 @@ $("capture").onclick = async () => {
   if (imageBusy || sending) return;
   if (pictures.length >= 3) return tell("Remove an image before adding another.");
   lockImages(true);
-  let timer;
+  let frame;
   try {
     tell("Choose the tab or window showing the problem, then click Share.");
     stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
-    const video = document.createElement("video"); video.muted = true; video.srcObject = stream;
-    await Promise.race([video.play().then(() => new Promise(resolve => video.requestVideoFrameCallback(resolve))), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Capture timed out. Please try again.")), 10000); })]);
-    addImage(video, video.videoWidth, video.videoHeight);
-    video.srcObject = null;
+    frame = await captureFrame(stream);
+    stopCapture();
+    addImage(frame.source, frame.width, frame.height);
     tell("Screenshot captured. Sharing has stopped. Check the preview, then describe the issue below.");
   } catch (error) { tell(error.name === "NotAllowedError" ? "Capture cancelled. Try again, attach an image, or send without a screenshot." : error.message); }
-  finally { clearTimeout(timer); stopCapture(); lockImages(false); }
+  finally { frame?.close(); stopCapture(); lockImages(false); }
 };
 async function attach(files) {
   if (imageBusy || sending) return;

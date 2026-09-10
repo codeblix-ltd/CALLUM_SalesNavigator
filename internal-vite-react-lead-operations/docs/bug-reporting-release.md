@@ -1,5 +1,11 @@
 # Bug reporting — extension 0.10.31
 
+## Capture timeout hotfix — 0.10.32
+
+The initial capture used a detached video and awaited `play()` followed by a compositor frame callback. The report page may be backgrounded when the picker focuses the selected tab, leaving that callback pending even though sharing has started. Capture now prefers `ImageCapture.grabFrame()` directly from the selected display track. The fallback reads decoded frame data without awaiting playback completion or a compositor callback. Video, bitmap and timers are cleaned up, and the caller stops sharing on every exit path.
+
+Verified with `pnpm support:test`, extension regression checks, and real Chromium canvas-stream pixel tests for both direct capture and the video fallback at `/capture-test.html` in `scripts/preview-support.mjs`. Native screen-picker testing on the affected user's Chrome installation is still a separate rollout check. This hotfix requires updating/reloading the extension to 0.10.32 and reopening the report tab; it is not a backend change.
+
 Scouts: open the extension → Report bug → choose the affected screen → preview → describe the issue → Send report. They may instead attach/paste up to three images or send text only. Native capture uses Chrome's screen chooser and stops after one frame. Capture requires a user click and may be unavailable under OS/browser policies; image attachment is the fallback.
 
 Admins: open the lead dashboard → Bug reports. Filter open/investigating/resolved reports, inspect screenshots and diagnostic context, and save internal notes. The scout's issue time and the server receipt time are separate. Report identity comes from the authenticated user, not client input. Screenshot URLs must not be forwarded outside the support team.
