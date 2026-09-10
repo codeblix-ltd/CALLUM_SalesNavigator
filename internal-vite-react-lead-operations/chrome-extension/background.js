@@ -16,6 +16,7 @@ const CONNECTION_STATE_RETRY_DELAYS_MS = [2_000, 4_000];
 const CONNECTION_NOTE_MAX_ATTEMPTS = 2;
 const CONNECTION_NOTE_RETRY_DELAY_MS = 1_500;
 const LINKEDIN_TAB_LOAD_TIMEOUT_MS = 90_000;
+const LINKEDIN_OPTIONAL_TAB_LOAD_TIMEOUT_MS = 30_000;
 const LINKEDIN_TAB_READY_PROBE_MS = 1_000;
 const AUTOMATION_KEEP_AWAKE_LEVEL = "display";
 const DEFAULT_CONNECTION_REVIEW_LOOKBACK_DAYS = 30;
@@ -298,7 +299,13 @@ async function startDailyWorkflow(
       return { status: "completed", result: result.summary, state };
     })
     .catch(async (error) => {
-      const requestedControl = getRequestedWorkflowControl(runContext);
+      let requestedControl = getRequestedWorkflowControl(runContext);
+      if (isLinkedInAccessInterruptionError(error) && !requestedControl) {
+        await requestWorkflowControl("pause", {
+          reason: cleanError(error),
+        });
+        requestedControl = "pause";
+      }
       if (isWorkflowControlError(error) || requestedControl) {
         const control = error.control || requestedControl;
         const state = await finalizeControlledRun(runContext, control);
@@ -529,6 +536,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
       }
     } catch (error) {
       if (isWorkflowControlError(error)) throw error;
+      if (isLinkedInAccessInterruptionError(error)) throw error;
       const message = cleanError(error);
       const requestSent = error?.requestSubmitted === true;
       if (requestSent) {
@@ -736,6 +744,25 @@ class WorkflowControlError extends Error {
     this.name = "WorkflowControlError";
     this.control = control;
   }
+}
+
+class LinkedInAccessInterruptionError extends Error {
+  constructor(kind) {
+    super(
+      kind === "checkpoint"
+        ? "LinkedIn opened a security check. Callum Scout paused instead of skipping more leads. Complete the LinkedIn check, then press Resume."
+        : "LinkedIn is signed out or blocked the profile page. Callum Scout paused instead of skipping more leads. Sign in to LinkedIn, then press Resume.",
+    );
+    this.name = "LinkedInAccessInterruptionError";
+    this.kind = kind;
+  }
+}
+
+function isLinkedInAccessInterruptionError(error) {
+  return (
+    error instanceof LinkedInAccessInterruptionError ||
+    error?.name === "LinkedInAccessInterruptionError"
+  );
 }
 
 async function requestWorkflowControl(action, { reason = null } = {}) {
@@ -1724,10 +1751,18 @@ async function collectAcceptedContact(lead, runContext) {
       requestedProfileUrl,
     );
     await waitForAutomationContentScript(runContext, tab.id);
-    const contact = await sendAutomationMessageToTab(runContext, tab.id, {
-      type: "EXTRACT_CONTACT_INFO",
-      options: { expectedProfileUrl: profileUrl },
-    });
+    const contact = await sendAutomationMessageToTab(
+      runContext,
+      tab.id,
+      {
+        type: "EXTRACT_CONTACT_INFO",
+        options: { expectedProfileUrl: profileUrl },
+      },
+      {
+        retryOnClosedChannel: true,
+        recoveryMessage: `LinkedIn refreshed while checking contact details for ${lead.fullName}. Reconnecting safely...`,
+      },
+    );
     throwIfWorkflowControlled(runContext);
     if (!contact?.ok) {
       throw new Error(contact?.error || "We couldn’t read the contact info.");
@@ -1775,10 +1810,18 @@ async function collectKnownConnectionContact(
     }
 
     await waitForAutomationContentScript(runContext, tab.id);
-    const contact = await sendAutomationMessageToTab(runContext, tab.id, {
-      type: "EXTRACT_CONTACT_INFO",
-      options: { expectedProfileUrl: profileUrl },
-    });
+    const contact = await sendAutomationMessageToTab(
+      runContext,
+      tab.id,
+      {
+        type: "EXTRACT_CONTACT_INFO",
+        options: { expectedProfileUrl: profileUrl },
+      },
+      {
+        retryOnClosedChannel: true,
+        recoveryMessage: `LinkedIn refreshed while checking contact details for ${lead.fullName}. Reconnecting safely...`,
+      },
+    );
     throwIfWorkflowControlled(runContext);
     if (!contact?.ok) {
       throw new Error(
@@ -2070,13 +2113,21 @@ async function createPersonalizedConnectionNoteWithRetry(
   for (let attempt = 1; attempt <= CONNECTION_NOTE_MAX_ATTEMPTS; attempt += 1) {
     throwIfWorkflowControlled(runContext);
     try {
-      const extraction = await sendAutomationMessageToTab(runContext, tabId, {
-        type: "EXTRACT_CONNECTION_NOTE_PROFILE",
-        options: {
-          expectedProfileUrl: profileUrl,
-          expectedProfileName: String(lead.fullName || "").trim(),
+      const extraction = await sendAutomationMessageToTab(
+        runContext,
+        tabId,
+        {
+          type: "EXTRACT_CONNECTION_NOTE_PROFILE",
+          options: {
+            expectedProfileUrl: profileUrl,
+            expectedProfileName: String(lead.fullName || "").trim(),
+          },
         },
-      });
+        {
+          retryOnClosedChannel: true,
+          recoveryMessage: `LinkedIn refreshed while reading ${lead.fullName}. Reconnecting safely...`,
+        },
+      );
       if (!extraction?.ok) {
         throw new Error(extraction?.error || "We couldn’t read this profile.");
       }
@@ -2131,14 +2182,22 @@ async function checkLeadProfileLanguage(
   }).catch(() => {});
   let profile = null;
   try {
-    const extraction = await sendAutomationMessageToTab(runContext, tabId, {
-      type: "EXTRACT_CONNECTION_NOTE_PROFILE",
-      options: {
-        expectedProfileUrl: profileUrl,
-        expectedProfileName: String(lead.fullName || "").trim(),
-        languageCheckOnly: true,
+    const extraction = await sendAutomationMessageToTab(
+      runContext,
+      tabId,
+      {
+        type: "EXTRACT_CONNECTION_NOTE_PROFILE",
+        options: {
+          expectedProfileUrl: profileUrl,
+          expectedProfileName: String(lead.fullName || "").trim(),
+          languageCheckOnly: true,
+        },
       },
-    });
+      {
+        retryOnClosedChannel: true,
+        recoveryMessage: `LinkedIn refreshed during ${lead.fullName}'s language check. Reconnecting safely...`,
+      },
+    );
     if (extraction?.ok) profile = extraction.result || {};
   } catch {
     profile = null;
@@ -2368,33 +2427,58 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
       engagementSkipReason = "The post limit has been reached for today.";
     } else if (needsEngagement || needsLanguageFallback) {
       const recentActivityUrl = `${profileUrl}/recent-activity/all/`;
-      await chrome.tabs.update(tab.id, { url: recentActivityUrl });
-      await waitForTabComplete(tab.id, {
-        expectedUrl: recentActivityUrl,
-        stage: `${lead.fullName || "This lead"}'s recent activity`,
-      });
-      throwIfWorkflowControlled(runContext);
-      await waitForAutomationContentScript(runContext, tab.id);
-      engagementResponse = await runPostEngagementWithRecovery(
-        runContext,
-        tab.id,
-        lead,
-        profileUrl,
-        {
-          ...automationOptions,
-          postEngagements: needsEngagement ? postEngagements : 0,
-          profileLanguageStatus: profileLanguage.status,
-          requireLanguageFallback: needsLanguageFallback,
-        },
-        progress,
-      );
-      if (!engagementResponse?.ok) {
+      try {
+        await chrome.tabs.update(tab.id, { url: recentActivityUrl });
+        await waitForTabComplete(tab.id, {
+          expectedUrl: recentActivityUrl,
+          stage: `${lead.fullName || "This lead"}'s recent activity`,
+          timeoutMs: LINKEDIN_OPTIONAL_TAB_LOAD_TIMEOUT_MS,
+        });
         throwIfWorkflowControlled(runContext);
+        await waitForAutomationContentScript(runContext, tab.id);
+        engagementResponse = await runPostEngagementWithRecovery(
+          runContext,
+          tab.id,
+          lead,
+          profileUrl,
+          {
+            ...automationOptions,
+            postEngagements: needsEngagement ? postEngagements : 0,
+            profileLanguageStatus: profileLanguage.status,
+            requireLanguageFallback: needsLanguageFallback,
+          },
+          progress,
+        );
+        if (!engagementResponse?.ok) {
+          throwIfWorkflowControlled(runContext);
+        }
+      } catch (error) {
+        if (
+          isWorkflowControlError(error) ||
+          isLinkedInAccessInterruptionError(error)
+        ) {
+          throw error;
+        }
+        engagementResponse = {
+          ok: true,
+          result: {
+            engagedCount: 0,
+            skipped: true,
+            skipReason: `LinkedIn's recent activity page was skipped after it failed to load: ${cleanError(error)}`,
+            leadLanguageDecision: profileLanguage,
+          },
+        };
       }
       const engagementOutcome = resolvePostEngagementOutcome(engagementResponse);
       completedEngagementCount = engagementOutcome.engagedCount;
       engagementSkipped = engagementOutcome.skipped;
       engagementSkipReason = engagementOutcome.skipReason;
+      if (shouldReportEngagementProblem(engagementSkipReason)) {
+        await ScoutApi.authenticatedAction("scouts:reportError", {
+          leadId: lead.id,
+          message: `Post engagement skipped safely: ${engagementSkipReason}`,
+        }).catch(() => {});
+      }
     }
 
     if (profileLanguage.status === "uncertain") {
@@ -2506,6 +2590,7 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
       connectionNoteAdded: automationOptions.includeNote,
     };
   } catch (error) {
+    if (isLinkedInAccessInterruptionError(error)) throw error;
     const message = cleanError(error);
     knownConnectionDetected =
       knownConnectionDetected || error?.knownConnection === true;
@@ -2626,6 +2711,7 @@ function waitForTabComplete(
       try {
         const tab = await chrome.tabs.get(tabId);
         const currentUrl = tab.pendingUrl || tab.url || "";
+        throwIfLinkedInAccessInterrupted(currentUrl);
         lastKnownPath = linkedInPath(currentUrl) || lastKnownPath;
         if (
           tab.status === "complete" &&
@@ -2638,6 +2724,7 @@ function waitForTabComplete(
           const pageInfo = await sendMessageToTab(tabId, {
             type: "GET_PAGE_INFO",
           });
+          throwIfLinkedInAccessInterrupted(pageInfo?.url);
           if (
             pageInfo?.url &&
             isExpectedLinkedInPage(pageInfo.url, expectedUrl)
@@ -2647,7 +2734,10 @@ function waitForTabComplete(
           }
         }
       } catch (error) {
-        if (/no tab with id/i.test(cleanError(error))) {
+        if (
+          isLinkedInAccessInterruptionError(error) ||
+          /no tab with id/i.test(cleanError(error))
+        ) {
           finish(error);
           return;
         }
@@ -2700,6 +2790,35 @@ function isExpectedLinkedInPage(actualValue, expectedValue) {
   }
 }
 
+function linkedInAccessInterruptionKind(value) {
+  try {
+    const url = new URL(String(value));
+    if (!/(^|\.)linkedin\.com$/i.test(url.hostname)) return null;
+    const path = url.pathname.replace(/\/+$/, "") || "/";
+    if (/^\/checkpoint(?:\/|$)/i.test(path)) return "checkpoint";
+    if (
+      /^\/(?:authwall|login|uas\/login|signup)(?:\/|$)/i.test(path) ||
+      /\blogin(?:\?|$)/i.test(url.href)
+    ) {
+      return "login";
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function throwIfLinkedInAccessInterrupted(value) {
+  const kind = linkedInAccessInterruptionKind(value);
+  if (kind) throw new LinkedInAccessInterruptionError(kind);
+}
+
+function shouldReportEngagementProblem(reason) {
+  return /couldn(?:'|’)t|could not|did not|failed|not confirm|not become ready|refreshed|message channel|unavailable/i.test(
+    String(reason || ""),
+  );
+}
+
 function linkedInPath(value) {
   try {
     const url = new URL(String(value));
@@ -2715,7 +2834,10 @@ async function waitForContentScript(tabId, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
   let lastError = "";
   while (Date.now() < deadline) {
+    const tab = await chrome.tabs.get(tabId);
+    throwIfLinkedInAccessInterrupted(tab.pendingUrl || tab.url || "");
     const response = await sendMessageToTab(tabId, { type: "GET_PAGE_INFO" });
+    throwIfLinkedInAccessInterrupted(response?.url);
     if (response?.url) return response;
     lastError = response?.error || lastError;
     await sleep(250);
@@ -2738,7 +2860,9 @@ async function waitForResolvedLinkedInProfileUrl(
   let lastUrlChangeAt = Date.now();
   while (Date.now() < deadline) {
     const tab = await chrome.tabs.get(tabId);
-    const currentProfileUrl = tryNormalizeLinkedInProfileUrl(tab.url);
+    const currentUrl = tab.pendingUrl || tab.url || "";
+    throwIfLinkedInAccessInterrupted(currentUrl);
+    const currentProfileUrl = tryNormalizeLinkedInProfileUrl(currentUrl);
     if (currentProfileUrl && currentProfileUrl !== lastProfileUrl) {
       lastProfileUrl = currentProfileUrl;
       lastUrlChangeAt = Date.now();

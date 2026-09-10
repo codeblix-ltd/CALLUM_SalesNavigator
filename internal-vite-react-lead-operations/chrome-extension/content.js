@@ -13,6 +13,7 @@
   const DEFAULT_CONNECTION_LOOKBACK_DAYS = 30;
   const MAX_CONNECTION_LOOKBACK_DAYS = 183;
   const COMMENT_REVIEW_TIMEOUT_MS = 5 * 60 * 1_000;
+  const COMMENT_SUBMIT_CONFIRM_TIMEOUT_MS = 30_000;
 
   // Listen for messages from background script or popup
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -695,7 +696,7 @@
 
       // 7. Click 'Comment' submit button
       updateStatus(`Posting comment ${i + 1}...`);
-      const submitted = await submitComment(postEl);
+      const submitted = await submitComment(postEl, draftText);
       if (submitted) {
         await ScoutApi.authenticatedAction("scouts:recordPostActivity", {
           leadId: String(options.leadId),
@@ -978,6 +979,7 @@
       const connectOption = await findConnectOption({
         targetProfileName,
         targetProfileSlug: currentProfileSlug,
+        moreButton,
         timeoutMs: 8_000,
       });
       if (connectOption) {
@@ -1988,9 +1990,12 @@
     return editorEl.textContent?.trim().length > 0;
   }
 
-  async function submitComment(postEl) {
+  async function submitComment(postEl, expectedCommentText) {
     // Wait up to 2 seconds for submit button to be enabled
     let submitBtn = null;
+    const editor =
+      postEl.querySelector("[data-test-ql-editor-contenteditable='true']") ||
+      postEl.querySelector("div.ql-editor[contenteditable='true']");
     for (let attempts = 0; attempts < 10; attempts++) {
       const selectors = [
         "button.comments-comment-box__submit-button--cr",
@@ -2000,14 +2005,16 @@
       ];
 
       for (const sel of selectors) {
-        submitBtn = postEl.querySelector(sel) || document.querySelector(sel);
+        submitBtn = postEl.querySelector(sel);
         if (submitBtn && !submitBtn.disabled) break;
       }
 
       if (submitBtn && !submitBtn.disabled) break;
 
       // Also search buttons with "Comment" text inside form
-      const form = postEl.querySelector(".comments-comment-box__form") || document.querySelector(".comments-comment-box__form");
+      const form =
+        editor?.closest("form") ||
+        postEl.querySelector(".comments-comment-box__form");
       if (form) {
         const btns = Array.from(form.querySelectorAll("button"));
         const found = btns.find((b) => b.textContent?.trim() === "Comment" && !b.disabled);
@@ -2022,20 +2029,57 @@
 
     if (!submitBtn || submitBtn.disabled) return false;
 
-    const editor =
-      postEl.querySelector("[data-test-ql-editor-contenteditable='true']") ||
-      postEl.querySelector("div.ql-editor[contenteditable='true']");
+    const matchingCommentsBefore = countVisibleMatchingComments(
+      postEl,
+      expectedCommentText,
+      editor,
+    );
+    if (matchingCommentsBefore > 0) return true;
     clickElement(submitBtn);
     return Boolean(
       await waitForMatch(
         () => {
+          if (
+            countVisibleMatchingComments(
+              postEl,
+              expectedCommentText,
+              editor,
+            ) > matchingCommentsBefore
+          ) {
+            return true;
+          }
           if (!submitBtn.isConnected || !isElementVisible(submitBtn)) return true;
           if (editor && !(editor.textContent || "").trim()) return true;
           return null;
         },
-        8_000,
+        COMMENT_SUBMIT_CONFIRM_TIMEOUT_MS,
       ),
     );
+  }
+
+  function countVisibleMatchingComments(postEl, expectedText, editor) {
+    const expected = normalizeCommentText(expectedText);
+    if (!expected) return 0;
+    return uniqueElements([
+      ...postEl.querySelectorAll(
+        ".comments-comment-item__main-content, .comments-comment-item-content-body, [data-view-name='comment-commentary'], article[role='article'] p",
+      ),
+    ]).filter((element) => {
+      if (
+        editor &&
+        (element === editor || element.contains(editor) || editor.contains(element))
+      ) {
+        return false;
+      }
+      return (
+        isElementVisible(element) &&
+        normalizeCommentText(element.textContent) === expected
+      );
+    }).length;
+  }
+
+  function normalizeCommentText(value) {
+    return String(value || "").replace(/\s+/g, " ").trim();
   }
 
   async function findMoreButton(targetProfileName, timeoutMs = 20_000) {
@@ -2135,6 +2179,7 @@
           trigger = await findConnectOption({
             targetProfileName,
             targetProfileSlug,
+            moreButton: moreBtn,
             timeoutMs: 8_000,
           });
           if (trigger) method = "Connect in the More menu";
@@ -2206,6 +2251,7 @@
   async function findConnectOption({
     targetProfileName,
     targetProfileSlug,
+    moreButton = null,
     timeoutMs = 10_000,
   }) {
     return waitForMatch(() => {
@@ -2218,7 +2264,7 @@
       for (const menu of menus) {
         const candidates = Array.from(
           menu.querySelectorAll(
-            "a[href*='/preload/custom-invite/'], [role='menuitem'][aria-label*='Invite'], [role='menuitem'] [aria-label*='Invite']",
+            "a[href*='/preload/custom-invite/'], [role='menuitem'], [role='menuitem'] button, [role='menuitem'] a",
           ),
         );
         for (const candidate of candidates) {
@@ -2230,6 +2276,7 @@
               clickable,
               targetProfileName,
               targetProfileSlug,
+              moreButton?.getAttribute("aria-expanded") === "true",
             )
           ) {
             return clickable;
@@ -2244,6 +2291,7 @@
     element,
     targetProfileName,
     targetProfileSlug,
+    allowPlainConnect = false,
   ) {
     const anchor = element.matches("a") ? element : element.querySelector("a");
     const labelledElement = element.matches("[aria-label]")
@@ -2269,7 +2317,15 @@
       normalizeProfileSlug(vanitySlug) ===
         normalizeProfileSlug(targetProfileSlug);
 
-    return Boolean(labelMatches || slugMatches);
+    const plainConnectMatches =
+      allowPlainConnect &&
+      [
+        element.getAttribute("aria-label"),
+        element.getAttribute("title"),
+        element.textContent,
+      ].some((value) => /^\s*(?:[+＋➕]\s*)?Connect\s*$/i.test(value || ""));
+
+    return Boolean(labelMatches || slugMatches || plainConnectMatches);
   }
 
   async function findSendWithoutNoteButton(dialog) {
@@ -2758,6 +2814,11 @@
           </div>
         </div>
       `;
+
+      const draftEditor = document.getElementById("callum-draft-editor");
+      if (draftEditor) {
+        draftEditor.value = generatedDraft;
+      }
 
       timeout = setTimeout(() => {
         addLog("Skipped", `Comment review for post ${postIndex} timed out after 5 minutes`);

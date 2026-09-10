@@ -67,7 +67,7 @@ const { CodexAppServer, classifyLanguageLocally } = await import(
   pathToFileURL(gatewayClientPath).href
 );
 
-assert.equal(manifest.version, "0.10.29");
+assert.equal(manifest.version, "0.10.30");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -671,6 +671,14 @@ assert.match(backgroundSource, /chrome\.power\.releaseKeepAwake\(\)/);
 assert.match(backgroundSource, /AUTOMATION_KEEP_AWAKE_LEVEL = "display"/);
 assert.doesNotMatch(backgroundSource, /premium\/my-premium|isLinkedInPremiumUrl\(finalUrl\)/);
 assert.match(backgroundSource, /LINKEDIN_TAB_LOAD_TIMEOUT_MS = 90_000/);
+assert.match(backgroundSource, /LINKEDIN_OPTIONAL_TAB_LOAD_TIMEOUT_MS = 30_000/);
+assert.match(backgroundSource, /LinkedIn opened a security check/);
+assert.match(backgroundSource, /retryOnClosedChannel: true/);
+assert.match(contentSource, /COMMENT_SUBMIT_CONFIRM_TIMEOUT_MS = 30_000/);
+assert.match(contentSource, /submitComment\(postEl, draftText\)/);
+assert.match(contentSource, /countVisibleMatchingComments/);
+assert.match(contentSource, /moreButton\?\.getAttribute\("aria-expanded"\) === "true"/);
+assert.match(contentSource, /draftEditor\.value = generatedDraft/);
 assert.match(backgroundSource, /type: "GET_PAGE_INFO"/);
 assert.match(backgroundSource, /isExpectedLinkedInPage/);
 assert.match(backgroundSource, /localSettings\.validateBeforeCommenting \?\? false/);
@@ -1232,6 +1240,36 @@ assert.equal(
     "https://www.linkedin.com/in/requested-profile",
   ),
   false,
+);
+assert.equal(
+  backgroundContext.linkedInAccessInterruptionKind(
+    "https://www.linkedin.com/checkpoint/challenge/abc",
+  ),
+  "checkpoint",
+);
+assert.equal(
+  backgroundContext.linkedInAccessInterruptionKind(
+    "https://www.linkedin.com/authwall?trk=profile",
+  ),
+  "login",
+);
+assert.equal(
+  backgroundContext.linkedInAccessInterruptionKind(
+    "https://www.linkedin.com/in/sam-jodhun-60b0088/",
+  ),
+  null,
+);
+backgroundContext.chrome.tabs.get = async () => ({
+  status: "loading",
+  url: "https://www.linkedin.com/checkpoint/challenge/abc",
+});
+await assert.rejects(
+  backgroundContext.waitForTabComplete(42, {
+    expectedUrl: "https://www.linkedin.com/in/example",
+    timeoutMs: 1_000,
+  }),
+  /security check.*paused/i,
+  "A LinkedIn checkpoint must stop the wait immediately instead of burning the full page timeout.",
 );
 assert.equal(backgroundContext.defaultAutoLeadRunState().status, "idle");
 assert.equal(backgroundContext.defaultAutoLeadRunState().retryFailedOnly, false);
