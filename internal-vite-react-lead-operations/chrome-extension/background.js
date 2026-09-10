@@ -2987,3 +2987,8 @@ function compactNumber(value) {
   if (number >= 1_000) return `${Math.floor(number / 100) / 10}K`;
   return String(number);
 }
+// Chrome confirms availability from this installation's update channel. Never
+// reload automatically here: a scout may have a live LinkedIn submission.
+chrome.runtime.onUpdateAvailable.addListener(({ version }) => {
+  void chrome.storage.local.set({ scoutAvailableUpdate: version });
+});

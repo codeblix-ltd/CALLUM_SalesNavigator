@@ -55,6 +55,10 @@ const runtimeFiles = [
   "popup.css",
   "popup.html",
   "popup.js",
+  "support-entry.js",
+  "report.html",
+  "report.css",
+  "report.js",
 ];
 
 for (const file of runtimeFiles) {

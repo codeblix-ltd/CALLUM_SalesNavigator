@@ -38,10 +38,11 @@ import {
 } from "lucide-react";
 import { api } from "../convex/_generated/api";
 import { WeeklyPerformance } from "./WeeklyPerformance";
+import { BugReports } from "./BugReports";
 import "./App.css";
 
 type Range = "7d" | "30d" | "90d" | "all";
-type View = "overview" | "scouts" | "weekly" | "operations" | "leads";
+type View = "overview" | "scouts" | "weekly" | "operations" | "leads" | "bugs";
 type DirectorySection = "leads" | "veblen";
 type OverviewSection = "summary" | "trends" | "scouts" | "activity";
 type ScoutsSection = "accounts" | "allocation" | "directory";
@@ -962,7 +963,7 @@ function Dashboard({ adminName }: { adminName: string }) {
   }
 
   const connectionError = analyticsError || leadError || scoutAdminError;
-  const viewLabel = view === "overview"
+  const viewLabel = view === "bugs" ? "Bug reports" : view === "overview"
     ? "Overview"
     : view === "scouts"
       ? "Scout administration"
@@ -971,7 +972,7 @@ function Dashboard({ adminName }: { adminName: string }) {
         : view === "operations"
           ? "Daily work"
           : "Lead directory";
-  const sectionLabel = view === "overview"
+  const sectionLabel = view === "bugs" ? "Scout support inbox" : view === "overview"
     ? overviewSection === "summary" ? "Summary" : overviewSection === "trends" ? "Trends" : overviewSection === "scouts" ? "Scout performance" : "Activity & coverage"
     : view === "scouts"
       ? scoutsSection === "accounts" ? "Accounts & capacity" : scoutsSection === "allocation" ? "Lead allocation" : "Scout directory"
@@ -980,7 +981,7 @@ function Dashboard({ adminName }: { adminName: string }) {
         : view === "operations"
           ? operationsSection === "summary" ? "Work summary" : operationsSection === "questions" ? "Scout questions" : operationsSection === "requests" ? "Old requests" : "GHL queue"
           : directorySection === "leads" ? "All leads" : "Veblen exclusions";
-  const heroContent = view === "scouts"
+  const heroContent = view === "bugs" ? { eyebrow: "Scout support", title: <>Turn reports into<br /><span>verified fixes.</span></>, copy: "Screenshots, scout details, and run context together — so no issue gets lost in a forwarded message." } : view === "scouts"
     ? {
         eyebrow: "Scout administration",
         title: <>Manage your scout<br /><span>team and queues.</span></>,
@@ -1019,6 +1020,7 @@ function Dashboard({ adminName }: { adminName: string }) {
         </a>
         <p className="sidebar-label">Workspace</p>
         <nav className="main-nav" aria-label="Workspace views">
+          <button className={view === "bugs" ? "active" : ""} onClick={() => navigateTo("bugs")} aria-current={view === "bugs" ? "page" : undefined}><Activity size={17} /> Bug reports</button>
           <button className={view === "overview" ? "active" : ""} onClick={() => navigateTo("overview")} aria-current={view === "overview" ? "page" : undefined}><BarChart3 size={17} /> Overview</button>
           <SidebarSectionNav ariaLabel="Overview sections" items={[
             { label: "Summary", icon: <BarChart3 size={15} />, active: view === "overview" && overviewSection === "summary", onClick: () => { setOverviewSection("summary"); navigateTo("overview"); } },
@@ -1142,6 +1144,8 @@ function Dashboard({ adminName }: { adminName: string }) {
             }}
             section={scoutsSection}
           />
+        ) : view === "bugs" ? (
+          <BugReports />
         ) : view === "weekly" ? (
           <WeeklyPerformance section={weeklySection} />
         ) : view === "operations" ? (

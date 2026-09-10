@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Report a bug · Callum Scout</title><link rel="stylesheet" href="report.css"></head>
+<body><main>
+  <header><a href="help.html">Callum Scout</a><span id="version"></span><span class="private">Private report to your admin</span></header>
+  <div class="intro"><span class="eyebrow">LET’S GET THIS SORTED</span><h1>Show us what went wrong.</h1><p>A screenshot and a few words help us find the problem faster.</p></div>
+  <form id="report-form">
+    <section><h2><b>1</b> Show the issue <small>optional</small></h2><p>Open the screen with the problem. Click below, choose that tab or window in Chrome’s picker, then click <strong>Share</strong>. We take one screenshot and immediately stop sharing.</p>
+      <div class="actions"><button type="button" id="capture">Choose screen & capture</button><button type="button" class="secondary" id="attach">Attach image</button><input type="file" id="files" accept="image/png,image/jpeg,image/webp" multiple hidden></div>
+      <p class="hint">Or paste a screenshot here. Up to 3 images. Review and remove anything private before sending.</p><div id="previews" class="previews"></div>
+    </section>
+    <section><h2><b>2</b> Tell us what happened</h2><label for="description">What did you try, and what happened instead?</label><textarea id="description" required minlength="5" maxlength="5000" rows="5" placeholder="For example: I clicked Start. It stayed on the same profile for 10 minutes…"></textarea>
+      <label for="occurred">When did this happen?</label><input id="occurred" type="datetime-local" required>
+      <details><summary>Technical details included with this report</summary><pre id="context"></pre><p>Only these details and the screenshots you choose are sent. Passwords and authentication tokens are never attached.</p></details>
+    </section>
+    <section id="login" hidden><h2>Sign in to send your report</h2><p>Your report stays here while you sign in. If sign-in itself fails, download the report and share it with your manager.</p><label for="username">Scout username</label><input id="username" autocomplete="username"><label for="password">Password</label><input id="password" type="password" autocomplete="current-password"><button type="button" id="sign-in">Sign in</button></section>
+    <div class="footer"><p id="identity"></p><div class="actions"><button type="button" id="download" class="secondary">Save a copy</button><button type="submit" id="send">Send report</button></div></div>
+  </form><p id="status" role="status" aria-live="polite"></p><p class="hint">Reporting does not stop your automation. Safely pause it first if it is stuck. Keep this tab open until your report is sent.</p>
+</main><script src="config.js"></script><script src="convex-client.js"></script><script src="report.js"></script></body></html>

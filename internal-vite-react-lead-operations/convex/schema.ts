@@ -1,12 +1,17 @@
 import { authTables } from "@convex-dev/auth/server";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { reportFields } from "./bugReportTypes";
 
 // Lead records stay in CockroachDB. Convex is the secure API/orchestration layer.
 const { users: _defaultUsers, ...remainingAuthTables } = authTables;
 
 export default defineSchema({
   ...remainingAuthTables,
+  bugReports: defineTable(reportFields)
+    .index("by_reporter_client", ["reporterId", "clientId"])
+    .index("by_reporter", ["reporterId"])
+    .index("by_status", ["status"]),
   users: defineTable({
     name: v.optional(v.string()),
     image: v.optional(v.string()),
