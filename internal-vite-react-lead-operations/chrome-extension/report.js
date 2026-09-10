@@ -17,6 +17,19 @@ $("version").textContent = `v${version}`;
 $("occurred").value = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 
 function stopCapture() { stream?.getTracks().forEach(track => track.stop()); stream = null; }
+async function returnToReportTab() {
+  try {
+    // getCurrent identifies this extension page even when the picker has moved
+    // focus to the captured tab or to another Chrome window.
+    const tab = await chrome.tabs.getCurrent();
+    if (typeof tab?.id !== "number") return;
+    await chrome.tabs.update(tab.id, { active: true });
+    if (typeof tab.windowId === "number") await chrome.windows.update(tab.windowId, { focused: true });
+  } catch {
+    // Window activation is best effort; never discard a captured screenshot if
+    // Chrome or the OS refuses focus, or the window is being closed.
+  }
+}
 // Capture the stream itself, not a compositor callback. The report tab commonly
 // becomes backgrounded when Chrome focuses the tab selected in its picker.
 async function captureFrame(mediaStream) {
@@ -148,6 +161,7 @@ $("capture").onclick = async () => {
     stopCapture();
     addImage(frame.source, frame.width, frame.height);
     tell("Screenshot captured. Sharing has stopped. Check the preview, then describe the issue below.");
+    await returnToReportTab();
   } catch (error) { tell(error.name === "NotAllowedError" ? "Capture cancelled. Try again, attach an image, or send without a screenshot." : error.message); }
   finally { frame?.close(); stopCapture(); lockImages(false); }
 };

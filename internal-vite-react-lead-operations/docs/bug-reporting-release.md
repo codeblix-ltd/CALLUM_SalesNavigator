@@ -1,5 +1,13 @@
 # Bug reporting — extension 0.10.31
 
+## Return to report after capture — 0.10.33
+
+After capturing and stopping screen sharing, the extension activates the report
+tab and focuses its Chrome window so the scout can immediately review the image
+and add a comment. Cancelled/failed captures do not move focus. A denied focus
+request never loses the screenshot. Covered by `pnpm support:test` (correct tab
+and window, capture-before-focus ordering, cancellation, and focus failure).
+
 ## Capture timeout hotfix — 0.10.32
 
 The initial capture used a detached video and awaited `play()` followed by a compositor frame callback. The report page may be backgrounded when the picker focuses the selected tab, leaving that callback pending even though sharing has started. Capture now prefers `ImageCapture.grabFrame()` directly from the selected display track. The fallback reads decoded frame data without awaiting playback completion or a compositor callback. Video, bitmap and timers are cleaned up, and the caller stops sharing on every exit path.
