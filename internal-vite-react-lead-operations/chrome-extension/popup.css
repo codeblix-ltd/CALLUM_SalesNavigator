@@ -49,6 +49,18 @@ button:disabled { cursor: wait; opacity: .55; }
 }
 .topbar span.error { color: #ad5050; }
 .topbar span.error i { background: #d55d5d; }
+.topbar .installed-version {
+  display: table;
+  padding: 2px 6px;
+  border-radius: 5px;
+  color: #5d43c4;
+  background: #eee9fc;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.extension-update { margin-bottom: 12px; border-color: #c7b8f0; }
+.extension-update strong { color: #5d43c4; font-size: 12px; }
+.extension-update p { margin: 6px 0 0; color: #5d6981; font-size: 11px; line-height: 1.5; }
 
 .card {
   padding: 18px;

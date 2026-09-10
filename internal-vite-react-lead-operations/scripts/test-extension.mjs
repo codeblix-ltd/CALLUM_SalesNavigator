@@ -67,7 +67,7 @@ const { CodexAppServer, classifyLanguageLocally } = await import(
   pathToFileURL(gatewayClientPath).href
 );
 
-assert.equal(manifest.version, "0.10.33");
+assert.equal(manifest.version, "0.10.34");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);

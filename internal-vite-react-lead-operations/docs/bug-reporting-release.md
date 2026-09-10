@@ -1,5 +1,23 @@
 # Bug reporting — extension 0.10.31
 
+## Version visibility and live update notice — 0.10.34
+
+The popup displays the installed version in a badge, including before sign-in.
+Chrome's native update event stores the available version; the popup now updates
+the notice immediately when that storage changes. Equal, older and invalid values
+are hidden, and a stale initial read cannot overwrite a fresh update event.
+The notice asks scouts to finish their work before restarting Chrome. There is no
+forced reload or repeated polling. Chrome controls update discovery; a package
+awaiting Store review will not trigger the notice.
+
+Production distribution is the Chrome Web Store listing with ID
+`oknfiljbgnjflmbkddeojnbmngkafffc`. The self-hosted files below describe a legacy
+channel that the user confirms their scouts do not use. Submit the latest ZIP to
+the existing Store listing; a GitHub push is not a Store publication.
+
+Verification: `node scripts/test-extension-updates.mjs` checks installed versions,
+stored/live notices, version comparisons, storage failures and read/event races.
+
 ## Return to report after capture — 0.10.33
 
 After capturing and stopping screen sharing, the extension activates the report
