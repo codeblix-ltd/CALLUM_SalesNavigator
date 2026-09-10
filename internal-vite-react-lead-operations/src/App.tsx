@@ -1020,7 +1020,6 @@ function Dashboard({ adminName }: { adminName: string }) {
         </a>
         <p className="sidebar-label">Workspace</p>
         <nav className="main-nav" aria-label="Workspace views">
-          <button className={view === "bugs" ? "active" : ""} onClick={() => navigateTo("bugs")} aria-current={view === "bugs" ? "page" : undefined}><Activity size={17} /> Bug reports</button>
           <button className={view === "overview" ? "active" : ""} onClick={() => navigateTo("overview")} aria-current={view === "overview" ? "page" : undefined}><BarChart3 size={17} /> Overview</button>
           <SidebarSectionNav ariaLabel="Overview sections" items={[
             { label: "Summary", icon: <BarChart3 size={15} />, active: view === "overview" && overviewSection === "summary", onClick: () => { setOverviewSection("summary"); navigateTo("overview"); } },
@@ -1051,6 +1050,7 @@ function Dashboard({ adminName }: { adminName: string }) {
             { label: "All leads", icon: <Database size={15} />, active: view === "leads" && directorySection === "leads", onClick: () => { setDirectorySection("leads"); navigateTo("leads"); } },
             { label: "Veblen exclusions", icon: <ShieldCheck size={15} />, active: view === "leads" && directorySection === "veblen", onClick: () => { setDirectorySection("veblen"); navigateTo("leads"); } },
           ]} />
+          <button className={view === "bugs" ? "active" : ""} onClick={() => navigateTo("bugs")} aria-current={view === "bugs" ? "page" : undefined}><Activity size={17} /> Bug reports</button>
         </nav>
         <div className="sidebar-spacer" />
         <div className="sidebar-footer"><LockKeyhole size={13} /> Private admin workspace</div>
