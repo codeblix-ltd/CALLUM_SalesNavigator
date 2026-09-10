@@ -30,6 +30,7 @@ let activeWorkflowTabId = null;
 let activeAutomationWindowId = null;
 let runStateInitializationPromise = null;
 let automationKeepAwakeActive = false;
+let badgeRefreshPromise = null;
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create(REFRESH_ALARM, { periodInMinutes: 30 });
@@ -92,7 +93,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           cleanError(error),
         );
       })
-      .then(() => updateBadge())
+      .then(() => updateBadge({ cachedForMs: Math.min(30_000, Math.max(0, Number(message.cachedForMs) || 0)) }))
       .then((dashboard) => sendResponse({ ok: true, dashboard }))
       .catch((error) => sendResponse({ ok: false, error: cleanError(error) }));
     return true;
@@ -538,6 +539,8 @@ async function runDailyWorkflow(specificLeadId, runContext) {
       if (isWorkflowControlError(error)) throw error;
       if (isLinkedInAccessInterruptionError(error)) throw error;
       const message = cleanError(error);
+      // Stop a service/quota failure here instead of burning through every lead.
+      if (!error?.requestSubmitted && /scout AI hourly limit|AI check is already running|AI job timed out|AI job failed|Callum Scout isn.t ready|lost its internet connection|We couldn.t reach Callum Scout/i.test(message)) throw error;
       const requestSent = error?.requestSubmitted === true;
       if (requestSent) {
         progress.requestsSent += 1;
@@ -626,7 +629,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
     if (specificLeadId) break;
   }
 
-  await updateBadge();
+  await updateBadge({ dashboard });
   const knownConnectionResults = results.filter(
     (result) => result?.connectionAlreadyPresent === true,
   );
@@ -2958,16 +2961,31 @@ async function completeConnectionRequestWithRetry(args) {
   throw lastError || new Error("The sent connection request could not be synced.");
 }
 
-async function updateBadge() {
+function updateBadge(options = {}) {
+  if (!badgeRefreshPromise) {
+    badgeRefreshPromise = loadBadge(options).finally(() => { badgeRefreshPromise = null; });
+  }
+  return badgeRefreshPromise;
+}
+
+async function loadBadge({ cachedForMs = 0, dashboard: providedDashboard = null } = {}) {
   const auth = await ScoutApi.getAuth();
   if (!auth) {
     await chrome.action.setBadgeText({ text: "" });
     return null;
   }
-  const dashboard = await ScoutApi.authenticatedAction("scouts:getDashboard");
+  const cached = cachedForMs > 0
+    ? await chrome.storage.local.get(["scoutDashboard", "scoutDashboardUpdatedAt"])
+    : {};
+  const age = Date.now() - Number(cached.scoutDashboardUpdatedAt || 0);
+  const dashboard = providedDashboard || (
+    cached.scoutDashboard?.scout?.username === auth.username && age >= 0 && age < cachedForMs
+      ? cached.scoutDashboard
+      : await ScoutApi.authenticatedAction("scouts:getDashboard")
+  );
   await chrome.storage.local.set({
     scoutDashboard: dashboard,
-    scoutDashboardUpdatedAt: Date.now(),
+    scoutDashboardUpdatedAt: dashboard === cached.scoutDashboard ? cached.scoutDashboardUpdatedAt : Date.now(),
   });
   await chrome.action.setBadgeBackgroundColor({ color: "#6347D8" });
   await chrome.action.setBadgeText({ text: compactNumber(dashboard.counts.fresh) });
@@ -2975,7 +2993,7 @@ async function updateBadge() {
 }
 
 function refreshBadgeInBackground() {
-  void updateBadge().catch(async (error) => {
+  void updateBadge({ cachedForMs: 300_000 }).catch(async (error) => {
     await chrome.action.setBadgeText({ text: "" }).catch(() => {});
     console.warn("Callum Scout badge refresh failed:", cleanError(error));
   });

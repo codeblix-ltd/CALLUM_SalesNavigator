@@ -206,12 +206,12 @@ async function hydrate() {
     "scoutDashboardUpdatedAt",
     "lastAcceptedConnectionReview",
   ]);
-  if (cached.scoutDashboard) {
+  if (cached.scoutDashboard?.scout?.username === auth.username) {
     renderDashboard(cached.scoutDashboard, cached.scoutDashboardUpdatedAt);
   }
   renderConnectionReviewStatus(cached.lastAcceptedConnectionReview);
   await refreshAutoLeadRunState();
-  await refreshDashboard();
+  await refreshDashboard({ cachedForMs: 30_000 });
 }
 
 async function handleLogin(event) {
@@ -254,12 +254,13 @@ async function handleSignOut() {
   }
 }
 
-async function refreshDashboard() {
+async function refreshDashboard({ cachedForMs = 0 } = {}) {
   setBusy(elements.refresh, true);
   clearMessages();
   try {
     const response = await chrome.runtime.sendMessage({
       type: "REFRESH_SCOUT_DASHBOARD",
+      cachedForMs,
     });
     if (!response?.ok || !response.dashboard) {
       throw new Error(response?.error || "We couldn’t update your leads. Try again.");

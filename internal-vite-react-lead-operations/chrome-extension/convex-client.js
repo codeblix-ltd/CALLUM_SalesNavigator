@@ -2,13 +2,15 @@ const ScoutApi = (() => {
   const AUTH_KEY = "callumScoutAuth";
   const config = globalThis.LEADS_EXTENSION_CONFIG;
   const ACTION_TIMEOUT_MS = 45_000;
-  const AI_ACTION_TIMEOUT_MS = 595_000;
   const AI_ACTIONS = new Set([
     "scouts:classifyLanguages",
     "scouts:draftComment",
     "scouts:draftConnectionNote",
   ]);
   let refreshPromise = null;
+  const inFlightReads = new Map();
+  const aiRequests = new Map();
+  const READ_ACTIONS = new Set(["scouts:getDashboard", "scouts:getScoutOperations", "scouts:getLeadProgress"]);
 
   async function signIn(username, password) {
     const result = await callAction("auth:signIn", {
@@ -43,25 +45,63 @@ const ScoutApi = (() => {
   }
 
   async function authenticatedAction(path, args = {}) {
+    if (AI_ACTIONS.has(path)) {
+      const auth = await getAuth();
+      const key = JSON.stringify([auth?.username, auth?.token, path, args]);
+      if (!aiRequests.has(key)) {
+        aiRequests.set(key, runAiJob(path, args, auth).finally(() => aiRequests.delete(key)));
+      }
+      return aiRequests.get(key);
+    }
+    if (READ_ACTIONS.has(path)) {
+      const auth = await getAuth();
+      const key = JSON.stringify([auth?.token, path, args]);
+      if (!inFlightReads.has(key)) {
+        inFlightReads.set(key, authenticatedRequest(path, args).finally(() => inFlightReads.delete(key)));
+      }
+      return inFlightReads.get(key);
+    }
+    return authenticatedRequest(path, args);
+  }
+
+  async function runAiJob(path, args, startingAuth) {
+    if (!startingAuth?.token) throw new Error("Sign in is required.");
+    const receipt = await authenticatedRequest(path.replace("scouts:", "scoutAi:"), args);
+    const deadline = Date.now() + 670_000;
+    let delayMs = 2_000;
+    while (Date.now() < deadline) {
+      const current = await getAuth();
+      if (!current?.token || current.username !== startingAuth.username) throw new Error("Your session changed. Sign in again.");
+      const job = await authenticatedRequest("scoutAiJobs:get", receipt, "query");
+      if (job.status === "complete") return JSON.parse(job.result);
+      if (job.status === "failed") throw new Error(cleanError(job.error));
+      if (job.expiresAt && Date.now() >= job.expiresAt) throw new Error("The AI job timed out. Please retry.");
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+      delayMs = Math.min(10_000, Math.round(delayMs * 1.5));
+    }
+    throw new Error("The AI job timed out. Please retry; your existing job will be reused if it is still running.");
+  }
+
+  async function authenticatedRequest(path, args = {}, kind = "action") {
     const auth = await getAuth();
     if (!auth?.token || !auth.refreshToken) {
       throw new Error("Sign in is required.");
     }
     try {
-      return await callAction(path, args, auth.token);
+      return await callAction(path, args, auth.token, kind);
     } catch (firstError) {
       if (!looksLikeAuthError(firstError)) {
         throw firstError;
       }
       const recoveredAuth = await recoverAuthentication(auth);
       try {
-        return await callAction(path, args, recoveredAuth.token);
+        return await callAction(path, args, recoveredAuth.token, kind);
       } catch (retryError) {
         if (!looksLikeAuthError(retryError)) throw retryError;
 
         const latestAuth = await getAuth();
         if (isDifferentSession(latestAuth, recoveredAuth)) {
-          return callAction(path, args, latestAuth.token);
+          return callAction(path, args, latestAuth.token, kind);
         }
         await clearAuthIfUnchanged(recoveredAuth);
         throw new Error("Your session expired. Sign in again.");
@@ -141,7 +181,7 @@ const ScoutApi = (() => {
     return values[AUTH_KEY] ?? null;
   }
 
-  async function callAction(path, args = {}, token) {
+  async function callAction(path, args = {}, token, kind = "action") {
     const convexUrl = config?.CONVEX_URL;
     if (!convexUrl || convexUrl.includes("your-deployment")) {
       throw new Error(
@@ -154,14 +194,12 @@ const ScoutApi = (() => {
     };
     if (token) headers.Authorization = `Bearer ${token}`;
     const controller = new AbortController();
-    const timeoutMs = AI_ACTIONS.has(path)
-      ? AI_ACTION_TIMEOUT_MS
-      : ACTION_TIMEOUT_MS;
+    const timeoutMs = ACTION_TIMEOUT_MS;
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     let response;
     let payload;
     try {
-      response = await fetch(`${convexUrl}/api/action`, {
+      response = await fetch(`${convexUrl}/api/${kind}`, {
         method: "POST",
         headers,
         cache: "no-store",

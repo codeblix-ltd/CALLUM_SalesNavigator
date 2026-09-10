@@ -67,7 +67,7 @@ const { CodexAppServer, classifyLanguageLocally } = await import(
   pathToFileURL(gatewayClientPath).href
 );
 
-assert.equal(manifest.version, "0.10.34");
+assert.equal(manifest.version, "0.10.35");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -643,7 +643,7 @@ assert.match(backgroundSource, /DEFAULT_CONNECTION_REVIEW_LOOKBACK_DAYS = 30/);
 assert.match(backgroundSource, /lookbackDays,/);
 assert.match(backgroundSource, /connectionReviewLookbackDays/);
 assert.match(clientSource, /ACTION_TIMEOUT_MS = 45_000/);
-assert.match(clientSource, /AI_ACTION_TIMEOUT_MS = 595_000/);
+assert.match(clientSource, /scoutAiJobs:get/);
 assert.match(clientSource, /signal: controller\.signal/);
 assert.match(clientSource, /Callum Scout lost its internet connection/);
 assert.match(backgroundSource, /recordCompletedLeadTiming/);
@@ -1160,9 +1160,9 @@ await assert.rejects(
 );
 await assert.rejects(
   timeoutClientContext.ScoutApi.authenticatedAction("scouts:draftComment"),
-  /longer than 595 seconds/,
+  /longer than 45 seconds/,
 );
-assert.deepEqual(timeoutDelays, [45_000, 595_000]);
+assert.deepEqual(timeoutDelays, [45_000, 45_000]);
 
 const listenerStub = () => ({ addListener() {}, removeListener() {} });
 const backgroundStorage = {};

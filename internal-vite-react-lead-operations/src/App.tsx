@@ -2242,9 +2242,11 @@ function GhlSyncHistoryPanel() {
   }, [load]);
 
   useEffect(() => {
-    const interval = window.setInterval(() => void load(), 30_000);
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible" && !loading) void load();
+    }, 60_000);
     return () => window.clearInterval(interval);
-  }, [load]);
+  }, [load, loading]);
 
   async function retryRow(outboxId: string) {
     setRetryingId(outboxId);

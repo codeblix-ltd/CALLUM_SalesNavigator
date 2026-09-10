@@ -4,6 +4,9 @@ import vm from "node:vm";
 
 const source = readFileSync(new URL("../chrome-extension/support-entry.js", import.meta.url), "utf8");
 const manifest = JSON.parse(readFileSync(new URL("../chrome-extension/manifest.json", import.meta.url), "utf8"));
+const nextParts = manifest.version.split(".").map(Number);
+nextParts[nextParts.length - 1] += 1;
+const nextVersion = nextParts.join(".");
 function popup(installed = manifest.version) {
   const node = () => ({ children: [], hidden: false, textContent: "", append(...items) { this.children.push(...items); }, prepend(item) { this.children.unshift(item); }, after(item) { this.next = item; }, setAttribute() {}, addEventListener() {} });
   const brand = node(), topbar = node(), actions = node();
@@ -19,12 +22,12 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
 const view = popup();
 assert.equal(view.brand.children[0].textContent, `v${manifest.version}`);
 assert.equal(view.notice.hidden, true);
-view.resolve({ scoutAvailableUpdate: "0.10.35" });
+view.resolve({ scoutAvailableUpdate: nextVersion });
 await flush();
 assert.equal(view.notice.hidden, false);
-assert.equal(view.notice.children[0].textContent, "New version available: v0.10.35");
+assert.equal(view.notice.children[0].textContent, `New version available: v${nextVersion}`);
 assert.match(view.notice.children[1].textContent, /Finish your current work/);
-for (const value of [manifest.version, "0.10.34.0", "0.10.9", "0.9.999", "", undefined, "0.10.35<script>"]) {
+for (const value of [manifest.version, `${manifest.version}.0`, "0.10.9", "0.9.999", "", undefined, `${nextVersion}<script>`]) {
   view.change(value);
   assert.equal(view.notice.hidden, true, `hide stale or invalid update: ${value}`);
 }

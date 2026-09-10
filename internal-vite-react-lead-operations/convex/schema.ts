@@ -2,12 +2,21 @@ import { authTables } from "@convex-dev/auth/server";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { reportFields } from "./bugReportTypes";
+import { aiKind, jobStatus } from "./scoutAiTypes";
 
 // Lead records stay in CockroachDB. Convex is the secure API/orchestration layer.
 const { users: _defaultUsers, ...remainingAuthTables } = authTables;
 
 export default defineSchema({
   ...remainingAuthTables,
+  // One reusable slot per scout and AI operation, not one growing row per request.
+  scoutAiJobs: defineTable({
+    userId: v.id("users"), operatorId: v.string(), kind: aiKind,
+    fingerprint: v.string(), generation: v.string(), status: jobStatus,
+    request: v.optional(v.string()), result: v.optional(v.string()),
+    error: v.optional(v.string()), expiresAt: v.number(),
+    windowStart: v.number(), starts: v.number(),
+  }).index("by_user", ["userId"]),
   bugReports: defineTable(reportFields)
     .index("by_reporter_client", ["reporterId", "clientId"])
     .index("by_reporter", ["reporterId"])

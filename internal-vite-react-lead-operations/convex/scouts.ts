@@ -3021,14 +3021,7 @@ function scoreIcp(titleValue: unknown, companySizeValue: unknown) {
 
 async function getOrCreateSettings(operatorId: string): Promise<ScoutSettings> {
   const database = getPool();
-  await database.query(
-    `INSERT INTO operator_settings (operator_id)
-     VALUES ($1)
-     ON CONFLICT (operator_id) DO NOTHING`,
-    [operatorId],
-  );
-  const result = await database.query(
-    `SELECT
+  const selectSql = `SELECT
        post_engagements::FLOAT8 AS post_engagements,
        linkedin_premium,
        linkedin_premium_verified_at IS NOT NULL AS linkedin_premium_verified,
@@ -3037,9 +3030,17 @@ async function getOrCreateSettings(operatorId: string): Promise<ScoutSettings> {
        onboarding_completed,
        include_note
      FROM operator_settings
-     WHERE operator_id = $1`,
-    [operatorId],
-  );
+     WHERE operator_id = $1`;
+  let result = await database.query(selectSql, [operatorId]);
+  if (!result.rows.length) {
+    await database.query(
+      `INSERT INTO operator_settings (operator_id)
+       VALUES ($1)
+       ON CONFLICT (operator_id) DO NOTHING`,
+      [operatorId],
+    );
+    result = await database.query(selectSql, [operatorId]);
+  }
   const row = result.rows[0] ?? {};
   return {
     postEngagements: Number(row.post_engagements ?? 3),
@@ -3066,18 +3067,19 @@ async function getOrCreateDailyUsage(
   settings: ScoutSettings,
 ): Promise<DailyUsage> {
   const database = getPool();
-  await database.query(
-    `INSERT INTO operator_daily_usage (operator_id, usage_date)
-     VALUES ($1, current_date)
-     ON CONFLICT (operator_id, usage_date) DO NOTHING`,
-    [operatorId],
-  );
-  const result = await database.query(
-    `SELECT usage_date::STRING AS usage_date, requests_sent, likes_used
+  const selectSql = `SELECT usage_date::STRING AS usage_date, requests_sent, likes_used
        FROM operator_daily_usage
-      WHERE operator_id = $1 AND usage_date = current_date`,
-    [operatorId],
-  );
+      WHERE operator_id = $1 AND usage_date = current_date`;
+  let result = await database.query(selectSql, [operatorId]);
+  if (!result.rows.length) {
+    await database.query(
+      `INSERT INTO operator_daily_usage (operator_id, usage_date)
+       VALUES ($1, current_date)
+       ON CONFLICT (operator_id, usage_date) DO NOTHING`,
+      [operatorId],
+    );
+    result = await database.query(selectSql, [operatorId]);
+  }
   return mapDailyUsage(result.rows[0] ?? {}, settings);
 }
 
