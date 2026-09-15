@@ -199,9 +199,9 @@ $("report-form").onsubmit = async event => {
   $("report-form").querySelectorAll("button,input,textarea").forEach(el => { el.disabled = true; });
   tell("Sending your report securely…");
   try {
-    const id = await ScoutApi.authenticatedAction("bugReportActions:submit", { clientId, description: $("description").value, occurredAt: new Date($("occurred").value).getTime(), context, screenshots: [...pictures] });
+    await ScoutApi.authenticatedAction("bugReportActions:submit", { clientId, description: $("description").value, occurredAt: new Date($("occurred").value).getTime(), context, screenshots: [...pictures] });
     pictures.length = 0; $("description").value = ""; $("report-form").hidden = true;
-    tell(`Report received. Your admin can now see it, including your screenshots. Reference: ${id}. You can close this tab.`);
+    tell("Report received. Check My reports & replies for updates.");
   } catch (error) { tell(`${error.message} Your report is still here. You can retry or save a copy.`); await showIdentity(); }
   finally { sending = false; $("report-form").querySelectorAll("button,input,textarea").forEach(el => { el.disabled = false; }); }
 };

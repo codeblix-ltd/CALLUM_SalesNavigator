@@ -34,11 +34,36 @@ await action({ ...ctx, runMutation: async () => ({ id: "existing", inserted: fal
 assert.equal(deletes, 1, "concurrent duplicate upload is cleaned up");
 await assert.rejects(action({ ...ctx, runMutation: async () => { throw new Error("quota"); } }, valid), /quota/);
 assert.equal(deletes, 2, "failed save cleans up uploaded images");
-for (const route of ["list", "images", "update"]) {
+for (const route of ["list", "update"]) {
   for (const user of [null, { active: true, role: "scout" }, { active: false, role: "admin" }]) {
     await assert.rejects(routes[route].handler({ userId: user ? "user" : null, db: { get: async () => user } }, { id: "report" }), /Administrator/);
   }
 }
+
+// Run the actual extension page script with DOM/browser doubles, including
+const thread = { _id: "report", reporterId: "owner", status: "resolved", messages: [], adminNote: "PRIVATE", screenshots: ["image"] };
+const threadCtx = user => ({ userId: user?._id ?? null, db: { get: async id => id === "report" ? thread : user, patch: async (_id, fields) => Object.assign(thread, fields), query: () => ({ withIndex: (_name, fn) => { fn({ eq: (_field, id) => { assert.equal(id, "owner"); } }); return { order: () => ({ paginate: async () => ({ page: [thread], isDone: true, continueCursor: "" }) }) }; } }) }, storage: { getUrl: async () => "https://private.example/image" } });
+const owner = { _id: "owner", role: "scout", active: true };
+const supportUser = { _id: "support", role: "admin", active: true };
+const replyInput = { id: "report", clientId: "f4bc7002-fb3e-422a-925f-1f110fdc499b", text: "It still happens." };
+for (const user of [null, { _id: "other", role: "scout", active: true }, { ...owner, active: false }]) {
+  await assert.rejects(routes.reply.handler(threadCtx(user), replyInput), /Sign in|not available/);
+  await assert.rejects(routes.images.handler(threadCtx(user), { id: "report" }), /Sign in|not available/);
+}
+await routes.reply.handler(threadCtx(owner), replyInput);
+assert.equal(thread.status, "open", "scout follow-up reopens resolved report");
+assert.equal(thread.messages[0].author, "scout");
+await routes.reply.handler(threadCtx(owner), replyInput);
+assert.equal(thread.messages.length, 1, "retry does not duplicate a message");
+await routes.reply.handler(threadCtx(supportUser), { ...replyInput, text: "Please try after updating." });
+assert.equal(thread.messages[1].author, "support", "author comes from authenticated role");
+assert.equal((await routes.images.handler(threadCtx(owner), { id: "report" })).length, 1);
+const visible = await routes.mine.handler(threadCtx(owner), { paginationOpts: { numItems: 10, cursor: null } });
+assert.equal(visible.page[0].adminNote, undefined, "internal notes must never reach scouts");
+assert.equal(visible.page[0].reporterId, undefined);
+assert.equal(visible.page[0].messages.length, 2);
+await assert.rejects(routes.reply.handler(threadCtx(owner), { ...replyInput, text: " " }), /Write a reply/);
+console.log("Support conversation checks passed: ownership, private notes, replies, idempotency and reopening.");
 
 // Run the actual extension page script with DOM/browser doubles, including
 // capture cancellation and cleanup. These do not replace a real Chrome picker test.

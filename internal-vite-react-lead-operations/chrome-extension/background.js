@@ -301,7 +301,7 @@ async function startDailyWorkflow(
     })
     .catch(async (error) => {
       let requestedControl = getRequestedWorkflowControl(runContext);
-      if (isLinkedInAccessInterruptionError(error) && !requestedControl) {
+      if ((isLinkedInAccessInterruptionError(error) || /writing service|AI check is already running|scout AI hourly limit/i.test(cleanError(error))) && !requestedControl) {
         await requestWorkflowControl("pause", {
           reason: cleanError(error),
         });
@@ -540,7 +540,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
       if (isLinkedInAccessInterruptionError(error)) throw error;
       const message = cleanError(error);
       // Stop a service/quota failure here instead of burning through every lead.
-      if (!error?.requestSubmitted && /scout AI hourly limit|AI check is already running|AI job timed out|AI job failed|Callum Scout isn.t ready|lost its internet connection|We couldn.t reach Callum Scout/i.test(message)) throw error;
+      if (!error?.requestSubmitted && /writing service|scout AI hourly limit|AI check is already running|AI job timed out|AI job failed|Callum Scout isn.t ready|lost its internet connection|We couldn.t reach Callum Scout/i.test(message)) throw error;
       const requestSent = error?.requestSubmitted === true;
       if (requestSent) {
         progress.requestsSent += 1;
@@ -2476,11 +2476,19 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
       completedEngagementCount = engagementOutcome.engagedCount;
       engagementSkipped = engagementOutcome.skipped;
       engagementSkipReason = engagementOutcome.skipReason;
+      if (engagementSkipReason) {
+        await ScoutApi.authenticatedAction("scouts:recordEngagementSkip", {
+          leadId: lead.id, reason: engagementSkipReason,
+        }).catch(() => {});
+      }
       if (shouldReportEngagementProblem(engagementSkipReason)) {
         await ScoutApi.authenticatedAction("scouts:reportError", {
           leadId: lead.id,
           message: `Post engagement skipped safely: ${engagementSkipReason}`,
         }).catch(() => {});
+      }
+      if (/writing service|AI check is already running|scout AI hourly limit|Callum Scout isn.t ready/i.test(engagementSkipReason || "")) {
+        throw new Error(engagementSkipReason);
       }
     }
 

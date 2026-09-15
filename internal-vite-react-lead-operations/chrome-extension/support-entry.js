@@ -10,6 +10,12 @@
   button.className = "text-button";
   button.textContent = "Report bug";
   document.querySelector(".topbar-actions")?.prepend(button);
+  const reports = document.createElement("a");
+  reports.className = "text-button";
+  reports.textContent = "My reports";
+  reports.href = "reports.html";
+  reports.target = "_blank";
+  document.querySelector(".topbar-actions")?.append(reports);
   button.addEventListener("click", async () => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     await chrome.tabs.create({ url: chrome.runtime.getURL(`report.html?tab=${tab?.id ?? ""}`) });

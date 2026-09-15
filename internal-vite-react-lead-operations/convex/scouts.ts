@@ -2450,6 +2450,21 @@ export const resetOnboarding = action({
   },
 });
 
+export const recordEngagementSkip = action({
+  args: { leadId: v.string(), reason: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
+    await getPool().query(
+      `INSERT INTO lead_assignment_events (lead_id, operator_id, event_type, details)
+       SELECT lead_id, operator_id, 'post_engagement_skipped', $3::JSONB
+       FROM lead_assignments WHERE lead_id = $1::UUID AND operator_id = $2`,
+      [args.leadId, scout.operatorId, JSON.stringify({ reason: args.reason.trim().slice(0, 1000) })],
+    );
+    return null;
+  },
+});
+
 export const reportError = action({
   args: { leadId: v.union(v.string(), v.null()), message: v.string() },
   returns: v.null(),

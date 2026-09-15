@@ -36,6 +36,8 @@ button:disabled { cursor: wait; opacity: .55; }
 }
 .topbar > div:nth-child(2) { min-width: 0; flex: 1; }
 .topbar-actions { display: flex; align-items: center; gap: 2px; }
+.topbar-actions { flex-wrap: wrap; justify-content: flex-end; max-width: 145px; }
+.topbar-actions a { text-decoration: none; }
 .topbar strong, .topbar span { display: block; }
 .topbar strong { font-size: 14px; }
 .topbar span { margin-top: 3px; color: #758097; font-size: 10px; }

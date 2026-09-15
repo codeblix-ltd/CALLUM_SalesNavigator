@@ -10,6 +10,43 @@ async function admin(ctx: QueryCtx) {
   if (!user?.active || user.role !== "admin") throw new Error("Administrator sign-in is required.");
 }
 
+async function access(ctx: QueryCtx, id: import("./_generated/dataModel").Id<"bugReports">) {
+  const userId = await getAuthUserId(ctx);
+  const user = userId ? await ctx.db.get(userId) : null;
+  if (!user?.active || !["admin", "scout"].includes(user.role)) throw new Error("Sign in is required.");
+  const report = await ctx.db.get(id);
+  if (!report || (user.role !== "admin" && report.reporterId !== userId)) throw new Error("Report is not available.");
+  return { report, user };
+}
+
+export const mine = query({
+  args: { paginationOpts: paginationOptsValidator },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    const user = userId ? await ctx.db.get(userId) : null;
+    if (!user?.active || user.role !== "scout") throw new Error("Sign in is required.");
+    const result = await ctx.db.query("bugReports").withIndex("by_reporter", q => q.eq("reporterId", userId!)).order("desc").paginate({ ...args.paginationOpts, numItems: Math.min(20, args.paginationOpts.numItems) });
+    return { ...result, page: result.page.map(r => ({ _id: r._id, description: r.description, status: r.status, updatedAt: r.updatedAt, occurredAt: r.occurredAt, messages: r.messages ?? [], screenshotCount: r.screenshots.length })) };
+  },
+});
+
+export const reply = mutation({
+  args: { id: v.id("bugReports"), clientId: v.string(), text: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { report, user } = await access(ctx, args.id);
+    const text = args.text.trim();
+    if (!text || text.length > 2000 || !/^[\da-f-]{36}$/i.test(args.clientId)) throw new Error("Write a reply of up to 2,000 characters.");
+    const messages = report.messages ?? [];
+    const author = user.role === "admin" ? "support" as const : "scout" as const;
+    if (messages.some(m => m.clientId === args.clientId && m.author === author)) return null;
+    if (messages.length >= 100) throw new Error("This conversation is full. Please open a new report.");
+    if (messages.filter(m => m.author === author && m.sentAt > Date.now() - 60_000).length >= 5) throw new Error("Please wait a minute before sending another reply.");
+    await ctx.db.patch(report._id, { messages: [...messages, { clientId: args.clientId, author, text, sentAt: Date.now() }], updatedAt: Date.now(), ...(author === "scout" && report.status === "resolved" ? { status: "open" as const } : {}) });
+    return null;
+  },
+});
+
 export const existing = internalQuery({
   args: { reporterId: v.id("users"), clientId: v.string() }, returns: v.union(v.id("bugReports"), v.null()),
   handler: async (ctx, args) => (await ctx.db.query("bugReports").withIndex("by_reporter_client", q => q.eq("reporterId", args.reporterId).eq("clientId", args.clientId)).unique())?._id ?? null,
@@ -42,8 +79,7 @@ export const list = query({
 export const images = query({
   args: { id: v.id("bugReports") }, returns: v.array(v.union(v.string(), v.null())),
   handler: async (ctx, { id }) => {
-    await admin(ctx);
-    const report = await ctx.db.get(id);
+    const { report } = await access(ctx, id);
     return report ? Promise.all(report.screenshots.map(id => ctx.storage.getUrl(id))) : [];
   },
 });

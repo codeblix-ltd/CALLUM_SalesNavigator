@@ -67,7 +67,7 @@ const ScoutApi = (() => {
   async function runAiJob(path, args, startingAuth) {
     if (!startingAuth?.token) throw new Error("Sign in is required.");
     const receipt = await authenticatedRequest(path.replace("scouts:", "scoutAi:"), args);
-    const deadline = Date.now() + 670_000;
+    const deadline = Date.now() + 120_000;
     let delayMs = 2_000;
     while (Date.now() < deadline) {
       const current = await getAuth();
@@ -79,7 +79,7 @@ const ScoutApi = (() => {
       await new Promise(resolve => setTimeout(resolve, delayMs));
       delayMs = Math.min(10_000, Math.round(delayMs * 1.5));
     }
-    throw new Error("The AI job timed out. Please retry; your existing job will be reused if it is still running.");
+    throw new Error("The writing service is taking longer than usual. Wait a minute, then press Resume.");
   }
 
   async function authenticatedRequest(path, args = {}, kind = "action") {
@@ -285,6 +285,9 @@ const ScoutApi = (() => {
     if (/valid https linkedin|linkedin url must|post permalink/i.test(message)) {
       return "This LinkedIn link does not work.";
     }
+    if (/gateway.*(?:timed out|could not complete|HTTP 5)|fetch failed|service unavailable/i.test(message)) {
+      return "The writing service is temporarily unavailable. Wait a minute, then press Resume.";
+    }
     if (/codex gateway|convex|cockroach_database_url/i.test(message)) {
       return "Callum Scout isn’t ready. Ask your manager for help.";
     }
@@ -304,6 +307,8 @@ const ScoutApi = (() => {
     signIn,
     signOut,
     authenticatedAction,
+    authenticatedQuery: (path, args = {}) => authenticatedRequest(path, args, "query"),
+    authenticatedMutation: (path, args = {}) => authenticatedRequest(path, args, "mutation"),
   };
 })();
 

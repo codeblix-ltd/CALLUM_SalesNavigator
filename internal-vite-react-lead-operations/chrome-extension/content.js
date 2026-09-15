@@ -2620,9 +2620,24 @@
     const main = document.querySelector("main");
     if (!main) return "unavailable";
 
-    const actions = Array.from(
-      main.querySelectorAll("button, a[role='button'], [role='button']"),
-    ).filter((element) => isElementVisible(element) && !element.closest("aside"));
+    const targetHeading = Array.from(main.querySelectorAll("h1, h2, h3")).find(
+      heading => personNamesMatch(heading.textContent, targetProfileName) && isElementVisible(heading),
+    );
+    if (!targetHeading) return "unavailable";
+    // Stop at the first profile action container. Never interpret a recommendation,
+    // post, or About paragraph elsewhere in main as this person's relationship.
+    let scope = targetHeading.parentElement;
+    let actions = [];
+    let degree = "";
+    while (scope && scope !== main) {
+      const badges = Array.from(scope.querySelectorAll(".dist-value, .distance-badge, .distance-badge span, [class*='distance-badge'], span"));
+      const badge = badges.find(el => isElementVisible(el) && /^(?:1st|2nd|3rd\+?)$/.test(el.textContent?.trim() || ""));
+      if (!degree && badge) degree = badge.textContent.trim();
+      actions = Array.from(scope.querySelectorAll("button, a[role='button'], [role='button']")).filter(el => isElementVisible(el) && !el.closest("aside"));
+      if (actions.length) break;
+      scope = scope.parentElement;
+    }
+    if (!scope || scope === main) return "unavailable";
     const labels = actions.map(
       (element) =>
         element.getAttribute("aria-label")?.replace(/\s+/g, " ").trim() ||
@@ -2636,25 +2651,8 @@
     ) {
       return "pending";
     }
-    if (labels.some((label) => /^Connected$/i.test(label))) return "connected";
-
-    const targetHeading = Array.from(main.querySelectorAll("h1, h2, h3")).find(
-      (heading) =>
-        personNamesMatch(heading.textContent, targetProfileName) &&
-        isElementVisible(heading),
-    );
-    if (targetHeading) {
-      let scope = targetHeading.parentElement;
-      while (scope && scope !== main) {
-        const scopedActions = actions.filter((element) => scope.contains(element));
-        if (scopedActions.length > 0) {
-          const text = scope.innerText?.replace(/\s+/g, " ").trim() || "";
-          if (/\bPending\b|\bInvitation sent\b/i.test(text)) return "pending";
-          if (/\bConnected\b|\b1st\b/i.test(text)) return "connected";
-        }
-        scope = scope.parentElement;
-      }
-    }
+    if (/^(?:2nd|3rd)/.test(degree)) return "not_connected";
+    if (degree === "1st" || labels.some(label => /^Connected$/i.test(label))) return "connected";
     return "unavailable";
   }
 
