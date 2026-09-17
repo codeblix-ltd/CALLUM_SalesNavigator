@@ -14,14 +14,17 @@ function backend(file) {
   vm.runInNewContext(source, { module, exports: module.exports, require, Buffer, Blob, Uint8Array, Date });
   return module.exports;
 }
-const action = backend("bugReportActions").submit.handler;
+const actions = backend("bugReportActions");
+const action = actions.submit.handler;
 const routes = backend("bugReports");
 const valid = { clientId: "d7b8097f-43b9-47d8-9873-5d22beab45aa", description: "Profile remains stuck", occurredAt: Date.now(), context: { version: "0.10.31", browser: "Chrome", timezone: "Asia/Dubai", pageUrl: "https://www.linkedin.com/in/test", runStatus: "paused", runStep: "Checking connection", lead: "Test" }, screenshots: [Buffer.from([255,216,255,224,1]).toString("base64")] };
 let stores = 0, deletes = 0, saves = 0;
+const scheduled = [];
 const ctx = {
   runQuery: async ref => ref === "scoutIdentity:requireScout" ? { userId: "scout", username: "Test scout", operatorId: "test" } : null,
   runMutation: async (_, args) => { saves++; assert.equal(args.reporterId, "scout"); assert.equal(args.status, "open"); return { id: "report", inserted: true }; },
   storage: { store: async () => { stores++; return "image"; }, delete: async () => { deletes++; } },
+  scheduler: { runAfter: async (_delay, ref, args) => scheduled.push({ ref, args }) },
 };
 assert.equal(await action(ctx, valid), "report");
 assert.equal(stores, 1); assert.equal(saves, 1); assert.equal(deletes, 0);
@@ -34,6 +37,15 @@ await action({ ...ctx, runMutation: async () => ({ id: "existing", inserted: fal
 assert.equal(deletes, 1, "concurrent duplicate upload is cleaned up");
 await assert.rejects(action({ ...ctx, runMutation: async () => { throw new Error("quota"); } }, valid), /quota/);
 assert.equal(deletes, 2, "failed save cleans up uploaded images");
+const replyAction = actions.scoutReply.handler;
+const replyArgs = { id: "report", clientId: valid.clientId, text: "Still broken", screenshots: valid.screenshots };
+await replyAction({ ...ctx, runMutation: async (ref, args) => { assert.equal(ref, "bugReports:saveScoutReply"); assert.equal(args.userId, "scout"); assert.equal(args.screenshots.length, 1); return true; } }, replyArgs);
+assert.equal(stores, 4, "reply screenshot is uploaded");
+await replyAction({ ...ctx, runMutation: async () => false }, replyArgs);
+assert.equal(deletes, 3, "duplicate reply screenshot is discarded");
+await assert.rejects(replyAction(ctx, { ...replyArgs, screenshots: ["invalid"] }), /valid screenshot/);
+await assert.rejects(replyAction({ ...ctx, runMutation: async () => { throw new Error("not available"); } }, replyArgs), /not available/);
+assert.equal(deletes, 4, "rejected reply screenshot is discarded");
 for (const route of ["list", "update"]) {
   for (const user of [null, { active: true, role: "scout" }, { active: false, role: "admin" }]) {
     await assert.rejects(routes[route].handler({ userId: user ? "user" : null, db: { get: async () => user } }, { id: "report" }), /Administrator/);
@@ -42,7 +54,7 @@ for (const route of ["list", "update"]) {
 
 // Run the actual extension page script with DOM/browser doubles, including
 const thread = { _id: "report", reporterId: "owner", status: "resolved", messages: [], adminNote: "PRIVATE", screenshots: ["image"] };
-const threadCtx = user => ({ userId: user?._id ?? null, db: { get: async id => id === "report" ? thread : user, patch: async (_id, fields) => Object.assign(thread, fields), query: () => ({ withIndex: (_name, fn) => { fn({ eq: (_field, id) => { assert.equal(id, "owner"); } }); return { order: () => ({ paginate: async () => ({ page: [thread], isDone: true, continueCursor: "" }) }) }; } }) }, storage: { getUrl: async () => "https://private.example/image" } });
+const threadCtx = user => ({ userId: user?._id ?? null, db: { get: async id => id === "report" ? thread : user, patch: async (_id, fields) => Object.assign(thread, fields), query: () => ({ withIndex: (_name, fn) => { fn({ eq: (_field, id) => { assert.equal(id, "owner"); } }); return { order: () => ({ paginate: async () => ({ page: [thread], isDone: true, continueCursor: "" }) }) }; } }) }, storage: { getUrl: async () => "https://private.example/image" }, scheduler: ctx.scheduler });
 const owner = { _id: "owner", role: "scout", active: true };
 const supportUser = { _id: "support", role: "admin", active: true };
 const replyInput = { id: "report", clientId: "f4bc7002-fb3e-422a-925f-1f110fdc499b", text: "It still happens." };
@@ -53,16 +65,26 @@ for (const user of [null, { _id: "other", role: "scout", active: true }, { ...ow
 await routes.reply.handler(threadCtx(owner), replyInput);
 assert.equal(thread.status, "open", "scout follow-up reopens resolved report");
 assert.equal(thread.messages[0].author, "scout");
+assert.equal(scheduled.length, 1, "a scout reply schedules one notification");
 await routes.reply.handler(threadCtx(owner), replyInput);
 assert.equal(thread.messages.length, 1, "retry does not duplicate a message");
+assert.equal(scheduled.length, 1, "a retry does not notify twice");
 await routes.reply.handler(threadCtx(supportUser), { ...replyInput, text: "Please try after updating." });
 assert.equal(thread.messages[1].author, "support", "author comes from authenticated role");
+assert.equal(scheduled.length, 1, "support replies do not notify the admin");
 assert.equal((await routes.images.handler(threadCtx(owner), { id: "report" })).length, 1);
 const visible = await routes.mine.handler(threadCtx(owner), { paginationOpts: { numItems: 10, cursor: null } });
 assert.equal(visible.page[0].adminNote, undefined, "internal notes must never reach scouts");
 assert.equal(visible.page[0].reporterId, undefined);
 assert.equal(visible.page[0].messages.length, 2);
 await assert.rejects(routes.reply.handler(threadCtx(owner), { ...replyInput, text: " " }), /Write a reply/);
+const imageReply = { ...replyInput, clientId: "f4bc7002-fb3e-422a-925f-1f110fdc499c", screenshots: ["reply-image"], userId: "owner" };
+await routes.saveScoutReply.handler(threadCtx(owner), imageReply);
+assert.equal(thread.messages[2].screenshots[0], "reply-image");
+assert.equal((await routes.messageImages.handler(threadCtx(owner), { id: "report", clientId: imageReply.clientId }))[0], "https://private.example/image");
+assert.equal(await routes.saveScoutReply.handler(threadCtx(owner), imageReply), false, "image reply is idempotent");
+assert.equal(scheduled.length, 2);
+await assert.rejects(routes.saveScoutReply.handler(threadCtx({ ...owner, active: false }), { ...imageReply, clientId: "f4bc7002-fb3e-422a-925f-1f110fdc499d" }), /not available/);
 console.log("Support conversation checks passed: ownership, private notes, replies, idempotency and reopening.");
 
 // Run the actual extension page script with DOM/browser doubles, including

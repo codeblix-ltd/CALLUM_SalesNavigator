@@ -202,6 +202,7 @@ $("report-form").onsubmit = async event => {
     await ScoutApi.authenticatedAction("bugReportActions:submit", { clientId, description: $("description").value, occurredAt: new Date($("occurred").value).getTime(), context, screenshots: [...pictures] });
     pictures.length = 0; $("description").value = ""; $("report-form").hidden = true;
     tell("Report received. Check My reports & replies for updates.");
+    window.dispatchEvent?.(new Event("scout-report-sent"));
   } catch (error) { tell(`${error.message} Your report is still here. You can retry or save a copy.`); await showIdentity(); }
   finally { sending = false; $("report-form").querySelectorAll("button,input,textarea").forEach(el => { el.disabled = false; }); }
 };

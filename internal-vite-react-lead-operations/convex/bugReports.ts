@@ -3,6 +3,7 @@ import { paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
 import { internalMutation, internalQuery, mutation, query, type QueryCtx } from "./_generated/server";
 import { reportDocument, reportFields, reportStatus } from "./bugReportTypes";
+import { internal } from "./_generated/api";
 
 async function admin(ctx: QueryCtx) {
   const id = await getAuthUserId(ctx);
@@ -43,7 +44,28 @@ export const reply = mutation({
     if (messages.length >= 100) throw new Error("This conversation is full. Please open a new report.");
     if (messages.filter(m => m.author === author && m.sentAt > Date.now() - 60_000).length >= 5) throw new Error("Please wait a minute before sending another reply.");
     await ctx.db.patch(report._id, { messages: [...messages, { clientId: args.clientId, author, text, sentAt: Date.now() }], updatedAt: Date.now(), ...(author === "scout" && report.status === "resolved" ? { status: "open" as const } : {}) });
+    if (author === "scout") await ctx.scheduler.runAfter(0, internal.bugReportEmail.send, { id: report._id, clientId: args.clientId });
     return null;
+  },
+});
+
+export const saveScoutReply = internalMutation({
+  args: { id: v.id("bugReports"), userId: v.id("users"), clientId: v.string(), text: v.string(), screenshots: v.array(v.id("_storage")) },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const user = await ctx.db.get(args.userId);
+    const report = await ctx.db.get(args.id);
+    if (!user?.active || user.role !== "scout" || !report || report.reporterId !== args.userId) throw new Error("Report is not available.");
+    const text = args.text.trim();
+    if (!text || text.length > 2000 || !/^[\da-f-]{36}$/i.test(args.clientId) || args.screenshots.length > 3) throw new Error("Write a reply of up to 2,000 characters with up to three screenshots.");
+    const messages = report.messages ?? [];
+    if (messages.some(m => m.clientId === args.clientId && m.author === "scout")) return false;
+    if (messages.length >= 100) throw new Error("This conversation is full. Please open a new report.");
+    if (messages.filter(m => m.author === "scout" && m.sentAt > Date.now() - 60_000).length >= 5) throw new Error("Please wait a minute before sending another reply.");
+    const now = Date.now();
+    await ctx.db.patch(report._id, { messages: [...messages, { clientId: args.clientId, author: "scout", text, sentAt: now, screenshots: args.screenshots }], updatedAt: now, ...(report.status === "resolved" ? { status: "open" as const } : {}) });
+    await ctx.scheduler.runAfter(0, internal.bugReportEmail.send, { id: report._id, clientId: args.clientId });
+    return true;
   },
 });
 
@@ -61,7 +83,9 @@ export const save = internalMutation({
     if (existing) return { id: existing._id, inserted: false };
     const recent = await ctx.db.query("bugReports").withIndex("by_reporter", q => q.eq("reporterId", args.reporterId)).order("desc").take(10);
     if (recent.length === 10 && recent[9]._creationTime > Date.now() - 3600000) throw new Error("You have sent 10 reports this hour. Please try again later.");
-    return { id: await ctx.db.insert("bugReports", args), inserted: true };
+    const id = await ctx.db.insert("bugReports", args);
+    await ctx.scheduler.runAfter(0, internal.bugReportEmail.send, { id });
+    return { id, inserted: true };
   },
 });
 
@@ -81,6 +105,26 @@ export const images = query({
   handler: async (ctx, { id }) => {
     const { report } = await access(ctx, id);
     return report ? Promise.all(report.screenshots.map(id => ctx.storage.getUrl(id))) : [];
+  },
+});
+
+export const messageImages = query({
+  args: { id: v.id("bugReports"), clientId: v.string() }, returns: v.array(v.union(v.string(), v.null())),
+  handler: async (ctx, { id, clientId }) => {
+    const { report } = await access(ctx, id);
+    const message = (report.messages ?? []).find(item => item.clientId === clientId);
+    return Promise.all((message?.screenshots ?? []).map(imageId => ctx.storage.getUrl(imageId)));
+  },
+});
+
+export const notificationDetails = internalQuery({
+  args: { id: v.id("bugReports"), clientId: v.optional(v.string()) },
+  handler: async (ctx, { id, clientId }) => {
+    const report = await ctx.db.get(id);
+    if (!report) return null;
+    const message = clientId ? (report.messages ?? []).find(item => item.clientId === clientId && item.author === "scout") : null;
+    if (clientId && !message) return null;
+    return { reporter: report.reporter, reportId: String(id), kind: clientId ? "reply" : "report", text: message?.text ?? report.description, screenshotCount: message?.screenshots?.length ?? (clientId ? 0 : report.screenshots.length) };
   },
 });
 

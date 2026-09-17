@@ -10,10 +10,10 @@ importers:
     dependencies:
       '@auth/core':
         specifier: ^0.41.3
-        version: 0.41.3
+        version: 0.41.3(nodemailer@8.0.11)
       '@convex-dev/auth':
         specifier: ^0.0.94
-        version: 0.0.94(@auth/core@0.41.3)(convex@1.42.3(react@19.2.8))(react@19.2.8)
+        version: 0.0.94(@auth/core@0.41.3(nodemailer@8.0.11))(convex@1.42.3(react@19.2.8))(react@19.2.8)
       '@openai/codex':
         specifier: ^0.153.4
         version: 0.153.4
@@ -26,6 +26,9 @@ importers:
       lucide-react:
         specifier: ^1.27.0
         version: 1.27.0(react@19.2.8)
+      nodemailer:
+        specifier: ^8.0.11
+        version: 8.0.11
       pg:
         specifier: ^8.22.0
         version: 8.22.0
@@ -42,6 +45,9 @@ importers:
       '@types/node':
         specifier: ^24.13.2
         version: 24.13.3
+      '@types/nodemailer':
+        specifier: ^8.0.2
+        version: 8.0.2
       '@types/pg':
         specifier: ^8.20.0
         version: 8.20.0
@@ -537,6 +543,9 @@ packages:
   '@types/node@24.13.3':
     resolution: {integrity: sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q==}
 
+  '@types/nodemailer@8.0.2':
+    resolution: {integrity: sha512-c7M5ox8p0nEOfbJ2E9Qcmt8/QCu/VzsiAhzBiZbvky2PhKZDHpKB3sQHBM5MEZNkCfBOaS6S9//AGPRTNB7IaA==}
+
   '@types/pg@8.20.0':
     resolution: {integrity: sha512-bEPFOaMAHTEP1EzpvHTbmwR8UsFyHSKsRisLIHVMXnpNefSbGA1bD6CVy+qKjGSqmZqNqBDV2azOBo8TgkcVow==}
 
@@ -710,6 +719,10 @@ packages:
     resolution: {integrity: sha512-bzlKTyNJ7+LdGIIwy8ijFpIqEQIvafahV7eYykJ8Cvh42EdJeODoJ6gUJXpQJvej1BddH8OqTXZNE/KfbWAu8Q==}
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
     hasBin: true
+
+  nodemailer@8.0.11:
+    resolution: {integrity: sha512-nrO/pDAUKl+wXX+lx16tDLbnm0fW6sK/x8mgohaCpg+CdCEl482bD4tCuAZk2DyliruiNTIZxRCoWkDqJEnAiA==}
+    engines: {node: '>=6.0.0'}
 
   oauth4webapi@3.8.6:
     resolution: {integrity: sha512-iwemM91xz8nryHti2yTmg5fhyEMVOkOXwHNqbvcATjyajb5oQxCQzrNOA6uElRHuMhQQTKUyFKV9y/CNyg25BQ==}
@@ -911,17 +924,19 @@ packages:
 
 snapshots:
 
-  '@auth/core@0.41.3':
+  '@auth/core@0.41.3(nodemailer@8.0.11)':
     dependencies:
       '@panva/hkdf': 1.2.1
       jose: 6.2.4
       oauth4webapi: 3.8.6
       preact: 10.24.3
       preact-render-to-string: 6.5.11(preact@10.24.3)
+    optionalDependencies:
+      nodemailer: 8.0.11
 
-  '@convex-dev/auth@0.0.94(@auth/core@0.41.3)(convex@1.42.3(react@19.2.8))(react@19.2.8)':
+  '@convex-dev/auth@0.0.94(@auth/core@0.41.3(nodemailer@8.0.11))(convex@1.42.3(react@19.2.8))(react@19.2.8)':
     dependencies:
-      '@auth/core': 0.41.3
+      '@auth/core': 0.41.3(nodemailer@8.0.11)
       '@oslojs/crypto': 1.0.1
       '@oslojs/encoding': 1.1.0
       convex: 1.42.3(react@19.2.8)
@@ -1198,6 +1213,10 @@ snapshots:
     dependencies:
       undici-types: 7.18.2
 
+  '@types/nodemailer@8.0.2':
+    dependencies:
+      '@types/node': 24.13.3
+
   '@types/pg@8.20.0':
     dependencies:
       '@types/node': 24.13.3
@@ -1339,6 +1358,8 @@ snapshots:
       react: 19.2.8
 
   nanoid@3.3.16: {}
+
+  nodemailer@8.0.11: {}
 
   oauth4webapi@3.8.6: {}
 

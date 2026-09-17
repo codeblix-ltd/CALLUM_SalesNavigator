@@ -15,6 +15,7 @@ import type * as adminScouts from "../adminScouts.js";
 import type * as adminVeblenMembers from "../adminVeblenMembers.js";
 import type * as auth from "../auth.js";
 import type * as bugReportActions from "../bugReportActions.js";
+import type * as bugReportEmail from "../bugReportEmail.js";
 import type * as bugReportTypes from "../bugReportTypes.js";
 import type * as bugReports from "../bugReports.js";
 import type * as codexGateway from "../codexGateway.js";
@@ -53,6 +54,7 @@ declare const fullApi: ApiFromModules<{
   adminVeblenMembers: typeof adminVeblenMembers;
   auth: typeof auth;
   bugReportActions: typeof bugReportActions;
+  bugReportEmail: typeof bugReportEmail;
   bugReportTypes: typeof bugReportTypes;
   bugReports: typeof bugReports;
   codexGateway: typeof codexGateway;

@@ -45,6 +45,16 @@ pnpm run extension:config
 shared secret, and a 32-byte credential-encryption key. It copies only the
 secrets Convex needs to the linked deployment.
 
+## Bug report notifications
+
+Report bug includes My reports, reply threads, and up to three optional screenshots
+per scout reply. New scout reports and replies schedule email to the support owner
+through Hostinger SMTP (`smtp.hostinger.com`, TLS on port 465). Configure the
+server-only `BUG_REPORT_SMTP_PASSWORD` on the Convex deployment used by the
+extension with `pnpm exec convex env set BUG_REPORT_SMTP_PASSWORD` and enter the
+mailbox password at the prompt. Never put it in extension config, `.env.example`,
+or Git. Notifications include text and screenshot counts, never image links.
+
 ## GHL contact sync
 
 When a scout collects a valid LinkedIn contact-info email, the backend queues

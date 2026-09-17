@@ -59,6 +59,8 @@ const runtimeFiles = [
   "report.html",
   "report.css",
   "report.js",
+  "reports.html",
+  "reports.js",
 ];
 
 for (const file of runtimeFiles) {

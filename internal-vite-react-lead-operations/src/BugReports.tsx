@@ -43,7 +43,7 @@ function ReportDetail({ report }: { report: Doc<"bugReports"> }) {
     <div className="bug-images">{images === undefined ? <p>Loading screenshots…</p> : images.map((url, index) => url ? <a href={url} key={index} target="_blank" rel="noreferrer"><img src={url} alt={`Scout screenshot ${index + 1}`} /><span>Open screenshot {index + 1}</span></a> : <p key={index}>Screenshot unavailable</p>)}</div>
     <details><summary>Technical details</summary><dl>{Object.entries(report.context).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{value || "Not available"}</dd></div>)}</dl></details>
     <h3>Conversation</h3>
-    {(report.messages ?? []).map(item => <div key={`${item.author}:${item.clientId}`}><strong>{item.author === "support" ? "Callum support" : report.reporter}</strong><small> · {date(item.sentAt)}</small><p className="bug-description">{item.text}</p></div>)}
+    {(report.messages ?? []).map(item => <div key={`${item.author}:${item.clientId}`}><strong>{item.author === "support" ? "Callum support" : report.reporter}</strong><small> · {date(item.sentAt)}</small><p className="bug-description">{item.text}</p>{item.screenshots?.length ? <ReplyImages id={report._id} clientId={item.clientId} /> : null}</div>)}
     <form onSubmit={async event => { event.preventDefault(); setBusy(true); try { await reply({ id: report._id, clientId: replyId, text: replyText }); setReplyText(""); setReplyId(crypto.randomUUID()); setMessage("Reply sent."); } catch(error) { setMessage(error instanceof Error ? error.message : "Could not send."); } finally { setBusy(false); } }}>
       <label>Reply to scout<textarea required maxLength={2000} rows={3} disabled={busy} value={replyText} onChange={event => { setReplyText(event.target.value); setReplyId(crypto.randomUUID()); }} placeholder="What changed and what to try next…" /></label><button disabled={busy}>Send reply</button>
     </form>
@@ -53,4 +53,9 @@ function ReportDetail({ report }: { report: Doc<"bugReports"> }) {
       <button disabled={busy} type="submit">{busy ? "Saving…" : "Save changes"}</button><p role="status">{message}</p>
     </form>
   </article>;
+}
+
+function ReplyImages({ id, clientId }: { id: Doc<"bugReports">["_id"]; clientId: string }) {
+  const images = useQuery(api.bugReports.messageImages, { id, clientId });
+  return <div className="bug-images">{images?.map((url, index) => url ? <a href={url} key={index} target="_blank" rel="noreferrer"><img src={url} alt={`Reply screenshot ${index + 1}`} /><span>Open reply screenshot {index + 1}</span></a> : null)}</div>;
 }

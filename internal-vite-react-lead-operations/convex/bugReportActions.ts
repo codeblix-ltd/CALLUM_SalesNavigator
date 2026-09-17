@@ -40,3 +40,29 @@ export const submit = action({
     }
   },
 });
+
+export const scoutReply = action({
+  args: { id: v.id("bugReports"), clientId: v.string(), text: v.string(), screenshots: v.array(v.string()) },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
+    if (!args.text.trim() || args.text.trim().length > 2000 || !/^[\da-f-]{36}$/i.test(args.clientId)) throw new Error("Write a reply of up to 2,000 characters.");
+    if (args.screenshots.length > 3) throw new Error("Attach up to three screenshots.");
+    const buffers = args.screenshots.map(data => {
+      if (data.length > 1400000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) throw new Error("Screenshot is too large or invalid.");
+      const buffer = Buffer.from(data, "base64");
+      if (buffer.length > 1000000 || buffer[0] !== 0xff || buffer[1] !== 0xd8 || buffer[2] !== 0xff) throw new Error("Please attach a valid screenshot.");
+      return buffer;
+    });
+    const images: Id<"_storage">[] = [];
+    try {
+      for (const buffer of buffers) images.push(await ctx.storage.store(new Blob([new Uint8Array(buffer)], { type: "image/jpeg" })));
+      const inserted = await ctx.runMutation(internal.bugReports.saveScoutReply, { id: args.id, userId: scout.userId, clientId: args.clientId, text: args.text, screenshots: images });
+      if (!inserted) await Promise.all(images.map(id => ctx.storage.delete(id)));
+      return null;
+    } catch (error) {
+      await Promise.all(images.map(id => ctx.storage.delete(id).catch(() => undefined)));
+      throw error;
+    }
+  },
+});

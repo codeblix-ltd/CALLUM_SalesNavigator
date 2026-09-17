@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Report a bug · Callum Scout</title><link rel="stylesheet" href="report.css"></head>
 <body><main>
-  <header><a href="help.html">Callum Scout</a><span id="version"></span><a href="reports.html">My reports & replies</a></header>
+  <header><a href="help.html">Callum Scout</a><span id="version"></span><a href="#my-reports">My reports & replies</a></header>
   <div class="intro"><span class="eyebrow">LET’S GET THIS SORTED</span><h1>Show us what went wrong.</h1><p>A screenshot and a few words help us find the problem faster.</p></div>
   <form id="report-form">
     <section><h2><b>1</b> Show the issue <small>optional</small></h2><p>Open the screen with the problem. Click below, choose that tab or window in Chrome’s picker, then click <strong>Share</strong>. We take one screenshot and immediately stop sharing.</p>
@@ -15,4 +15,5 @@
     <section id="login" hidden><h2>Sign in to send your report</h2><p>Your report stays here while you sign in. If sign-in itself fails, download the report and share it with your manager.</p><label for="username">Scout username</label><input id="username" autocomplete="username"><label for="password">Password</label><input id="password" type="password" autocomplete="current-password"><button type="button" id="sign-in">Sign in</button></section>
     <div class="footer"><p id="identity"></p><div class="actions"><button type="button" id="download" class="secondary">Save a copy</button><button type="submit" id="send">Send report</button></div></div>
   </form><p id="status" role="status" aria-live="polite"></p><p class="hint">Reporting does not stop your automation. Safely pause it first if it is stuck. Keep this tab open until your report is sent.</p>
-</main><script src="config.js"></script><script src="convex-client.js"></script><script src="report.js"></script></body></html>
+  <section id="my-reports"><h2>My reports</h2><section id="reports-login" hidden><h3>Sign in</h3><form id="reports-login-form"><label>Username<input id="reports-username" autocomplete="username" required></label><label>Password<input id="reports-password" type="password" autocomplete="current-password" required></label><button>Sign in</button></form></section><button id="reports-refresh" class="secondary">Refresh replies</button><p id="reports-status" role="status"></p><div id="reports-list"></div><button id="reports-more" class="secondary" hidden>Older reports</button></section>
+</main><script src="config.js"></script><script src="convex-client.js"></script><script src="report.js"></script><script src="reports.js"></script></body></html>

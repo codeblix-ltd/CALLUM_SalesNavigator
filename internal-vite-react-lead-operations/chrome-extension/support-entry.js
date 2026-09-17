@@ -13,7 +13,7 @@
   const reports = document.createElement("a");
   reports.className = "text-button";
   reports.textContent = "My reports";
-  reports.href = "reports.html";
+  reports.href = "report.html#my-reports";
   reports.target = "_blank";
   document.querySelector(".topbar-actions")?.append(reports);
   button.addEventListener("click", async () => {
