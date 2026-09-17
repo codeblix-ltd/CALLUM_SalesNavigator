@@ -301,7 +301,7 @@ async function startDailyWorkflow(
     })
     .catch(async (error) => {
       let requestedControl = getRequestedWorkflowControl(runContext);
-      if ((isLinkedInAccessInterruptionError(error) || /writing service|AI check is already running|scout AI hourly limit/i.test(cleanError(error))) && !requestedControl) {
+      if ((isLinkedInAccessInterruptionError(error) || isRecoverableServiceError(error)) && !requestedControl) {
         await requestWorkflowControl("pause", {
           reason: cleanError(error),
         });
@@ -540,7 +540,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
       if (isLinkedInAccessInterruptionError(error)) throw error;
       const message = cleanError(error);
       // Stop a service/quota failure here instead of burning through every lead.
-      if (!error?.requestSubmitted && /writing service|scout AI hourly limit|AI check is already running|AI job timed out|AI job failed|Callum Scout isn.t ready|lost its internet connection|We couldn.t reach Callum Scout/i.test(message)) throw error;
+      if (!error?.requestSubmitted && isRecoverableServiceError(error)) throw error;
       const requestSent = error?.requestSubmitted === true;
       if (requestSent) {
         progress.requestsSent += 1;
@@ -1950,7 +1950,10 @@ async function runPostEngagementWithRecovery(
     "scouts:getLeadAutomationCheckpoint",
     { leadId: lead.id },
   );
-  if (Number(checkpoint?.engagedCount || 0) > 0) {
+  const receiptKey = `callumCommentReceipts:${encodeURIComponent(automationOptions.expectedScout || "")}:${lead.id}`;
+  const savedReceipt = (await chrome.storage.local.get(receiptKey))[receiptKey];
+  const canResumePosts = savedReceipt?.owner === automationOptions.expectedScout && savedReceipt.complete === false;
+  if (Number(checkpoint?.engagedCount || 0) > 0 && !canResumePosts) {
     const engagedCount = Math.min(
       Number(checkpoint.engagedCount),
       Number(automationOptions.postEngagements || checkpoint.engagedCount),
@@ -2012,7 +2015,7 @@ function resolvePostEngagementOutcome(response) {
   return {
     engagedCount,
     skipped,
-    skipReason: skipped
+    skipReason: skipped || response.result?.skipReason
       ? cleanError(
           response.result?.skipReason || "No suitable comment was added.",
         )
@@ -2159,7 +2162,7 @@ async function createPersonalizedConnectionNoteWithRetry(
       }).catch(() => {});
       return note;
     } catch (error) {
-      if (isWorkflowControlError(error)) throw error;
+      if (isWorkflowControlError(error) || isRecoverableServiceError(error)) throw error;
       lastError = error;
       if (attempt < CONNECTION_NOTE_MAX_ATTEMPTS) {
         await sendAutomationMessageToTab(runContext, tabId, {
@@ -2282,10 +2285,18 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
       clampInteger(settings.postEngagements ?? 3, 1, 10),
       clampInteger(usage.engagementRemaining ?? 0, 0, 250),
     );
-    const needsEngagement = lead.status !== "engaged";
+    const scoutAuth = await ScoutApi.getAuth();
+    const receiptKey = `callumCommentReceipts:${encodeURIComponent(scoutAuth?.username || "")}:${lead.id}`;
+    const storedReceipt = (await chrome.storage.local.get(receiptKey))[receiptKey];
+    const hasIncompleteComments = Boolean(
+      storedReceipt?.owner === scoutAuth?.username && storedReceipt.complete === false,
+    );
+    const needsEngagement = lead.status !== "engaged" || hasIncompleteComments;
     const automationOptions = {
       leadId: lead.id,
       postEngagements,
+      postEngagementTarget: clampInteger(settings.postEngagements ?? 3, 1, 10),
+      expectedScout: scoutAuth?.username,
       validateBeforeCommenting:
         localSettings.validateBeforeCommenting ?? false,
       includeNote: false,
@@ -2402,7 +2413,7 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
           );
         automationOptions.includeNote = true;
       } catch (error) {
-        if (isWorkflowControlError(error)) throw error;
+        if (isWorkflowControlError(error) || isRecoverableServiceError(error)) throw error;
         includeNote = false;
         automationOptions.includeNote = false;
         console.warn(
@@ -2425,7 +2436,7 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
       },
     };
     const needsLanguageFallback = profileLanguage.status === "uncertain";
-    if (needsEngagement && postEngagements < 1 && !needsLanguageFallback) {
+    if (needsEngagement && postEngagements < 1 && !needsLanguageFallback && !hasIncompleteComments) {
       engagementSkipped = true;
       engagementSkipReason = "The post limit has been reached for today.";
     } else if (needsEngagement || needsLanguageFallback) {
@@ -2458,7 +2469,8 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
       } catch (error) {
         if (
           isWorkflowControlError(error) ||
-          isLinkedInAccessInterruptionError(error)
+          isLinkedInAccessInterruptionError(error) ||
+          isRecoverableServiceError(error)
         ) {
           throw error;
         }
@@ -2471,6 +2483,9 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
             leadLanguageDecision: profileLanguage,
           },
         };
+      }
+      if (!engagementResponse?.ok && isRecoverableServiceError(engagementResponse?.error)) {
+        throw new Error(engagementResponse.error);
       }
       const engagementOutcome = resolvePostEngagementOutcome(engagementResponse);
       completedEngagementCount = engagementOutcome.engagedCount;
@@ -2487,7 +2502,7 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
           message: `Post engagement skipped safely: ${engagementSkipReason}`,
         }).catch(() => {});
       }
-      if (/writing service|AI check is already running|scout AI hourly limit|Callum Scout isn.t ready/i.test(engagementSkipReason || "")) {
+      if (isRecoverableServiceError(engagementSkipReason)) {
         throw new Error(engagementSkipReason);
       }
     }
@@ -2933,6 +2948,11 @@ function cleanError(error) {
   return String(error instanceof Error ? error.message : error || "Something went wrong. Try again.")
     .replace(/^Error:\s*/i, "")
     .split("\n")[0];
+}
+
+function isRecoverableServiceError(error) {
+  if (error?.retryable === true || ["AI_UNAVAILABLE", "AI_PENDING", "COMMENT_SYNC_PENDING"].includes(error?.code)) return true;
+  return /writing service|scout AI hourly limit|AI check is already running|AI job (?:timed out|failed|was replaced)|Callum Scout isn.t ready|Callum Scout is not ready|lost its internet connection|We couldn.t reach Callum Scout|Callum Scout (?:took longer|did not respond)|gateway|fetch failed|failed to fetch|networkerror|service unavailable|comment progress could not be saved|comment was posted but its progress|your session changed|session expired|sign in is required|please sign in/i.test(cleanError(error));
 }
 
 function isClosedMessageChannelError(error) {

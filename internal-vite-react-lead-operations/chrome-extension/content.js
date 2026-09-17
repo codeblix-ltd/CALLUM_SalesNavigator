@@ -328,6 +328,82 @@
 
   // --- Core Automation Functions ---
 
+  const COMMENT_RECEIPT_PREFIX = "callumCommentReceipts:";
+  const MAX_COMMENT_RECEIPT_LEADS = 100;
+  const MAX_COMMENT_RECEIPT_POSTS = 20;
+
+  async function assertCommentOwner(owner) {
+    const auth = await ScoutApi.getAuth();
+    if (!owner || auth?.username !== owner || !auth?.token) {
+      throw new Error("Your session changed. Sign in again before continuing.");
+    }
+  }
+
+  async function openCommentReceipts(options) {
+    const auth = await ScoutApi.getAuth();
+    const owner = options.expectedScout || auth?.username;
+    await assertCommentOwner(owner);
+    const key = `${COMMENT_RECEIPT_PREFIX}${encodeURIComponent(owner)}:${options.leadId}`;
+    const stored = (await chrome.storage.local.get(key))[key];
+    if (stored && (stored.owner !== owner || stored.leadId !== String(options.leadId))) {
+      throw new Error("Comment progress could not be saved. Please ask your manager for help.");
+    }
+    return { key, data: stored || { owner, leadId: String(options.leadId), complete: false, posts: [] } };
+  }
+
+  async function saveCommentReceipts(receipts) {
+    await assertCommentOwner(receipts.data.owner);
+    try {
+      const all = await chrome.storage.local.get(null);
+      const keys = Object.keys(all).filter(key => key.startsWith(COMMENT_RECEIPT_PREFIX));
+      if (!all[receipts.key] && keys.length >= MAX_COMMENT_RECEIPT_LEADS) {
+        // Never discard an unconfirmed submission or an unsynced public comment.
+        const removable = keys.filter(key => all[key]?.owner === receipts.data.owner && all[key]?.complete && all[key]?.posts?.every(post => post.state === "synced"))
+          .sort((left, right) => (all[left].updatedAt || 0) - (all[right].updatedAt || 0));
+        const count = keys.length - MAX_COMMENT_RECEIPT_LEADS + 1;
+        if (removable.length < count) throw new Error("Receipt storage is full");
+        await chrome.storage.local.remove(removable.slice(0, count));
+      }
+      receipts.data.updatedAt = Date.now();
+      await chrome.storage.local.set({ [receipts.key]: receipts.data });
+    } catch {
+      throw new Error("Comment progress could not be saved. Nothing else will be posted. Please ask your manager for help.");
+    }
+  }
+
+  async function syncConfirmedComments(receipts) {
+    for (const post of receipts.data.posts) {
+      if (post.state !== "confirmed") continue;
+      await assertCommentOwner(receipts.data.owner);
+      try {
+        // This saves a known public result; it must never submit to LinkedIn again.
+        await ScoutApi.authenticatedAction("scouts:recordPostActivity", post.activity, { expectedUsername: receipts.data.owner });
+        post.state = "synced";
+        await saveCommentReceipts(receipts);
+      } catch (error) {
+        throw new Error(`A comment was posted but its progress could not be saved. Resume will save it without posting it again. ${cleanError(error)}`);
+      }
+    }
+  }
+
+  async function recordCommentIntent(receipts, activity) {
+    if (receipts.data.posts.some(post => post.activity.postUrl === activity.postUrl)) return false;
+    if (receipts.data.posts.length >= MAX_COMMENT_RECEIPT_POSTS) {
+      throw new Error("Comment progress could not be saved. Please ask your manager to review this lead.");
+    }
+    receipts.data.posts.push({ state: "submitting", activity });
+    await saveCommentReceipts(receipts);
+    return true;
+  }
+
+  async function confirmCommentReceipt(receipts, postUrl, submitted) {
+    const post = receipts.data.posts.find(value => value.activity.postUrl === postUrl);
+    if (!post) throw new Error("Comment progress could not be saved. Please ask your manager for help.");
+    post.state = submitted ? "confirmed" : "uncertain";
+    await saveCommentReceipts(receipts);
+    if (submitted) await syncConfirmedComments(receipts);
+  }
+
   async function runPostEngagement(options = {}) {
     initOverlay();
     if (overlayContainer) overlayContainer.style.display = "block";
@@ -353,13 +429,30 @@
       throw new Error("This lead is missing some information. Go back to the extension and try again.");
     }
 
+    const receipts = await openCommentReceipts(options);
+    const newlySavedLikes = receipts.data.posts.filter(post => post.state === "confirmed" && post.activity.liked).length;
+    await syncConfirmedComments(receipts);
+    const previousActivities = receipts.data.posts.filter(post => post.state === "synced").map(post => post.activity);
+    const previousCount = previousActivities.length;
+    const targetPosts = clampInteger(options.postEngagementTarget ?? maxPosts, 0, 10);
+    const remainingPosts = Math.min(Math.max(0, maxPosts - newlySavedLikes), Math.max(0, targetPosts - receipts.data.posts.length));
+    receipts.data.complete = false;
+    await saveCommentReceipts(receipts);
+    const finishEngagement = async result => {
+      receipts.data.complete = true;
+      await saveCommentReceipts(receipts);
+      return { ...result, engagedCount: Math.max(previousCount, result.engagedCount || 0) };
+    };
+
     addLog("Settings", `Posts: ${maxPosts}, Check comments: ${validate ? "Yes" : "No"}`);
 
-    if (maxPosts === 0 && !options.requireLanguageFallback) {
-      const skipReason = "The post limit has been reached for today.";
+    if (remainingPosts === 0 && !options.requireLanguageFallback) {
+      const skipReason = receipts.data.posts.some(post => ["uncertain", "submitting"].includes(post.state))
+        ? "An earlier comment could not be confirmed. It was not posted again; please check it on LinkedIn."
+        : previousCount >= targetPosts ? "The planned comments for this lead are already saved." : "The post limit has been reached for today.";
       addLog("Posts skipped", skipReason);
       updateStatus("No comment was added. Continuing to the connection request...");
-      return {
+      return finishEngagement({
         engagedCount: 0,
         totalProcessed: 0,
         activities: [],
@@ -371,7 +464,7 @@
           languageCode: options.profileLanguageStatus === "english" ? "en" : "und",
           confidence: options.profileLanguageStatus === "english" ? 1 : 0,
         },
-      };
+      });
     }
 
     if (!window.location.pathname.includes("/recent-activity/")) {
@@ -427,7 +520,7 @@
         addLog("Connection next", "No comment was added, but this lead will still be connected.");
         updateStatus("No comment was added. Continuing to the connection request...");
       }
-      return {
+      return finishEngagement({
         engagedCount: 0,
         totalProcessed: inspectedPosts.length,
         activities: [],
@@ -439,7 +532,7 @@
           languageCode: options.requireLanguageFallback ? "und" : "en",
           confidence: options.requireLanguageFallback ? 0 : 1,
         },
-      };
+      });
     }
 
     const candidates = inspectedPosts;
@@ -546,7 +639,7 @@
         "English could not be confirmed from the profile or the latest readable posts.";
       addLog("Language check", skipReason);
       updateStatus("English could not be confirmed. This lead will be parked for review.");
-      return {
+      return finishEngagement({
         engagedCount: 0,
         totalProcessed: readablePosts.length,
         activities: [],
@@ -554,14 +647,14 @@
         skipped: true,
         skipReason,
         leadLanguageDecision,
-      };
+      });
     }
 
-    if (maxPosts === 0) {
+    if (remainingPosts === 0) {
       const skipReason = "The post limit has been reached for today.";
       addLog("Posts skipped", skipReason);
       updateStatus("No comment was added. Continuing to the connection request...");
-      return {
+      return finishEngagement({
         engagedCount: 0,
         totalProcessed: readablePosts.length,
         activities: [],
@@ -569,18 +662,20 @@
         skipped: true,
         skipReason,
         leadLanguageDecision,
-      };
+      });
     }
 
-    const countToEngage = Math.min(englishPosts.length, maxPosts);
+    const unrepeatedPosts = englishPosts.filter(post => !receipts.data.posts.some(receipt => receipt.activity.postUrl === post.postUrl));
+    const countToEngage = Math.min(unrepeatedPosts.length, remainingPosts);
     addLog(
       "Posts",
       `Checked only the latest ${inspectedPosts.length}. Found ${englishPosts.length} recent English original post${englishPosts.length === 1 ? "" : "s"}; working on ${countToEngage}.`,
     );
 
-    let engagedCount = 0;
-    const activities = [];
-    const skippedReasons = [];
+    let engagedCount = previousCount;
+    const activities = [...previousActivities];
+    const skippedReasons = receipts.data.posts.some(post => ["uncertain", "submitting"].includes(post.state))
+      ? ["An earlier comment could not be confirmed. It was not posted again; please check it on LinkedIn."] : [];
 
     for (let i = 0; i < countToEngage; i++) {
       const {
@@ -588,7 +683,7 @@
         postIndex,
         postText,
         postUrl,
-      } = englishPosts[i];
+      } = unrepeatedPosts[i];
       updateStatus(`Working on post ${i + 1} of ${countToEngage}...`);
 
       // Scroll post into view
@@ -659,6 +754,7 @@
       }
 
       // Only like after the post and final comment have passed the language gates.
+      await assertCommentOwner(receipts.data.owner);
       const likeResult = await handleLikeButton(postEl);
       if (!likeResult.success) {
         addLog("Problem", `Couldn’t like post ${i + 1}`);
@@ -696,16 +792,17 @@
 
       // 7. Click 'Comment' submit button
       updateStatus(`Posting comment ${i + 1}...`);
+      const activity = {
+        leadId: String(options.leadId), profileUrl: String(options.profileUrl), postUrl,
+        postText: postText.slice(0, 8_000), commentText: draftText.slice(0, 2_000), liked: likeResult.changed,
+      };
+      // Save before the public click. A closed tab must not turn an uncertain
+      // submission into another public comment on Resume.
+      if (!await recordCommentIntent(receipts, activity)) continue;
+      await assertCommentOwner(receipts.data.owner);
       const submitted = await submitComment(postEl, draftText);
+      await confirmCommentReceipt(receipts, postUrl, submitted);
       if (submitted) {
-        await ScoutApi.authenticatedAction("scouts:recordPostActivity", {
-          leadId: String(options.leadId),
-          profileUrl: String(options.profileUrl),
-          postUrl,
-          postText: postText.slice(0, 8_000),
-          commentText: draftText.slice(0, 2_000),
-          liked: likeResult.changed,
-        });
         engagedCount++;
         activities.push({
           postUrl,
@@ -727,7 +824,7 @@
         : `Finished ${engagedCount} of ${countToEngage} posts.`;
       addLog("Connection next", "No comment was added, but this lead will still be connected.");
       updateStatus("No comment was added. Continuing to the connection request...");
-      return {
+      return finishEngagement({
         engagedCount,
         totalProcessed: countToEngage,
         activities,
@@ -735,10 +832,10 @@
         skipped: true,
         skipReason,
         leadLanguageDecision,
-      };
+      });
     }
 
-    const partial = engagedCount < countToEngage;
+    const partial = engagedCount < Math.min(targetPosts, previousCount + countToEngage) || skippedReasons.length > 0;
     if (partial) {
       addLog(
         "Continued safely",
@@ -752,13 +849,14 @@
         `Finished ${engagedCount} post${engagedCount === 1 ? "" : "s"}.`,
       );
     }
-    return {
+    return finishEngagement({
       engagedCount,
       totalProcessed: countToEngage,
       activities,
       partial,
       leadLanguageDecision,
-    };
+      skipReason: skippedReasons.length ? skippedReasons.join("; ") : null,
+    });
   }
 
   async function runConnectionRequest(options = {}) {
@@ -2034,7 +2132,9 @@
       expectedCommentText,
       editor,
     );
-    if (matchingCommentsBefore > 0) return true;
+    // Existing matching text may belong to somebody else. Do not duplicate it
+    // or report it as a newly confirmed comment from this attempt.
+    if (matchingCommentsBefore > 0) return false;
     clickElement(submitBtn);
     return Boolean(
       await waitForMatch(
@@ -2048,8 +2148,8 @@
           ) {
             return true;
           }
-          if (!submitBtn.isConnected || !isElementVisible(submitBtn)) return true;
-          if (editor && !(editor.textContent || "").trim()) return true;
+          // A disappearing button / cleared editor can also be a page refresh.
+          // Only an observed new matching comment confirms this submission.
           return null;
         },
         COMMENT_SUBMIT_CONFIRM_TIMEOUT_MS,

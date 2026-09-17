@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import os from "node:os";
@@ -14,6 +15,10 @@ const DEFAULT_SCOUT_CONCURRENCY = 24;
 const ACCOUNT_REFRESH_CACHE_MS = 60_000;
 const STATUS_ACCOUNT_CACHE_MS = 5 * 60_000;
 const AUTH_BACKUP_COOLDOWN_MS = 30_000;
+const SCOUT_BUDGET_MS = 85_000;
+const SLOT_WAIT_TIMEOUT_MS = 20_000;
+const THREAD_RELEASE_TIMEOUT_MS = 5_000;
+const RECYCLE_AFTER_THREADS = 64;
 
 export const LUNA_SYSTEM_PROMPT =
   "You write one short LinkedIn comment in clear, everyday English. " +
@@ -256,6 +261,10 @@ export class CodexAppServer extends EventEmitter {
     safeWorkspace,
     onAuthChanged,
     maxScoutConcurrency = DEFAULT_SCOUT_CONCURRENCY,
+    scoutBudgetMs = SCOUT_BUDGET_MS,
+    slotWaitTimeoutMs = SLOT_WAIT_TIMEOUT_MS,
+    recycleAfterThreads = RECYCLE_AFTER_THREADS,
+    spawnProcess = spawn,
   }) {
     super();
     this.codexHome = codexHome;
@@ -283,9 +292,35 @@ export class CodexAppServer extends EventEmitter {
     this.statusAccountPromise = null;
     this.authBackupPromise = null;
     this.lastAuthBackupAt = 0;
+    this.scoutBudget = new AsyncLocalStorage();
+    this.scoutBudgetMs = scoutBudgetMs;
+    this.slotWaitTimeoutMs = slotWaitTimeoutMs;
+    this.recycleAfterThreads = recycleAfterThreads;
+    this.spawnProcess = spawnProcess;
+    this.startPromise = null;
+    this.recyclePromise = null;
+    this.closing = false;
+    this.intentionalStops = new WeakSet();
+    this.activeThreads = new Set();
+    this.threadCleanupDeadlines = new Map();
+    this.sessionsSinceRecycle = 0;
+    this.recycleCount = 0;
+    this.threadReleaseFailures = 0;
+    this.scoutCompleted = 0;
+    this.scoutFailed = 0;
+    this.lastScoutSuccessAt = null;
+    this.lastScoutErrorAt = null;
+    this.lastScoutErrorCode = null;
   }
 
-  async start() {
+  start() {
+    if (this.closing) return Promise.reject(new Error("Codex app-server is closing."));
+    if (this.startPromise) return this.startPromise;
+    this.startPromise = this.startChild().finally(() => { this.startPromise = null; });
+    return this.startPromise;
+  }
+
+  async startChild() {
     await mkdir(this.safeWorkspace, { recursive: true, mode: 0o700 });
     const packageRoot = path.resolve(
       path.dirname(fileURLToPath(import.meta.url)),
@@ -307,11 +342,12 @@ export class CodexAppServer extends EventEmitter {
     };
     delete childEnvironment.OPENAI_API_KEY;
 
-    this.child = spawn(
+    const arguments_ = ["app-server", "--listen", "stdio://", "-c", "features.apps=false", "-c", "features.plugins=false"];
+    const child = this.child = this.spawnProcess(
       configuredCodexExecutable || process.execPath,
       configuredCodexExecutable
-        ? ["app-server", "--listen", "stdio://"]
-        : [codexEntry, "app-server", "--listen", "stdio://"],
+        ? arguments_
+        : [codexEntry, ...arguments_],
       {
         cwd: this.safeWorkspace,
         env: childEnvironment,
@@ -319,7 +355,13 @@ export class CodexAppServer extends EventEmitter {
         windowsHide: true,
       },
     );
-    this.child.once("exit", (code, signal) => {
+    child.once("error", (error) => {
+      for (const pending of this.pending.values()) pending.reject(error);
+      this.pending.clear();
+    });
+    child.once("exit", (code, signal) => {
+      if (this.child !== child) return;
+      this.child = null;
       const error = new Error(
         `Codex app-server stopped unexpectedly (${signal ?? code ?? "unknown"}).`,
       );
@@ -327,7 +369,7 @@ export class CodexAppServer extends EventEmitter {
       this.pending.clear();
       for (const waiter of this.turnWaiters.values()) waiter.reject(error);
       this.turnWaiters.clear();
-      this.emit("stopped", error);
+      if (!this.intentionalStops.has(child)) this.emit("stopped", error);
     });
     this.child.stderr.on("data", (chunk) => {
       const message = redact(String(chunk)).trim();
@@ -336,7 +378,7 @@ export class CodexAppServer extends EventEmitter {
     const lines = createInterface({ input: this.child.stdout });
     lines.on("line", (line) => this.handleLine(line));
 
-    await this.request("initialize", {
+    await this.requestRaw("initialize", {
       clientInfo: {
         name: "callum-codex-gateway",
         title: "Callum Codex Gateway",
@@ -345,6 +387,93 @@ export class CodexAppServer extends EventEmitter {
       capabilities: { experimentalApi: false },
     });
     this.notify("initialized", {});
+  }
+
+  get activeThreadCount() { return this.activeThreads.size; }
+
+  timeoutWithinBudget(timeoutMs) {
+    const deadline = this.scoutBudget.getStore()?.deadline;
+    if (!deadline) return timeoutMs;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new GatewayError(504, "The writing service took too long. Please wait a minute and try again.");
+    return Math.min(timeoutMs, remaining);
+  }
+
+  async waitForReady() {
+    const ready = this.recyclePromise || this.startPromise;
+    if (!ready) return;
+    let timeout;
+    try {
+      await Promise.race([ready, new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new GatewayError(503, "The writing service is restarting. Please try again shortly.")), this.timeoutWithinBudget(REQUEST_TIMEOUT_MS));
+      })]);
+    } finally { clearTimeout(timeout); }
+  }
+
+  async withEphemeralThread(developerInstructions, run) {
+    this.timeoutWithinBudget(REQUEST_TIMEOUT_MS);
+    this.sessionsSinceRecycle += 1;
+    let result;
+    try {
+      result = await this.request("thread/start", {
+        model: this.model, cwd: this.safeWorkspace, approvalPolicy: "never",
+        sandbox: "read-only", developerInstructions, ephemeral: true,
+      });
+    } catch (error) {
+      // A timed-out start may still create a thread whose id we never received.
+      // Drain accepted work and recycle instead of accumulating unknown sessions.
+      if (/thread\/start.*timed out/i.test(String(error.message))) {
+        this.sessionsSinceRecycle = Math.max(this.sessionsSinceRecycle, this.recycleAfterThreads);
+      }
+      throw error;
+    }
+    const threadId = result.thread.id;
+    this.activeThreads.add(threadId);
+    try {
+      return await run(threadId);
+    } finally {
+      // Cleanup must still run after the request's generation budget expires.
+      const releaseTimeout = Math.max(1, Math.min(THREAD_RELEASE_TIMEOUT_MS,
+        (this.threadCleanupDeadlines.get(threadId) ?? (Date.now() + THREAD_RELEASE_TIMEOUT_MS)) - Date.now()));
+      await this.scoutBudget.run(undefined, () => this.request("thread/unsubscribe", { threadId }, releaseTimeout))
+        .catch(() => { this.threadReleaseFailures += 1; });
+      this.threadCleanupDeadlines.delete(threadId);
+      this.activeThreads.delete(threadId);
+    }
+  }
+
+  recycleIfIdle() {
+    if (this.closing || this.recyclePromise || !this.child ||
+        this.sessionsSinceRecycle < this.recycleAfterThreads || this.queuedDrafts ||
+        this.scoutActive || this.accountingActive || this.pending.size || this.activeThreadCount ||
+        [...this.loginAttempts.values()].some((attempt) => attempt.state === "pending" && Date.now() - attempt.startedAt < 10 * 60_000)) return;
+    // Set the readiness gate synchronously: requests arriving during recycling wait.
+    this.recyclePromise = this.scoutBudget.run(undefined, async () => {
+      await this.stopChild();
+      if (this.closing) return;
+      this.completedTurns.clear();
+      this.turnAccount = null;
+      this.turnAccountExpiresAt = 0;
+      this.statusAccount = null;
+      this.statusAccountExpiresAt = 0;
+      await this.start();
+      this.sessionsSinceRecycle = 0;
+      this.recycleCount += 1;
+    }).finally(() => { this.recyclePromise = null; });
+    void this.recyclePromise.catch((error) => {
+      if (!this.closing) this.emit("stopped", error);
+    });
+  }
+
+  prepareAdmission() {
+    this.recycleIfIdle();
+    // Drain already accepted work at the limit. Without this boundary a busy
+    // installation might never become idle enough to release process memory.
+    if (this.sessionsSinceRecycle >= this.recycleAfterThreads && !this.recyclePromise) {
+      return new GatewayError(503, "The writing service is refreshing. Please try again shortly.");
+    }
+    if (this.closing) return new GatewayError(503, "The writing service is restarting. Please try again shortly.");
+    return null;
   }
 
   async readAccount({ refreshToken = false } = {}) {
@@ -404,6 +533,14 @@ export class CodexAppServer extends EventEmitter {
     return this.authBackupPromise;
   }
 
+  backupAuthInBackground() {
+    // Backing up refreshed credentials is maintenance, not part of generation.
+    // A slow or failed backup must not stall scouts or discard a valid result.
+    void Promise.resolve().then(() => this.persistAuthIfNeeded()).catch((error) => {
+      console.error(`[gateway] Auth backup failed: ${redact(String(error.message))}`);
+    });
+  }
+
   async startDeviceLogin() {
     const account = await this.readStatusAccount();
     if (account.account?.type === "chatgpt") {
@@ -449,15 +586,17 @@ export class CodexAppServer extends EventEmitter {
     this.statusAccountExpiresAt = 0;
   }
 
-  enqueueDraft({ requestId, scoutId, postText }) {
+  enqueueDraft({ requestId, scoutId, postText, deadlineAt }) {
     return this.enqueueRequest(`linkedin:${requestId}`, () =>
       this.createDraft({ requestId, scoutId, postText }),
+      deadlineAt,
     );
   }
 
-  enqueueLanguageCheck({ requestId, scoutId, context, samples }) {
+  enqueueLanguageCheck({ requestId, scoutId, context, samples, deadlineAt }) {
     return this.enqueueRequest(`linkedin-language:${requestId}`, () =>
       this.createLanguageCheck({ requestId, scoutId, context, samples }),
+      deadlineAt,
     );
   }
 
@@ -539,13 +678,32 @@ export class CodexAppServer extends EventEmitter {
     );
   }
 
-  enqueueRequest(requestKey, create) {
+  enqueueRequest(requestKey, create, deadlineAt) {
     const existing = this.draftRequests.get(requestKey);
     if (existing) return existing;
+    const admissionError = this.prepareAdmission();
+    if (admissionError) {
+      this.scoutFailed += 1;
+      this.lastScoutErrorAt = Date.now();
+      this.lastScoutErrorCode = admissionError.statusCode;
+      return Promise.reject(admissionError);
+    }
     this.queuedDrafts += 1;
-    const run = this.withScoutSlot(() => this.withScoutRetry(create));
+    const budget = /^linkedin(?:-language)?:/.test(requestKey)
+      ? { deadline: Math.min(Date.now() + this.scoutBudgetMs, Number.isFinite(deadlineAt) ? deadlineAt : Infinity) } : undefined;
+    const run = this.scoutBudget.run(budget, () =>
+      this.withScoutSlot(() => this.withScoutRetry(create)));
+    void run.then(() => {
+      this.scoutCompleted += 1;
+      this.lastScoutSuccessAt = Date.now();
+    }, (error) => {
+      this.scoutFailed += 1;
+      this.lastScoutErrorAt = Date.now();
+      this.lastScoutErrorCode = error.statusCode || (/timed out/i.test(error.message) ? 504 : 502);
+    });
     const tracked = run.finally(() => {
       this.queuedDrafts -= 1;
+      this.recycleIfIdle();
     });
     this.draftRequests.set(requestKey, tracked);
     void tracked.catch(() => {
@@ -561,17 +719,35 @@ export class CodexAppServer extends EventEmitter {
 
   async withScoutSlot(create) {
     if (this.scoutActive >= this.maxScoutConcurrency) {
-      await new Promise((resolve) => this.scoutWaiters.push(resolve));
+      await this.waitForSlot(this.scoutWaiters);
     } else {
       this.scoutActive += 1;
     }
     try {
+      await this.waitForReady();
+      this.timeoutWithinBudget(REQUEST_TIMEOUT_MS);
       return await create();
     } finally {
       const next = this.scoutWaiters.shift();
-      if (next) next();
+      if (next) next.resolve();
       else this.scoutActive -= 1;
     }
+  }
+
+  waitForSlot(waiters) {
+    return new Promise((resolve, reject) => {
+      let timeout;
+      const waiter = {
+        resolve: () => { clearTimeout(timeout); resolve(); },
+        reject: (error) => { clearTimeout(timeout); reject(error); },
+      };
+      if (this.scoutBudget.getStore()) timeout = setTimeout(() => {
+        const index = waiters.indexOf(waiter);
+        if (index !== -1) waiters.splice(index, 1);
+        reject(new GatewayError(503, "The writing service is busy. Please wait a minute and try again."));
+      }, this.timeoutWithinBudget(this.slotWaitTimeoutMs));
+      waiters.push(waiter);
+    });
   }
 
   async withScoutRetry(create) {
@@ -586,7 +762,8 @@ export class CodexAppServer extends EventEmitter {
       ) {
         throw error;
       }
-      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      await new Promise((resolve) => setTimeout(resolve, this.timeoutWithinBudget(1_500)));
+      this.timeoutWithinBudget(REQUEST_TIMEOUT_MS);
       return create();
     }
   }
@@ -594,10 +771,13 @@ export class CodexAppServer extends EventEmitter {
   enqueueAccountingRequest(requestKey, create) {
     const existing = this.draftRequests.get(requestKey);
     if (existing) return existing;
+    const admissionError = this.prepareAdmission();
+    if (admissionError) return Promise.reject(admissionError);
     this.queuedDrafts += 1;
     const run = this.withAccountingSlot(create);
     const tracked = run.finally(() => {
       this.queuedDrafts -= 1;
+      this.recycleIfIdle();
     });
     this.draftRequests.set(requestKey, tracked);
     if (this.draftRequests.size > 200) {
@@ -608,15 +788,16 @@ export class CodexAppServer extends EventEmitter {
 
   async withAccountingSlot(create) {
     if (this.accountingActive >= 2) {
-      await new Promise((resolve) => this.accountingWaiters.push(resolve));
+      await this.waitForSlot(this.accountingWaiters);
     } else {
       this.accountingActive += 1;
     }
     try {
+      await this.waitForReady();
       return await create();
     } finally {
       const next = this.accountingWaiters.shift();
-      if (next) next();
+      if (next) next.resolve();
       else this.accountingActive -= 1;
     }
   }
@@ -634,7 +815,7 @@ export class CodexAppServer extends EventEmitter {
         "The ChatGPT subscription is not connected. Open the accountant /connect page.",
       );
     }
-    await this.persistAuthIfNeeded();
+    this.backupAuthInBackground();
 
     const temporaryDirectory = await mkdtemp(
       path.join(os.tmpdir(), "tamweel-accounting-"),
@@ -652,7 +833,7 @@ export class CodexAppServer extends EventEmitter {
         ACCOUNTING_RECEIPT_OUTPUT_SCHEMA,
         imagePaths,
       );
-      await this.persistAuthIfNeeded();
+      this.backupAuthInBackground();
       return { ...result, model: this.model };
     } finally {
       await rm(temporaryDirectory, { recursive: true, force: true });
@@ -673,36 +854,29 @@ export class CodexAppServer extends EventEmitter {
         "The ChatGPT subscription is not connected. Open the accountant /connect page.",
       );
     }
-    await this.persistAuthIfNeeded();
+    this.backupAuthInBackground();
     const result = await this.runAccountingTurn(
       `Request ${requestId}. Convert part ${partNumber} of ${partCount} from Mauritius bank statement ${JSON.stringify(fileName)} into transaction rows. Output only transactions present in this part. Preserve each transaction exactly once. Ignore headings, opening-balance rows, continuation-detail rows, and total rows. Determine Credit versus Debit from the source columns. Classify using only: Sales, Bank Charges, Utilities, Salaries, Donations, Cost of Sales, Loans, Motor Vehicle, Insurance, Other. A second description line belongs to the transaction immediately above it.\n\n<BANK_STATEMENT_PART>\n${statementText}\n</BANK_STATEMENT_PART>`,
       ACCOUNTING_BANK_OUTPUT_SCHEMA,
     );
-    await this.persistAuthIfNeeded();
+    this.backupAuthInBackground();
     return { ...result, model: this.model };
   }
 
   async runAccountingTurn(prompt, outputSchema, imagePaths = []) {
-    const threadResult = await this.request("thread/start", {
-      model: this.model,
-      cwd: this.safeWorkspace,
-      approvalPolicy: "never",
-      sandbox: "read-only",
-      developerInstructions: ACCOUNTING_SYSTEM_PROMPT,
-      ephemeral: true,
-    });
+    return this.withEphemeralThread(ACCOUNTING_SYSTEM_PROMPT, async (threadId) => {
     const input = [{ type: "text", text: prompt }];
     for (const imagePath of imagePaths) {
       input.push({ type: "localImage", path: imagePath });
     }
     const turnResult = await this.request("turn/start", {
-      threadId: threadResult.thread.id,
+      threadId,
       input,
       effort: "low",
       outputSchema,
     });
     const turn = await this.waitForTurnAndInterrupt(
-      threadResult.thread.id,
+      threadId,
       turnResult.turn.id,
     );
     if (turn.status !== "completed") {
@@ -719,6 +893,7 @@ export class CodexAppServer extends EventEmitter {
       throw new Error("Codex returned an invalid accounting result.");
     }
     return result;
+    });
   }
 
   async createDraft({ requestId, scoutId, postText }) {
@@ -729,17 +904,9 @@ export class CodexAppServer extends EventEmitter {
         "The ChatGPT subscription is not connected. Connect it in the admin app.",
       );
     }
-    await this.persistAuthIfNeeded();
+    this.backupAuthInBackground();
 
-    const threadResult = await this.request("thread/start", {
-      model: this.model,
-      cwd: this.safeWorkspace,
-      approvalPolicy: "never",
-      sandbox: "read-only",
-      developerInstructions: LUNA_SYSTEM_PROMPT,
-      ephemeral: true,
-    });
-    const threadId = threadResult.thread.id;
+    return this.withEphemeralThread(LUNA_SYSTEM_PROMPT, async (threadId) => {
     const turnResult = await this.request("turn/start", {
       threadId,
       input: [
@@ -780,13 +947,14 @@ export class CodexAppServer extends EventEmitter {
     ) {
       throw new Error("The generated comment did not pass the English-language check.");
     }
-    await this.persistAuthIfNeeded();
+    this.backupAuthInBackground();
     return {
       draft,
       languageStatus: "english",
       threadId,
       model: this.model,
     };
+    });
   }
 
   async createLanguageCheck({ requestId, scoutId, context, samples }) {
@@ -814,17 +982,9 @@ export class CodexAppServer extends EventEmitter {
         "The ChatGPT subscription is not connected. Connect it in the admin app.",
       );
     }
-    await this.persistAuthIfNeeded();
+    this.backupAuthInBackground();
 
-    const threadResult = await this.request("thread/start", {
-      model: this.model,
-      cwd: this.safeWorkspace,
-      approvalPolicy: "never",
-      sandbox: "read-only",
-      developerInstructions: LANGUAGE_CHECK_SYSTEM_PROMPT,
-      ephemeral: true,
-    });
-    const threadId = threadResult.thread.id;
+    return this.withEphemeralThread(LANGUAGE_CHECK_SYSTEM_PROMPT, async (threadId) => {
     const turnResult = await this.request("turn/start", {
       threadId,
       input: [
@@ -868,7 +1028,7 @@ export class CodexAppServer extends EventEmitter {
         ? modelById.get(result.id) || result
         : result,
     );
-    await this.persistAuthIfNeeded();
+    this.backupAuthInBackground();
     return {
       results,
       threadId,
@@ -876,6 +1036,7 @@ export class CodexAppServer extends EventEmitter {
         ? `${this.model}+local`
         : this.model,
     };
+    });
   }
 
   async createFirstDmDraft({ requestId, scoutId, profile }) {
@@ -886,17 +1047,9 @@ export class CodexAppServer extends EventEmitter {
         "The ChatGPT subscription is not connected. Connect it in the admin app.",
       );
     }
-    await this.persistAuthIfNeeded();
+    this.backupAuthInBackground();
 
-    const threadResult = await this.request("thread/start", {
-      model: this.model,
-      cwd: this.safeWorkspace,
-      approvalPolicy: "never",
-      sandbox: "read-only",
-      developerInstructions: FIRST_DM_SYSTEM_PROMPT,
-      ephemeral: true,
-    });
-    const threadId = threadResult.thread.id;
+    return this.withEphemeralThread(FIRST_DM_SYSTEM_PROMPT, async (threadId) => {
     const turnResult = await this.request("turn/start", {
       threadId,
       input: [
@@ -929,8 +1082,9 @@ export class CodexAppServer extends EventEmitter {
     if (!draft || draft.length > 700) {
       throw new Error("Codex returned an unexpectedly long First DM draft.");
     }
-    await this.persistAuthIfNeeded();
+    this.backupAuthInBackground();
     return { draft, threadId, model: this.model };
+    });
   }
 
   async createFlippaDraft({
@@ -948,17 +1102,9 @@ export class CodexAppServer extends EventEmitter {
         "The ChatGPT subscription is not connected. Connect it in the extension.",
       );
     }
-    await this.persistAuthIfNeeded();
+    this.backupAuthInBackground();
 
-    const threadResult = await this.request("thread/start", {
-      model: this.model,
-      cwd: this.safeWorkspace,
-      approvalPolicy: "never",
-      sandbox: "read-only",
-      developerInstructions: FLIPPA_SYSTEM_PROMPT,
-      ephemeral: true,
-    });
-    const threadId = threadResult.thread.id;
+    return this.withEphemeralThread(FLIPPA_SYSTEM_PROMPT, async (threadId) => {
     const previousText = previousComments.length
       ? previousComments
           .map(
@@ -1004,8 +1150,9 @@ export class CodexAppServer extends EventEmitter {
     if (draft.length < 30 || draft.length > 1_500) {
       throw new Error("Codex returned an invalid Flippa comment draft length.");
     }
-    await this.persistAuthIfNeeded();
+    this.backupAuthInBackground();
     return { draft, threadId, model: this.model, effort: "xhigh" };
+    });
   }
 
   async createCommunityMatches({
@@ -1022,17 +1169,9 @@ export class CodexAppServer extends EventEmitter {
         "The ChatGPT subscription is not connected. Ask the administrator to reconnect the Luna gateway.",
       );
     }
-    await this.persistAuthIfNeeded();
+    this.backupAuthInBackground();
 
-    const threadResult = await this.request("thread/start", {
-      model: this.model,
-      cwd: this.safeWorkspace,
-      approvalPolicy: "never",
-      sandbox: "read-only",
-      developerInstructions: VEBLEN_MATCH_SYSTEM_PROMPT,
-      ephemeral: true,
-    });
-    const threadId = threadResult.thread.id;
+    return this.withEphemeralThread(VEBLEN_MATCH_SYSTEM_PROMPT, async (threadId) => {
     const turnResult = await this.request("turn/start", {
       threadId,
       input: [
@@ -1067,12 +1206,13 @@ export class CodexAppServer extends EventEmitter {
     if (!Array.isArray(result.matches) || result.matches.length > 12) {
       throw new Error("Codex returned an invalid community match result.");
     }
-    await this.persistAuthIfNeeded();
+    this.backupAuthInBackground();
     return {
       ...result,
       model: this.model,
       effort: "medium",
     };
+    });
   }
 
   async waitForTurnAndInterrupt(
@@ -1083,11 +1223,12 @@ export class CodexAppServer extends EventEmitter {
     try {
       return await this.waitForTurn(turnId, timeoutMs);
     } catch (error) {
-      await this.request(
+      this.threadCleanupDeadlines.set(threadId, Date.now() + THREAD_RELEASE_TIMEOUT_MS);
+      await this.scoutBudget.run(undefined, () => this.request(
         "turn/interrupt",
         { threadId, turnId },
         TURN_INTERRUPT_TIMEOUT_MS,
-      ).catch((interruptError) => {
+      )).catch((interruptError) => {
         console.error(
           `[gateway] Could not interrupt timed-out turn ${turnId}: ${interruptError.message}`,
         );
@@ -1098,6 +1239,7 @@ export class CodexAppServer extends EventEmitter {
   }
 
   waitForTurn(turnId, timeoutMs = TURN_TIMEOUT_MS) {
+    timeoutMs = this.timeoutWithinBudget(timeoutMs);
     const completed = this.completedTurns.get(turnId);
     if (completed) {
       this.completedTurns.delete(turnId);
@@ -1121,7 +1263,14 @@ export class CodexAppServer extends EventEmitter {
     });
   }
 
-  request(method, params, timeoutMs = REQUEST_TIMEOUT_MS) {
+  async request(method, params, timeoutMs = REQUEST_TIMEOUT_MS) {
+    if (this.closing) throw new Error("Codex app-server is closing.");
+    do { await this.waitForReady(); } while (this.recyclePromise || this.startPromise);
+    if (this.closing) throw new Error("Codex app-server is closing.");
+    return this.requestRaw(method, params, this.timeoutWithinBudget(timeoutMs));
+  }
+
+  requestRaw(method, params, timeoutMs = REQUEST_TIMEOUT_MS) {
     if (!this.child?.stdin.writable) {
       return Promise.reject(new Error("Codex app-server is not running."));
     }
@@ -1221,15 +1370,31 @@ export class CodexAppServer extends EventEmitter {
     }
   }
 
-  async close() {
+  async stopChild() {
     if (!this.child) return;
     const child = this.child;
-    child.kill();
-    await Promise.race([
-      new Promise((resolve) => child.once("exit", resolve)),
-      new Promise((resolve) => setTimeout(resolve, 10_000)),
-    ]);
-    this.child = null;
+    this.intentionalStops.add(child);
+    let timeout;
+    try {
+      await new Promise((resolve, reject) => {
+        child.once("exit", resolve);
+        timeout = setTimeout(() => {
+          child.kill("SIGKILL");
+          reject(new Error("Codex app-server did not stop during recycling."));
+        }, 10_000);
+        child.kill();
+      });
+    } finally { clearTimeout(timeout); }
+    if (this.child === child) this.child = null;
+  }
+
+  async close() {
+    this.closing = true;
+    const error = new Error("Codex app-server is closing.");
+    for (const waiter of [...this.scoutWaiters.splice(0), ...this.accountingWaiters.splice(0)]) waiter.reject(error);
+    if (this.recyclePromise) await this.recyclePromise.catch(() => {});
+    if (this.startPromise) await this.startPromise.catch(() => {});
+    await this.stopChild();
   }
 }
 

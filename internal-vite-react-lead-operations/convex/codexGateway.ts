@@ -46,7 +46,10 @@ export const getStatus = action({
   returns: statusValidator,
   handler: async (ctx): Promise<GatewayStatus> => {
     await ctx.runQuery(internal.adminIdentity.requireAdmin, {});
-    return requestCodexGateway<GatewayStatus>("/v1/status");
+    const result = await requestCodexGateway<GatewayStatus>("/v1/status");
+    // The gateway can add operational diagnostics without breaking this DTO.
+    return { connected: result.connected, account: result.account, model: result.model,
+      queuedDrafts: result.queuedDrafts, maxScoutConcurrency: result.maxScoutConcurrency };
   },
 });
 

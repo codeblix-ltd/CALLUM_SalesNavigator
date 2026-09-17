@@ -50,6 +50,10 @@ const first = await jobs.reserve.handler(ctx, input);
 const duplicate = await jobs.reserve.handler(ctx, { ...input, generation: "retry" });
 assert.deepEqual(duplicate, first);
 assert.equal(scheduled.length, 1, "duplicate requests must not schedule another worker");
+assert.equal(rows.get(first.jobId).expiresAt - now, 110_000, "server deadline must fit the 120-second browser wait");
+assert.deepEqual(await jobs.active.handler(ctx, {}), first, "resume can find its own active job");
+assert.equal(await jobs.active.handler({ ...ctx, userId: "scout-2" }, {}), null, "another scout cannot discover this job");
+await assert.rejects(jobs.active.handler({ ...ctx, userId: null }, {}), /Sign in/);
 await assert.rejects(jobs.reserve.handler(ctx, { ...input, fingerprint: "different", kind: "note" }), /already running/);
 await assert.rejects(jobs.get.handler({ ...ctx, userId: "scout-2" }, first), /not available/);
 await jobs.finish.handler(ctx, { ...first, result: '{"draft":"cached"}' });
@@ -62,7 +66,7 @@ const replacement = await jobs.reserve.handler(ctx, { ...input, fingerprint: "ne
 assert.equal(replacement.jobId, first.jobId, "reuse bounded storage slot");
 await jobs.finish.handler(ctx, { ...first, result: '"stale"' });
 assert.equal(rows.get(first.jobId).status, "pending", "old workers cannot overwrite newer generations");
-now += 651_000;
+now += 111_000;
 assert((await jobs.get.handler(ctx, replacement)).expiresAt < now, "clients receive an absolute deadline even when query results are cached");
 const third = await jobs.reserve.handler(ctx, { ...input, fingerprint: "third-post", generation: "third" });
 await jobs.finish.handler(ctx, { ...third, error: "gateway unavailable" });
@@ -116,7 +120,7 @@ let networkCalls = 0;
 gateway.requestCodexGateway = async () => { networkCalls += 1; return { draft: "A useful comment", languageStatus: "english", threadId: "thread", model: "test" }; };
 const finished = [];
 const workerCtx = {
-  runQuery: async () => ({ userId: "scout-1", operatorId: "scout-1", kind: "comment", request: '{"postText":"A post with enough meaningful context"}' }),
+  runQuery: async () => ({ userId: "scout-1", operatorId: "scout-1", kind: "comment", expiresAt: now + 110_000, request: '{"postText":"A post with enough meaningful context"}' }),
   runAction: async () => { throw new Error("Comment drafting must not open a SQL action"); },
   runMutation: async (_ref, args) => { finished.push(args); },
 };

@@ -53,6 +53,20 @@ export const get = query({
   },
 });
 
+// Resume may reach a different AI stage while earlier work is finishing. Expose
+// only the signed-in scout's receipt so the client can wait, not create conflicts.
+export const active = query({
+  args: {}, returns: v.union(v.null(), jobReceipt),
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    const user = userId ? await ctx.db.get(userId) : null;
+    if (!user?.active || user.role !== "scout") throw new Error("Sign in is required.");
+    const jobs = await ctx.db.query("scoutAiJobs").withIndex("by_user", q => q.eq("userId", userId!)).take(3);
+    const pending = jobs.filter(job => job.status === "pending").sort((a, b) => b.expiresAt - a.expiresAt)[0];
+    return pending ? { jobId: pending._id, generation: pending.generation } : null;
+  },
+});
+
 export const readWork = internalQuery({
   args: { jobId: v.id("scoutAiJobs"), generation: v.string() },
   returns: v.union(v.null(), v.object({ userId: v.id("users"), operatorId: v.string(), kind: aiKind, request: v.string(), expiresAt: v.number() })),

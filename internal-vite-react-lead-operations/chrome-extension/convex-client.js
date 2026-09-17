@@ -44,7 +44,10 @@ const ScoutApi = (() => {
     }
   }
 
-  async function authenticatedAction(path, args = {}) {
+  async function authenticatedAction(path, args = {}, options = {}) {
+    if (options.expectedUsername) {
+      return authenticatedRequest(path, args, "action", null, options.expectedUsername);
+    }
     if (AI_ACTIONS.has(path)) {
       const auth = await getAuth();
       const key = JSON.stringify([auth?.username, auth?.token, path, args]);
@@ -66,42 +69,76 @@ const ScoutApi = (() => {
 
   async function runAiJob(path, args, startingAuth) {
     if (!startingAuth?.token) throw new Error("Sign in is required.");
-    const receipt = await authenticatedRequest(path.replace("scouts:", "scoutAi:"), args);
     const deadline = Date.now() + 120_000;
+    let timer;
+    try {
+      return await Promise.race([
+        waitForAiJob(path, args, startingAuth, deadline),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("The writing service is taking longer than usual. Wait a minute, then press Resume.")), 120_000); }),
+      ]);
+    } finally { clearTimeout(timer); }
+  }
+
+  async function waitForAiJob(path, args, startingAuth, deadline) {
     let delayMs = 2_000;
+    let receipt;
+    let waitingForEarlierJob = false;
     while (Date.now() < deadline) {
       const current = await getAuth();
       if (!current?.token || current.username !== startingAuth.username) throw new Error("Your session changed. Sign in again.");
-      const job = await authenticatedRequest("scoutAiJobs:get", receipt, "query");
+      if (!receipt) {
+        try {
+          receipt = await authenticatedRequest(path.replace("scouts:", "scoutAi:"), args, "action", deadline, startingAuth.username);
+          waitingForEarlierJob = false;
+        } catch (error) {
+          if (!/AI check is already running/i.test(error.message)) throw error;
+          receipt = await authenticatedRequest("scoutAiJobs:active", {}, "query", deadline, startingAuth.username);
+          waitingForEarlierJob = true;
+          if (!receipt) { await new Promise(resolve => setTimeout(resolve, 1_000)); continue; }
+        }
+      }
+      const job = await authenticatedRequest("scoutAiJobs:get", receipt, "query", deadline, startingAuth.username);
+      if (waitingForEarlierJob && (job.status !== "pending" || (job.expiresAt && Date.now() >= job.expiresAt))) {
+        // The prior result belongs to another stage. Never return it as this
+        // request's output. Submit our original arguments after it settles.
+        receipt = null;
+        continue;
+      }
       if (job.status === "complete") return JSON.parse(job.result);
       if (job.status === "failed") throw new Error(cleanError(job.error));
       if (job.expiresAt && Date.now() >= job.expiresAt) throw new Error("The AI job timed out. Please retry.");
-      await new Promise(resolve => setTimeout(resolve, delayMs));
+      await new Promise(resolve => setTimeout(resolve, Math.min(delayMs, Math.max(0, deadline - Date.now()))));
       delayMs = Math.min(10_000, Math.round(delayMs * 1.5));
     }
     throw new Error("The writing service is taking longer than usual. Wait a minute, then press Resume.");
   }
 
-  async function authenticatedRequest(path, args = {}, kind = "action") {
+  async function authenticatedRequest(path, args = {}, kind = "action", deadline = null, expectedUsername = null) {
     const auth = await getAuth();
+    const assertExpected = value => {
+      if (expectedUsername && value?.username !== expectedUsername) throw new Error("Your session changed. Sign in again.");
+    };
+    assertExpected(auth);
     if (!auth?.token || !auth.refreshToken) {
       throw new Error("Sign in is required.");
     }
     try {
-      return await callAction(path, args, auth.token, kind);
+      return await callAction(path, args, auth.token, kind, deadline);
     } catch (firstError) {
       if (!looksLikeAuthError(firstError)) {
         throw firstError;
       }
       const recoveredAuth = await recoverAuthentication(auth);
+      assertExpected(recoveredAuth);
       try {
-        return await callAction(path, args, recoveredAuth.token, kind);
+        return await callAction(path, args, recoveredAuth.token, kind, deadline);
       } catch (retryError) {
         if (!looksLikeAuthError(retryError)) throw retryError;
 
         const latestAuth = await getAuth();
         if (isDifferentSession(latestAuth, recoveredAuth)) {
-          return callAction(path, args, latestAuth.token, kind);
+          assertExpected(latestAuth);
+          return callAction(path, args, latestAuth.token, kind, deadline);
         }
         await clearAuthIfUnchanged(recoveredAuth);
         throw new Error("Your session expired. Sign in again.");
@@ -181,7 +218,7 @@ const ScoutApi = (() => {
     return values[AUTH_KEY] ?? null;
   }
 
-  async function callAction(path, args = {}, token, kind = "action") {
+  async function callAction(path, args = {}, token, kind = "action", deadline = null) {
     const convexUrl = config?.CONVEX_URL;
     if (!convexUrl || convexUrl.includes("your-deployment")) {
       throw new Error(
@@ -194,7 +231,8 @@ const ScoutApi = (() => {
     };
     if (token) headers.Authorization = `Bearer ${token}`;
     const controller = new AbortController();
-    const timeoutMs = ACTION_TIMEOUT_MS;
+    const timeoutMs = deadline === null ? ACTION_TIMEOUT_MS : Math.min(ACTION_TIMEOUT_MS, deadline - Date.now());
+    if (timeoutMs <= 0) throw new Error("The writing service is taking longer than usual. Wait a minute, then press Resume.");
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     let response;
     let payload;
@@ -285,7 +323,7 @@ const ScoutApi = (() => {
     if (/valid https linkedin|linkedin url must|post permalink/i.test(message)) {
       return "This LinkedIn link does not work.";
     }
-    if (/gateway.*(?:timed out|could not complete|HTTP 5)|fetch failed|service unavailable/i.test(message)) {
+    if (/gateway.*(?:timed out|could not complete|HTTP 5|busy)|writing service|fetch failed|service unavailable/i.test(message)) {
       return "The writing service is temporarily unavailable. Wait a minute, then press Resume.";
     }
     if (/codex gateway|convex|cockroach_database_url/i.test(message)) {

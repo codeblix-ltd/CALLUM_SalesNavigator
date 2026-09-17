@@ -67,7 +67,7 @@ const { CodexAppServer, classifyLanguageLocally } = await import(
   pathToFileURL(gatewayClientPath).href
 );
 
-assert.equal(manifest.version, "0.10.36");
+assert.equal(manifest.version, "0.10.37");
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -1162,7 +1162,7 @@ await assert.rejects(
   timeoutClientContext.ScoutApi.authenticatedAction("scouts:draftComment"),
   /longer than 45 seconds/,
 );
-assert.deepEqual(timeoutDelays, [45_000, 45_000]);
+assert.deepEqual(timeoutDelays, [45_000, 120_000, 45_000]);
 
 const listenerStub = () => ({ addListener() {}, removeListener() {} });
 const backgroundStorage = {};

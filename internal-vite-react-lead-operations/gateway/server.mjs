@@ -37,13 +37,18 @@ const server = createServer(async (request, response) => {
   try {
     await route(request, response);
   } catch (error) {
-    const statusCode = error?.statusCode ?? 500;
+    const reason = String(error?.message || "");
+    const statusCode = error?.statusCode ?? (/timed out/i.test(reason) ? 504 : 500);
+    const code = statusCode === 429 ? "rate_limited" : statusCode === 504 ? "service_timeout" : statusCode === 503 ? "service_busy" : "request_failed";
     if (statusCode >= 500) {
-      console.error(`[gateway] ${error?.stack ?? error}`);
+      console.error(`[gateway] request=${request.gatewayRequestId || "none"} code=${code} ${error?.stack ?? error}`);
     }
     sendJson(response, statusCode, {
+      code,
       error: statusCode >= 500
-        ? "The Codex gateway could not complete the request."
+        ? statusCode === 503 ? "The writing service is busy. Please try again shortly."
+          : statusCode === 504 ? "The writing service timed out. Please try again shortly."
+          : "The writing service could not complete the request. Please try again shortly."
         : error.message,
     });
   }
@@ -95,6 +100,26 @@ async function route(request, response) {
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/v1/diagnostics") {
+    requireScope(accessScope, "admin");
+    sendJson(response, 200, {
+      release: "scout-stability-2026-09-17",
+      queuedDrafts: codex.queuedDrafts,
+      activeScouts: codex.scoutActive,
+      waitingScouts: codex.scoutWaiters.length,
+      activeThreads: codex.activeThreadCount,
+      sessionsSinceRecycle: codex.sessionsSinceRecycle,
+      recycleCount: codex.recycleCount,
+      threadReleaseFailures: codex.threadReleaseFailures,
+      scoutCompleted: codex.scoutCompleted,
+      scoutFailed: codex.scoutFailed,
+      lastScoutSuccessAt: codex.lastScoutSuccessAt,
+      lastScoutErrorAt: codex.lastScoutErrorAt,
+      lastScoutErrorCode: codex.lastScoutErrorCode,
+    });
+    return;
+  }
+
   if (request.method === "POST" && url.pathname === "/v1/auth/device/start") {
     requireAnyScope(accessScope, ["admin", "extension", "accounting"]);
     sendJson(response, 200, await codex.startDeviceLogin());
@@ -134,7 +159,7 @@ async function route(request, response) {
     sendJson(
       response,
       200,
-      await codex.enqueueDraft({ requestId, scoutId, postText }),
+      await codex.enqueueDraft({ requestId, scoutId, postText, deadlineAt: readDeadline(body.deadlineAt) }),
     );
     return;
   }
@@ -190,6 +215,7 @@ async function route(request, response) {
         scoutId,
         context,
         samples,
+        deadlineAt: readDeadline(body.deadlineAt),
       }),
     );
     return;
@@ -373,6 +399,12 @@ function readBoundedInteger(value, fallback, minimum, maximum, name) {
   return parsed;
 }
 
+function readDeadline(value) {
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(value) || value < 0) throw new GatewayError(400, "Invalid request deadline.");
+  return value;
+}
+
 function requireAnyScope(actual, allowed) {
   if (!allowed.includes(actual)) throw new GatewayError(403, "Forbidden.");
 }
@@ -415,7 +447,9 @@ async function readJson(request, maximumBytes = 524_288) {
     chunks.push(chunk);
   }
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (typeof body?.requestId === "string" && /^[a-zA-Z0-9:_-]{1,200}$/.test(body.requestId)) request.gatewayRequestId = body.requestId;
+    return body;
   } catch {
     throw new GatewayError(400, "Request body must be valid JSON.");
   }

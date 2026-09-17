@@ -45,6 +45,11 @@ export const run = internalAction({
     try {
       const job = await ctx.runQuery(internal.scoutAiJobs.readWork, args);
       if (!job || job.expiresAt <= Date.now()) return null;
+      const gatewayTiming = () => {
+        const timeoutMs = Math.min(95_000, job.expiresAt - Date.now() - 5_000);
+        if (timeoutMs <= 5_000) throw new Error("The writing service preparation timed out. Please resume to try again.");
+        return { timeoutMs, deadlineAt: job.expiresAt - 10_000 };
+      };
       let result: unknown;
       const requestId = `${args.jobId}:${args.generation}`;
       if (job.kind === "language") {
@@ -53,9 +58,10 @@ export const run = internalAction({
         if (prepared.cached) {
           result = { ...prepared.cached, cached: true, model: "cached" };
         } else {
+          const timing = gatewayTiming();
           const response = await requestCodexGateway<{results: Array<{id: string; status: string; languageCode: string; confidence: number}>; model: string}>("/v1/linkedin/language-check", {
-            method: "POST", timeoutMs: 570_000,
-            body: { requestId, scoutId: job.userId, context: input.context, samples: prepared.samples },
+            method: "POST", timeoutMs: timing.timeoutMs,
+            body: { requestId, scoutId: job.userId, context: input.context, samples: prepared.samples, deadlineAt: timing.deadlineAt },
           });
           const results = normalizeLanguageResults(response.results, prepared.samples);
           if (input.context === "profile") await ctx.runAction(internal.scoutAiDb.saveProfileLanguage, { leadId: input.leadId, operatorId: job.operatorId, result: results[0] });
@@ -65,8 +71,9 @@ export const run = internalAction({
         const prepared = job.kind === "note"
           ? await ctx.runAction(internal.scoutAiDb.prepareNote, { ...JSON.parse(job.request) as Infer<ReturnType<typeof noteInput>>, operatorId: job.operatorId })
           : { postText: (JSON.parse(job.request) as {postText: string}).postText, firstName: "" };
+        const timing = gatewayTiming();
         const response = await requestCodexGateway<{draft: string; languageStatus: "english"; threadId: string; model: string}>("/v1/drafts", {
-          method: "POST", timeoutMs: 570_000, body: { requestId, scoutId: job.userId, postText: prepared.postText },
+          method: "POST", timeoutMs: timing.timeoutMs, body: { requestId, scoutId: job.userId, postText: prepared.postText, deadlineAt: timing.deadlineAt },
         });
         if (job.kind === "note") {
           const note = composeConnectionNote(prepared.firstName, response.draft);

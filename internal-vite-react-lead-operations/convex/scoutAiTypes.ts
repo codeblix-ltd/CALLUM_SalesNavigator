@@ -21,5 +21,6 @@ export const languageResult = v.object({
 });
 export const jobStatus = v.union(v.literal("pending"), v.literal("complete"), v.literal("failed"));
 export const jobReceipt = v.object({ jobId: v.id("scoutAiJobs"), generation: v.string() });
-export const JOB_TIMEOUT_MS = 650_000;
+// Gateway execution (85s + cleanup) must finish before the browser's 120s wait.
+export const JOB_TIMEOUT_MS = 110_000;
 export const RESULT_CACHE_MS = 60 * 60 * 1_000;
