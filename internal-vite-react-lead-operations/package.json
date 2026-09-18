@@ -20,7 +20,7 @@
     "veblen:sync": "node --env-file=.env.local scripts/sync-veblen-members.mjs",
     "setup:secrets": "node scripts/configure-secrets.mjs",
     "extension:config": "node scripts/sync-extension-config.mjs",
-    "extension:test": "node scripts/test-extension.mjs && node scripts/test-scout-complaints.mjs",
+    "extension:test": "node scripts/test-extension.mjs && node scripts/test-scout-complaints.mjs && node scripts/test-linkedin-navigation.mjs",
     "support:test": "node scripts/test-support.mjs && node scripts/test-capture.mjs && node scripts/test-extension-updates.mjs",
     "stability:test": "node scripts/test-ai-resume.mjs && node scripts/test-scout-recovery.mjs && node scripts/test-gateway-lifecycle.mjs && node scripts/test-compute-usage.mjs",
     "admin-unassign:test": "node scripts/test-admin-unassignment.mjs",

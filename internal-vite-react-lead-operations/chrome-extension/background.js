@@ -394,7 +394,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
     try {
       autoWithdraw = await autoWithdrawOldRequests(runContext);
     } catch (error) {
-      if (isWorkflowControlError(error)) throw error;
+      if (isWorkflowControlError(error) || isLinkedInAccessInterruptionError(error)) throw error;
       throw new Error(`Sent invitation sync failed: ${cleanError(error)}`);
     }
     progress.autoWithdraw = autoWithdraw;
@@ -752,7 +752,11 @@ class WorkflowControlError extends Error {
 class LinkedInAccessInterruptionError extends Error {
   constructor(kind) {
     super(
-      kind === "checkpoint"
+      kind === "page_unavailable"
+        ? "The LinkedIn page could not be read. Scout paused without skipping this lead. Check that LinkedIn opens in a normal tab, then press Resume. If it still fails, use Report Bug."
+        : kind === "profile_link"
+        ? "LinkedIn did not provide a verified profile link. Scout paused without skipping this lead. Please use Report Bug so support can check the link."
+        : kind === "checkpoint"
         ? "LinkedIn opened a security check. Callum Scout paused instead of skipping more leads. Complete the LinkedIn check, then press Resume."
         : "LinkedIn is signed out or blocked the profile page. Callum Scout paused instead of skipping more leads. Sign in to LinkedIn, then press Resume.",
     );
@@ -1541,7 +1545,7 @@ async function reviewAcceptedConnections(
       },
     });
     const result = await collectAcceptedContact(lead, runContext).catch(async (error) => {
-      if (isWorkflowControlError(error)) throw error;
+      if (isWorkflowControlError(error) || isLinkedInAccessInterruptionError(error)) throw error;
       await ScoutApi.authenticatedAction("scouts:reportError", {
         leadId: lead.id,
         message: cleanError(error),
@@ -1752,6 +1756,8 @@ async function collectAcceptedContact(lead, runContext) {
     const profileUrl = await waitForResolvedLinkedInProfileUrl(
       tab.id,
       requestedProfileUrl,
+      30_000,
+      lead.fullName,
     );
     await waitForAutomationContentScript(runContext, tab.id);
     const contact = await sendAutomationMessageToTab(
@@ -2162,7 +2168,8 @@ async function createPersonalizedConnectionNoteWithRetry(
       }).catch(() => {});
       return note;
     } catch (error) {
-      if (isWorkflowControlError(error) || isRecoverableServiceError(error)) throw error;
+      if (isWorkflowControlError(error) || isRecoverableServiceError(error) ||
+          isLinkedInAccessInterruptionError(error)) throw error;
       lastError = error;
       if (attempt < CONNECTION_NOTE_MAX_ATTEMPTS) {
         await sendAutomationMessageToTab(runContext, tabId, {
@@ -2205,7 +2212,8 @@ async function checkLeadProfileLanguage(
       },
     );
     if (extraction?.ok) profile = extraction.result || {};
-  } catch {
+  } catch (error) {
+    if (isWorkflowControlError(error) || isLinkedInAccessInterruptionError(error)) throw error;
     profile = null;
   }
   const sample = [profile?.headline, profile?.currentRole, profile?.about]
@@ -2313,6 +2321,8 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
     const profileUrl = await waitForResolvedLinkedInProfileUrl(
       tab.id,
       requestedProfileUrl,
+      30_000,
+      lead.fullName,
     );
     resolvedProfileUrl = profileUrl;
     await ScoutApi.authenticatedAction("scouts:recordProfileVisit", {
@@ -2413,7 +2423,8 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
           );
         automationOptions.includeNote = true;
       } catch (error) {
-        if (isWorkflowControlError(error) || isRecoverableServiceError(error)) throw error;
+        if (isWorkflowControlError(error) || isRecoverableServiceError(error) ||
+            isLinkedInAccessInterruptionError(error)) throw error;
         includeNote = false;
         automationOptions.includeNote = false;
         console.warn(
@@ -2616,7 +2627,6 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
       connectionNoteAdded: automationOptions.includeNote,
     };
   } catch (error) {
-    if (isLinkedInAccessInterruptionError(error)) throw error;
     const message = cleanError(error);
     knownConnectionDetected =
       knownConnectionDetected || error?.knownConnection === true;
@@ -2624,6 +2634,10 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
       await ScoutApi.authenticatedAction("scouts:releaseConnectionRequest", {
         leadId: lead.id,
       }).catch(() => {});
+    }
+    if (isLinkedInAccessInterruptionError(error)) {
+      await ScoutApi.authenticatedAction("scouts:reportError", { leadId: lead.id, message }).catch(() => {});
+      throw error;
     }
     const requestedControl = getRequestedWorkflowControl(runContext);
     if (isWorkflowControlError(error) || requestedControl) {
@@ -2716,6 +2730,7 @@ function waitForTabComplete(
     expectedUrl = null,
     stage = "LinkedIn page",
     timeoutMs = LINKEDIN_TAB_LOAD_TIMEOUT_MS,
+    exactUrl = false,
   } = {},
 ) {
   return new Promise((resolve, reject) => {
@@ -2723,6 +2738,8 @@ function waitForTabComplete(
     let timeout = null;
     let readinessProbe = null;
     let lastKnownPath = "";
+    let probing = false;
+    let unreadableSince = null;
     const finish = (error) => {
       if (settled) return;
       settled = true;
@@ -2733,31 +2750,37 @@ function waitForTabComplete(
       else resolve();
     };
     const probeReadiness = async () => {
-      if (settled) return;
+      if (settled || probing) return;
+      probing = true;
+      clearTimeout(readinessProbe);
       try {
         const tab = await chrome.tabs.get(tabId);
         const currentUrl = tab.pendingUrl || tab.url || "";
         throwIfLinkedInAccessInterrupted(currentUrl);
         lastKnownPath = linkedInPath(currentUrl) || lastKnownPath;
-        if (
-          tab.status === "complete" &&
-          (!expectedUrl || isExpectedLinkedInPage(currentUrl, expectedUrl))
-        ) {
-          finish();
-          return;
-        }
-        if (expectedUrl) {
-          const pageInfo = await sendMessageToTab(tabId, {
-            type: "GET_PAGE_INFO",
-          });
+        if (expectedUrl || linkedInPath(currentUrl)) {
+          const pageInfo = await readLinkedInPageInfo(tabId);
           throwIfLinkedInAccessInterrupted(pageInfo?.url);
           if (
             pageInfo?.url &&
-            isExpectedLinkedInPage(pageInfo.url, expectedUrl)
+            sameLinkedInDocument(pageInfo.url, currentUrl) &&
+            (!expectedUrl || (exactUrl ? sameLinkedInDocument(pageInfo.url, expectedUrl) : isExpectedLinkedInPage(pageInfo.url, expectedUrl)))
           ) {
             finish();
             return;
           }
+          // Browser error pages can report status=complete and retain the
+          // intended URL, but cannot answer our content-script heartbeat.
+          if (tab.status === "complete" && !pageInfo?.url) {
+            unreadableSince ??= Date.now();
+            if (Date.now() - unreadableSince >= 15_000) {
+              finish(new LinkedInAccessInterruptionError("page_unavailable"));
+              return;
+            }
+          } else unreadableSince = null;
+        } else if (tab.status === "complete" && !expectedUrl) {
+          finish();
+          return;
         }
       } catch (error) {
         if (
@@ -2767,6 +2790,8 @@ function waitForTabComplete(
           finish(error);
           return;
         }
+      } finally {
+        probing = false;
       }
       if (!settled) {
         readinessProbe = setTimeout(
@@ -2782,14 +2807,33 @@ function waitForTabComplete(
     timeout = setTimeout(
       () =>
         finish(
-          new Error(
-            `${stage} did not become ready within ${Math.round(timeoutMs / 1_000)} seconds${lastKnownPath ? ` (last page: ${lastKnownPath})` : ""}.`,
-          ),
+          Object.assign(new LinkedInAccessInterruptionError("page_unavailable"), {
+            stage, lastKnownPath,
+          }),
         ),
       timeoutMs,
     );
     void probeReadiness();
   });
+}
+
+function sameLinkedInDocument(left, right) {
+  try {
+    const a = new URL(left), b = new URL(right);
+    return a.protocol === "https:" && b.protocol === "https:" &&
+      /(^|\.)linkedin\.com$/i.test(a.hostname) && /(^|\.)linkedin\.com$/i.test(b.hostname) &&
+      a.pathname.replace(/\/+$/, "") === b.pathname.replace(/\/+$/, "");
+  } catch { return false; }
+}
+
+async function readLinkedInPageInfo(tabId, expectedProfileName) {
+  let timer;
+  try {
+    return await Promise.race([
+      sendMessageToTab(tabId, { type: "GET_PAGE_INFO", expectedProfileName }),
+      new Promise(resolve => { timer = setTimeout(() => resolve(null), 3_000); }),
+    ]);
+  } finally { clearTimeout(timer); }
 }
 
 function isExpectedLinkedInPage(actualValue, expectedValue) {
@@ -2858,26 +2902,23 @@ function linkedInPath(value) {
 
 async function waitForContentScript(tabId, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
-  let lastError = "";
   while (Date.now() < deadline) {
     const tab = await chrome.tabs.get(tabId);
-    throwIfLinkedInAccessInterrupted(tab.pendingUrl || tab.url || "");
-    const response = await sendMessageToTab(tabId, { type: "GET_PAGE_INFO" });
+    const currentUrl = tab.pendingUrl || tab.url || "";
+    throwIfLinkedInAccessInterrupted(currentUrl);
+    const response = await readLinkedInPageInfo(tabId);
     throwIfLinkedInAccessInterrupted(response?.url);
-    if (response?.url) return response;
-    lastError = response?.error || lastError;
+    if (sameLinkedInDocument(response?.url, currentUrl)) return response;
     await sleep(250);
   }
-  throw new Error(
-    lastError ||
-      "Callum Scout couldn’t start on the LinkedIn page. Reload the page and try again.",
-  );
+  throw new LinkedInAccessInterruptionError("page_unavailable");
 }
 
 async function waitForResolvedLinkedInProfileUrl(
   tabId,
   requestedProfileUrl,
   timeoutMs = 30_000,
+  expectedProfileName = "",
 ) {
   const requestedSlug = linkedInProfileSlug(requestedProfileUrl);
   const mustRedirect = isOpaqueLinkedInProfileSlug(requestedSlug);
@@ -2895,14 +2936,23 @@ async function waitForResolvedLinkedInProfileUrl(
     }
     if (currentProfileUrl && Date.now() - lastUrlChangeAt >= 1_000) {
       const currentSlug = linkedInProfileSlug(currentProfileUrl);
-      if (!mustRedirect || currentSlug !== requestedSlug) return currentProfileUrl;
+      if (!mustRedirect || !isOpaqueLinkedInProfileSlug(currentSlug)) return currentProfileUrl;
+      const page = await readLinkedInPageInfo(tabId, expectedProfileName);
+      const verified = tryNormalizeLinkedInProfileUrl(page?.resolvedProfileUrl);
+      if (sameLinkedInDocument(page?.url, currentUrl) && verified &&
+          !isOpaqueLinkedInProfileSlug(linkedInProfileSlug(verified))) {
+        // Navigate to the observed own-profile link so every later identity
+        // check and recent-activity URL uses the same verified page.
+        await chrome.tabs.update(tabId, { url: verified });
+        await waitForTabComplete(tabId, { expectedUrl: verified, exactUrl: true,
+          timeoutMs: Math.max(1, deadline - Date.now()), stage: "Verified LinkedIn profile" });
+        return verified;
+      }
     }
     await sleep(250);
   }
   if (lastProfileUrl && !mustRedirect) return lastProfileUrl;
-  throw new Error(
-    "LinkedIn couldn’t open this lead’s profile. Try again.",
-  );
+  throw new LinkedInAccessInterruptionError("profile_link");
 }
 
 function normalizeLinkedInProfileUrl(value) {

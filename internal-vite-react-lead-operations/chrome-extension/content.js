@@ -77,6 +77,7 @@
         url: window.location.href,
         isRecentActivity: window.location.pathname.includes("/recent-activity"),
         isProfile: window.location.pathname.startsWith("/in/"),
+        resolvedProfileUrl: getVerifiedProfileLink(message.expectedProfileName),
       });
       return false;
     }
@@ -2754,6 +2755,37 @@
     if (/^(?:2nd|3rd)/.test(degree)) return "not_connected";
     if (degree === "1st" || labels.some(label => /^Connected$/i.test(label))) return "connected";
     return "unavailable";
+  }
+
+  // Opaque imported profile URLs can render successfully without redirecting.
+  // Resolve only the displayed person's own contact link, never recommendations.
+  function getVerifiedProfileLink(expectedProfileName) {
+    if (!expectedProfileName || !/^\/in\/[^/]+\/?$/.test(window.location.pathname)) return null;
+    const main = document.querySelector("main");
+    const heading = Array.from(main?.querySelectorAll("h1, h2") || [])
+      .find(el => isElementVisible(el) && !el.closest("aside, [role='dialog']"));
+    if (!heading || !personNamesMatch(heading.textContent, expectedProfileName)) return null;
+    let scope = heading.parentElement;
+    while (scope && scope !== main) {
+      const otherHeading = Array.from(scope.querySelectorAll("h1, h2, h3"))
+        .some(el => el !== heading && isElementVisible(el) && !personNamesMatch(el.textContent, expectedProfileName));
+      if (otherHeading) return null;
+      const urls = new Set();
+      for (const link of scope.querySelectorAll("a[href]")) {
+        if (!isElementVisible(link) || link.closest("aside, [role='dialog']")) continue;
+        try {
+          const url = new URL(link.href, window.location.origin);
+          const match = url.pathname.match(/^\/in\/([^/]+)\/overlay\/contact-info\/?$/);
+          if (url.protocol === "https:" && /(^|\.)linkedin\.com$/i.test(url.hostname) && match &&
+              !/^AC[ow][A-Za-z0-9_-]{15,}$/.test(match[1])) {
+            urls.add(`https://www.linkedin.com/in/${match[1]}`);
+          }
+        } catch { /* Ignore malformed links; never guess a profile. */ }
+      }
+      if (urls.size) return urls.size === 1 ? [...urls][0] : null;
+      scope = scope.parentElement;
+    }
+    return null;
   }
 
   function getCurrentProfileName(expectedProfileName) {
