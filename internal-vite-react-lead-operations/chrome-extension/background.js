@@ -254,6 +254,7 @@ async function startDailyWorkflow(
       startedAt,
       resumedAt: resume ? Date.now() : null,
       pausedAt: null,
+      pauseDetails: null,
       stoppedAt: null,
       completedAt: null,
       phase: resume ? previousState.phase || "preparing" : "preparing",
@@ -302,8 +303,16 @@ async function startDailyWorkflow(
     .catch(async (error) => {
       let requestedControl = getRequestedWorkflowControl(runContext);
       if ((isLinkedInAccessInterruptionError(error) || isRecoverableServiceError(error)) && !requestedControl) {
+        const interruptedState = await readAutoLeadRunState();
         await requestWorkflowControl("pause", {
           reason: cleanError(error),
+          pauseDetails: {
+            kind: error.kind || "service",
+            stage: error.stage || interruptedState.phase || "unknown",
+            pageUrl: safeLinkedInDiagnosticUrl(error.pageUrl),
+            expectedUrl: safeLinkedInDiagnosticUrl(error.expectedUrl),
+            occurredAt: error.occurredAt || Date.now(),
+          },
         });
         requestedControl = "pause";
       }
@@ -750,7 +759,7 @@ class WorkflowControlError extends Error {
 }
 
 class LinkedInAccessInterruptionError extends Error {
-  constructor(kind) {
+  constructor(kind, details = {}) {
     super(
       kind === "page_unavailable"
         ? "The LinkedIn page could not be read. Scout paused without skipping this lead. Check that LinkedIn opens in a normal tab, then press Resume. If it still fails, use Report Bug."
@@ -758,11 +767,24 @@ class LinkedInAccessInterruptionError extends Error {
         ? "LinkedIn did not provide a verified profile link. Scout paused without skipping this lead. Please use Report Bug so support can check the link."
         : kind === "checkpoint"
         ? "LinkedIn opened a security check. Callum Scout paused instead of skipping more leads. Complete the LinkedIn check, then press Resume."
-        : "LinkedIn is signed out or blocked the profile page. Callum Scout paused instead of skipping more leads. Sign in to LinkedIn, then press Resume.",
+        : "LinkedIn opened a sign-in or access page. Scout paused safely. Open LinkedIn in this Chrome profile and check the page before pressing Resume. If it happens again, use Report Bug.",
     );
     this.name = "LinkedInAccessInterruptionError";
     this.kind = kind;
+    this.pageUrl = safeLinkedInDiagnosticUrl(details.pageUrl);
+    this.expectedUrl = safeLinkedInDiagnosticUrl(details.expectedUrl);
+    this.stage = String(details.stage || "").slice(0, 200);
+    this.occurredAt = Date.now();
   }
+}
+
+function safeLinkedInDiagnosticUrl(value) {
+  try {
+    const url = new URL(String(value));
+    if (url.protocol !== "https:" || !/(^|\.)linkedin\.com$/i.test(url.hostname)) return "";
+    // Never persist credentials, query parameters or fragments from redirects.
+    return `${url.origin}${url.pathname}`.slice(0, 1000);
+  } catch { return ""; }
 }
 
 function isLinkedInAccessInterruptionError(error) {
@@ -772,7 +794,7 @@ function isLinkedInAccessInterruptionError(error) {
   );
 }
 
-async function requestWorkflowControl(action, { reason = null } = {}) {
+async function requestWorkflowControl(action, { reason = null, pauseDetails = null } = {}) {
   await ensureAutoLeadRunState();
   const state = await readAutoLeadRunState();
   if (action === "pause") {
@@ -785,6 +807,7 @@ async function requestWorkflowControl(action, { reason = null } = {}) {
       status: workflowPromise ? "pausing" : "paused",
       phase: workflowPromise ? state.phase : "paused",
       pausedAt: workflowPromise ? null : Date.now(),
+      pauseDetails,
       message: reason ||
         (workflowPromise
           ? "Pausing after the current safe step..."
@@ -891,6 +914,7 @@ function defaultAutoLeadRunState() {
     startedAt: null,
     resumedAt: null,
     pausedAt: null,
+    pauseDetails: null,
     stoppedAt: null,
     completedAt: null,
     updatedAt: Date.now(),
@@ -2737,7 +2761,7 @@ function waitForTabComplete(
     let settled = false;
     let timeout = null;
     let readinessProbe = null;
-    let lastKnownPath = "";
+    let lastKnownUrl = "";
     let probing = false;
     let unreadableSince = null;
     const finish = (error) => {
@@ -2755,12 +2779,17 @@ function waitForTabComplete(
       clearTimeout(readinessProbe);
       try {
         const tab = await chrome.tabs.get(tabId);
-        const currentUrl = tab.pendingUrl || tab.url || "";
-        throwIfLinkedInAccessInterrupted(currentUrl);
-        lastKnownPath = linkedInPath(currentUrl) || lastKnownPath;
+        let currentUrl = tab.pendingUrl || tab.url || "";
+        lastKnownUrl = currentUrl;
+        throwIfLinkedInAccessInterrupted(currentUrl, { expectedUrl, stage });
         if (expectedUrl || linkedInPath(currentUrl)) {
           const pageInfo = await readLinkedInPageInfo(tabId);
-          throwIfLinkedInAccessInterrupted(pageInfo?.url);
+          // The reply may belong to a document that navigated away while we
+          // waited. Only the latest tab URL can establish an access redirect.
+          const latestTab = await chrome.tabs.get(tabId);
+          currentUrl = latestTab.pendingUrl || latestTab.url || "";
+          lastKnownUrl = currentUrl;
+          throwIfLinkedInAccessInterrupted(currentUrl, { expectedUrl, stage });
           if (
             pageInfo?.url &&
             sameLinkedInDocument(pageInfo.url, currentUrl) &&
@@ -2771,10 +2800,10 @@ function waitForTabComplete(
           }
           // Browser error pages can report status=complete and retain the
           // intended URL, but cannot answer our content-script heartbeat.
-          if (tab.status === "complete" && !pageInfo?.url) {
+          if (latestTab.status === "complete" && !pageInfo?.url) {
             unreadableSince ??= Date.now();
             if (Date.now() - unreadableSince >= 15_000) {
-              finish(new LinkedInAccessInterruptionError("page_unavailable"));
+              finish(new LinkedInAccessInterruptionError("page_unavailable", { pageUrl: currentUrl, expectedUrl, stage }));
               return;
             }
           } else unreadableSince = null;
@@ -2807,8 +2836,8 @@ function waitForTabComplete(
     timeout = setTimeout(
       () =>
         finish(
-          Object.assign(new LinkedInAccessInterruptionError("page_unavailable"), {
-            stage, lastKnownPath,
+          new LinkedInAccessInterruptionError("page_unavailable", {
+            stage, pageUrl: lastKnownUrl, expectedUrl,
           }),
         ),
       timeoutMs,
@@ -2867,8 +2896,7 @@ function linkedInAccessInterruptionKind(value) {
     const path = url.pathname.replace(/\/+$/, "") || "/";
     if (/^\/checkpoint(?:\/|$)/i.test(path)) return "checkpoint";
     if (
-      /^\/(?:authwall|login|uas\/login|signup)(?:\/|$)/i.test(path) ||
-      /\blogin(?:\?|$)/i.test(url.href)
+      /^\/(?:authwall|login|uas\/login|signup)(?:\/|$)/i.test(path)
     ) {
       return "login";
     }
@@ -2878,9 +2906,9 @@ function linkedInAccessInterruptionKind(value) {
   }
 }
 
-function throwIfLinkedInAccessInterrupted(value) {
+function throwIfLinkedInAccessInterrupted(value, details = {}) {
   const kind = linkedInAccessInterruptionKind(value);
-  if (kind) throw new LinkedInAccessInterruptionError(kind);
+  if (kind) throw new LinkedInAccessInterruptionError(kind, { ...details, pageUrl: value });
 }
 
 function shouldReportEngagementProblem(reason) {
@@ -2902,16 +2930,19 @@ function linkedInPath(value) {
 
 async function waitForContentScript(tabId, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
+  let currentUrl = "";
   while (Date.now() < deadline) {
     const tab = await chrome.tabs.get(tabId);
-    const currentUrl = tab.pendingUrl || tab.url || "";
-    throwIfLinkedInAccessInterrupted(currentUrl);
+    currentUrl = tab.pendingUrl || tab.url || "";
+    throwIfLinkedInAccessInterrupted(currentUrl, { stage: "Reconnecting to LinkedIn page" });
     const response = await readLinkedInPageInfo(tabId);
-    throwIfLinkedInAccessInterrupted(response?.url);
+    const latestTab = await chrome.tabs.get(tabId);
+    currentUrl = latestTab.pendingUrl || latestTab.url || "";
+    throwIfLinkedInAccessInterrupted(currentUrl, { stage: "Reconnecting to LinkedIn page" });
     if (sameLinkedInDocument(response?.url, currentUrl)) return response;
     await sleep(250);
   }
-  throw new LinkedInAccessInterruptionError("page_unavailable");
+  throw new LinkedInAccessInterruptionError("page_unavailable", { pageUrl: currentUrl, stage: "Reconnecting to LinkedIn page" });
 }
 
 async function waitForResolvedLinkedInProfileUrl(
@@ -2928,7 +2959,7 @@ async function waitForResolvedLinkedInProfileUrl(
   while (Date.now() < deadline) {
     const tab = await chrome.tabs.get(tabId);
     const currentUrl = tab.pendingUrl || tab.url || "";
-    throwIfLinkedInAccessInterrupted(currentUrl);
+    throwIfLinkedInAccessInterrupted(currentUrl, { expectedUrl: requestedProfileUrl, stage: "Resolving LinkedIn profile" });
     const currentProfileUrl = tryNormalizeLinkedInProfileUrl(currentUrl);
     if (currentProfileUrl && currentProfileUrl !== lastProfileUrl) {
       lastProfileUrl = currentProfileUrl;
@@ -2938,8 +2969,11 @@ async function waitForResolvedLinkedInProfileUrl(
       const currentSlug = linkedInProfileSlug(currentProfileUrl);
       if (!mustRedirect || !isOpaqueLinkedInProfileSlug(currentSlug)) return currentProfileUrl;
       const page = await readLinkedInPageInfo(tabId, expectedProfileName);
+      const latestTab = await chrome.tabs.get(tabId);
+      const latestUrl = latestTab.pendingUrl || latestTab.url || "";
+      throwIfLinkedInAccessInterrupted(latestUrl, { expectedUrl: requestedProfileUrl, stage: "Resolving LinkedIn profile" });
       const verified = tryNormalizeLinkedInProfileUrl(page?.resolvedProfileUrl);
-      if (sameLinkedInDocument(page?.url, currentUrl) && verified &&
+      if (sameLinkedInDocument(page?.url, latestUrl) && verified &&
           !isOpaqueLinkedInProfileSlug(linkedInProfileSlug(verified))) {
         // Navigate to the observed own-profile link so every later identity
         // check and recent-activity URL uses the same verified page.
@@ -2952,7 +2986,7 @@ async function waitForResolvedLinkedInProfileUrl(
     await sleep(250);
   }
   if (lastProfileUrl && !mustRedirect) return lastProfileUrl;
-  throw new LinkedInAccessInterruptionError("profile_link");
+  throw new LinkedInAccessInterruptionError("profile_link", { pageUrl: lastProfileUrl, expectedUrl: requestedProfileUrl, stage: "Resolving LinkedIn profile" });
 }
 
 function normalizeLinkedInProfileUrl(value) {

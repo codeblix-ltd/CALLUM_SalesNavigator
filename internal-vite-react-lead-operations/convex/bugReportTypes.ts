@@ -5,6 +5,9 @@ export const reportMessage = v.object({ clientId: v.string(), author: v.union(v.
 export const reportContext = v.object({
   version: v.string(), browser: v.string(), timezone: v.string(),
   pageUrl: v.string(), runStatus: v.string(), runStep: v.string(), lead: v.string(),
+  pauseKind: v.optional(v.string()), pauseStage: v.optional(v.string()),
+  pausePageUrl: v.optional(v.string()), pauseExpectedUrl: v.optional(v.string()),
+  pauseOccurredAt: v.optional(v.string()),
 });
 export const reportFields = {
   reporterId: v.id("users"), reporter: v.string(), operatorId: v.string(),

@@ -11,7 +11,7 @@ function backend(file) {
   const server = new Proxy({}, { get: () => definition => definition });
   const require = id => id === "convex/values" ? { v: validator } : id === "./_generated/server" ? server : id === "./_generated/api" ? { internal: refs } : id === "@convex-dev/auth/server" ? { getAuthUserId: async ctx => ctx.userId } : {};
   const source = ts.transpileModule(readFileSync(new URL(`../convex/${file}.ts`, import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
-  vm.runInNewContext(source, { module, exports: module.exports, require, Buffer, Blob, Uint8Array, Date });
+  vm.runInNewContext(source, { module, exports: module.exports, require, Buffer, Blob, Uint8Array, Date, URL });
   return module.exports;
 }
 const actions = backend("bugReportActions");
@@ -137,3 +137,25 @@ assert.equal(posted.description, "Test report"); assert.equal(posted.context.ver
 assert.equal(posted.screenshots.length, 1, "finished capture must be attached to submission");
 assert.match(get("status").textContent, /Report received/);
 console.log("Support tests passed: authenticated submission, validation, idempotency, cleanup, admin authorization, context privacy, capture cancellation, frame failure, and send confirmation.");
+
+// Retained pause evidence works even when the failed tab has been closed.
+const reportScript=readFileSync(new URL('../chrome-extension/report.js',import.meta.url),'utf8');
+const helperStart=reportScript.indexOf('function pauseReportContext');
+const helperEnd=reportScript.indexOf('async function showIdentity',helperStart);
+const pauseSandbox={URL,Date,Number,short:value=>typeof value==='string'?value.slice(0,1000):''};
+vm.runInNewContext(reportScript.slice(helperStart,helperEnd),pauseSandbox);
+const pauseDetails={kind:'login',stage:'Sent invitations',pageUrl:'https://user:password@www.linkedin.com/login?token=SECRET#PRIVATE',expectedUrl:'https://www.linkedin.com/mynetwork/invitation-manager/sent/?tracking=SECRET',occurredAt:Date.now()-1000};
+const pauseContext=pauseSandbox.pauseReportContext({status:'paused',pauseDetails});
+assert.equal(pauseContext.pausePageUrl,'https://www.linkedin.com/login');
+assert.equal(pauseContext.pauseExpectedUrl,'https://www.linkedin.com/mynetwork/invitation-manager/sent/');
+assert.equal(pauseContext.pauseStage,'Sent invitations');
+assert.equal(pauseContext.pauseOccurredAt,new Date(pauseDetails.occurredAt).toISOString());
+assert.equal(Object.keys(pauseSandbox.pauseReportContext({status:'running',pauseDetails})).length,0,'resumed runs must not submit old pause evidence');
+assert.equal(Object.keys(pauseSandbox.pauseReportContext({status:'paused'})).length,0,'old installations remain supported');
+assert.equal(pauseSandbox.pauseReportContext({status:'paused',pauseDetails:{...pauseDetails,pageUrl:'https://example.com/private'}}).pausePageUrl,'');
+let sanitized;
+await action({...ctx,runMutation:async(_ref,args)=>{sanitized=args.context;return {id:'report',inserted:true};}}, {...valid,screenshots:[],context:{...valid.context,pausePageUrl:pauseDetails.pageUrl,pauseExpectedUrl:'https://example.com/private',pauseStage:'Sent invitations',pauseKind:'login',pauseOccurredAt:pauseContext.pauseOccurredAt}});
+assert.equal(sanitized.pausePageUrl,'https://www.linkedin.com/login');
+assert.equal(sanitized.pauseExpectedUrl,'');
+await assert.rejects(action(ctx,{...valid,context:{...valid.context,pauseStage:'x'.repeat(1001)}}),/too long/);
+console.log('Pause-report retention/privacy checks passed: old clients, closed originating tab, phase and time, credential/query/fragment stripping, backend sanitization.');

@@ -75,14 +75,44 @@ const recovered=harness({heartbeat:t=>({url:t.url})});
 assert.equal((await recovered.settle(recovered.sandbox.waitForContentScript(1))).url,opaque);
 for(const path of ['checkpoint/challenge','login']) {
   const login=harness({url:'https://www.linkedin.com/'+path});
-  await assert.rejects(login.settle(login.sandbox.waitForTabComplete(1,{expectedUrl:opaque})),/security check|signed out/);
+  await assert.rejects(login.settle(login.sandbox.waitForTabComplete(1,{expectedUrl:opaque})),/security check|sign-in/);
   assert.equal(login.requests,0);
 }
+
+// Jen regression: only actual auth paths on the current document indicate a
+// sign-in interruption. Text in a profile slug/query/fragment is not a login.
+for(const url of [canonical+'-login',canonical+'?next=login',canonical+'#login','https://example.com/login']) {
+  const normal=harness({url,heartbeat:t=>({url:t.url})});
+  assert.equal(normal.sandbox.linkedInAccessInterruptionKind(url),null);
+}
+const sent='https://www.linkedin.com/mynetwork/invitation-manager/sent/';
+for(const method of ['waitForTabComplete','waitForContentScript']) {
+  const staleLogin=harness({url:sent,heartbeat:(t,_m,now)=>({url:now===0?'https://www.linkedin.com/login':t.url})});
+  const pending=method==='waitForTabComplete'?staleLogin.sandbox[method](1,{expectedUrl:sent}):staleLogin.sandbox[method](1);
+  await staleLogin.settle(pending);
+  assert(staleLogin.requests>=2,'stale login reply must be ignored before ready');
+  assert.equal(staleLogin.timers.size,0);
+}
+const realLogin=harness({url:'https://www.linkedin.com/login?session=SECRET#TOKEN'});
+await assert.rejects(realLogin.settle(realLogin.sandbox.waitForTabComplete(1,{expectedUrl:sent,stage:'Sent invitations'})),error=>{
+  assert.equal(error.kind,'login');assert.equal(error.pageUrl,'https://www.linkedin.com/login');
+  assert.equal(error.expectedUrl,sent);assert.equal(error.stage,'Sent invitations');
+  return true;
+});
+let changed;
+changed=harness({url:sent,heartbeat:t=>{changed.tab.url='https://www.linkedin.com/authwall';return {url:t.url};}});
+await assert.rejects(changed.settle(changed.sandbox.waitForTabComplete(1,{expectedUrl:sent})),/sign-in/);
 
 const resolver=harness({heartbeat:(t,m)=>({url:t.url,resolvedProfileUrl:m.expectedProfileName==='Benedict Koh'?canonical:null})});
 assert.equal(await resolver.settle(resolver.sandbox.waitForResolvedLinkedInProfileUrl(1,opaque,30000,'Benedict Koh')),canonical);
 assert.deepEqual(resolver.updates,[canonical]);
 assert(resolver.requests>=2,'verify fresh document after navigating');
+for(const destination of ['checkpoint/challenge','authwall']) {
+  let interrupted;
+  interrupted=harness({heartbeat:t=>{interrupted.tab.url='https://www.linkedin.com/'+destination;return {url:t.url,resolvedProfileUrl:canonical};}});
+  await assert.rejects(interrupted.settle(interrupted.sandbox.waitForResolvedLinkedInProfileUrl(1,opaque,30000,'Benedict Koh')),/security check|sign-in/);
+  assert.equal(interrupted.updates.length,0,'must never navigate away from a real access check using an old profile response');
+}
 const unknown=harness({heartbeat:t=>({url:t.url})});
 await assert.rejects(unknown.settle(unknown.sandbox.waitForResolvedLinkedInProfileUrl(1,opaque,5000,'Benedict Koh')),/verified profile link/);
 assert.equal(unknown.updates.length,0);
@@ -112,7 +142,7 @@ assert.equal(linkFixture({links:[opaque+'/overlay/contact-info/']}),null);
 const daily=between(background,'async function runDailyWorkflow','function ensureAutoLeadRunState');
 const actions=[],checkpoints=[];
 const progress={autoWithdrawComplete:true,reviewComplete:true,review:{},targetRequests:1,requestsSent:0,processedLeads:0,timedLeads:0,results:[],failedLeads:[]};
-const runEnv={Set,Date,Boolean,Math,Error,
+const runEnv={Set,Date,Boolean,Math,Error,URL,
   throwIfWorkflowControlled(){},updateRunProgress:async()=>{},checkpointRun:async(_c,_p,patch)=>checkpoints.push(patch),
   collectLocallyConfirmedConnectionRequests:()=>[],isWorkflowControlError:()=>false,
   ScoutApi:{authenticatedAction:async(path)=>{actions.push(path);if(path==='scouts:getDashboard')return {settings:{onboardingCompleted:true},usage:{requestRemaining:1}};if(path==='scouts:claimNextLead')return {id:'lead',fullName:'Benedict Koh',linkedinUrl:opaque};throw Error('Unexpected API mutation '+path);}},
@@ -170,7 +200,7 @@ Object.assign(runEnv,{
   requestAutomationKeepAwake(){},releaseAutomationKeepAwake(){},
   cleanError:e=>e.message,isRecoverableServiceError:()=>false,
   getRequestedWorkflowControl:()=>null,
-  requestWorkflowControl:async(control,{reason})=>{runEnv.workflowControlRequest={control,reason};},
+  requestWorkflowControl:async(control,{reason,pauseDetails})=>{runEnv.workflowControlRequest={control,reason};saved.pauseDetails=pauseDetails;},
   checkpointRun:async(_c,_p,patch)=>{saved={...saved,...patch};},
 });
 const start=between(background,'async function startDailyWorkflow','async function resumeDailyWorkflow');
@@ -181,4 +211,7 @@ if(runEnv.workflowPromise)await runEnv.workflowPromise;
 assert.equal(saved.status,'paused');assert.equal(saved.phase,'paused');
 assert.equal(saved.currentLead.id,'lead');assert.equal(saved.progress.processedLeads,0);
 assert.match(saved.message,/paused without skipping/);
+assert.equal(saved.pauseDetails.kind,'page_unavailable');
+assert.equal(saved.pauseDetails.stage,'engaging');
+assert.equal(typeof saved.pauseDetails.occurredAt,'number');
 console.log('LinkedIn navigation tests passed: error document, bounded recovery, verified identity, language/note interruption propagation, and final paused state without consuming leads.');

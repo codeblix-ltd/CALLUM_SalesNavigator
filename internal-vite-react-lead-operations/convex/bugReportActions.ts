@@ -14,7 +14,16 @@ export const submit = action({
     if (!/^[\da-f-]{36}$/i.test(args.clientId)) throw new Error("Invalid report reference.");
     if (args.description.trim().length < 5 || args.description.length > 5000) throw new Error("Describe the issue in 5–5,000 characters.");
     if (!Number.isFinite(args.occurredAt) || args.occurredAt < 0 || args.occurredAt > Date.now() + 300000) throw new Error("Please check when the issue happened.");
-    for (const value of Object.values(args.context)) if (value.length > 1000) throw new Error("Report details are too long.");
+    for (const value of Object.values(args.context)) if (typeof value === "string" && value.length > 1000) throw new Error("Report details are too long.");
+    const context = { ...args.context };
+    for (const field of ["pausePageUrl", "pauseExpectedUrl"] as const) {
+      if (!context[field]) continue;
+      try {
+        const url = new URL(context[field]);
+        context[field] = url.protocol === "https:" && /(^|\.)linkedin\.com$/i.test(url.hostname)
+          ? url.origin + url.pathname : "";
+      } catch { context[field] = ""; }
+    }
     if (args.screenshots.length > 3) throw new Error("Attach up to three screenshots.");
     const buffers = args.screenshots.map(data => {
       if (data.length > 1400000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) throw new Error("Screenshot is too large or invalid.");
@@ -28,7 +37,7 @@ export const submit = action({
     try {
       for (const buffer of buffers) screenshots.push(await ctx.storage.store(new Blob([new Uint8Array(buffer)], { type: "image/jpeg" })));
       const result = await ctx.runMutation(internal.bugReports.save, {
-        ...args, description: args.description.trim(), screenshots,
+        ...args, context, description: args.description.trim(), screenshots,
         reporterId: scout.userId, reporter: scout.username, operatorId: scout.operatorId,
         status: "open", adminNote: "", updatedAt: Date.now(),
       });

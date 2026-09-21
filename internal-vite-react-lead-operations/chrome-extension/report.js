@@ -119,8 +119,28 @@ async function initialize() {
     if (url.protocol === "https:" || url.protocol === "http:") pageUrl = url.origin + url.pathname;
   } catch { /* The originating tab may already be closed. */ }
   context = { version, browser: short(navigator.userAgent), timezone: short(Intl.DateTimeFormat().resolvedOptions().timeZone), pageUrl: short(pageUrl), runStatus: short(run.status), runStep: short(run.message || run.phase), lead: short(run.currentLead?.fullName) };
+  Object.assign(context, pauseReportContext(run));
   $("context").textContent = JSON.stringify(context, null, 2);
   await showIdentity();
+}
+
+function pauseReportContext(run) {
+  const details = run.pauseDetails;
+  if (!details || !["paused", "pausing"].includes(run.status)) return {};
+  const safeUrl = value => {
+    try {
+      const url = new URL(value);
+      return url.protocol === "https:" && /(^|\.)linkedin\.com$/i.test(url.hostname)
+        ? short(url.origin + url.pathname) : "";
+    } catch { return ""; }
+  };
+  const timestamp = Number(details.occurredAt);
+  return {
+    pauseKind: short(details.kind), pauseStage: short(details.stage),
+    pausePageUrl: safeUrl(details.pageUrl), pauseExpectedUrl: safeUrl(details.expectedUrl),
+    pauseOccurredAt: Number.isFinite(timestamp) && timestamp > 0 && timestamp <= Date.now()
+      ? new Date(timestamp).toISOString() : "",
+  };
 }
 async function showIdentity() {
   const auth = await ScoutApi.getAuth();
