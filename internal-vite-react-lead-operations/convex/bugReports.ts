@@ -49,6 +49,36 @@ export const reply = mutation({
   },
 });
 
+export const editSupportReply = mutation({
+  args: {
+    id: v.id("bugReports"),
+    clientId: v.string(),
+    expectedText: v.string(),
+    text: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await admin(ctx);
+    const report = await ctx.db.get(args.id);
+    if (!report) throw new Error("Report is not available.");
+    const text = args.text.trim();
+    if (!text || text.length > 2000) throw new Error("Write a reply of up to 2,000 characters.");
+    const messages = report.messages ?? [];
+    const index = messages.findIndex(
+      message => message.author === "support" && message.clientId === args.clientId,
+    );
+    if (index < 0) throw new Error("Support reply is not available.");
+    if (messages[index].text !== args.expectedText) {
+      throw new Error("This reply changed since it was opened. Refresh and try again.");
+    }
+    const updatedMessages = messages.map((message, messageIndex) =>
+      messageIndex === index ? { ...message, text } : message,
+    );
+    await ctx.db.patch(report._id, { messages: updatedMessages, updatedAt: Date.now() });
+    return null;
+  },
+});
+
 export const saveScoutReply = internalMutation({
   args: { id: v.id("bugReports"), userId: v.id("users"), clientId: v.string(), text: v.string(), screenshots: v.array(v.id("_storage")) },
   returns: v.boolean(),

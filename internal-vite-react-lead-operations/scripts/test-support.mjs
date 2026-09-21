@@ -72,6 +72,16 @@ assert.equal(scheduled.length, 1, "a retry does not notify twice");
 await routes.reply.handler(threadCtx(supportUser), { ...replyInput, text: "Please try after updating." });
 assert.equal(thread.messages[1].author, "support", "author comes from authenticated role");
 assert.equal(scheduled.length, 1, "support replies do not notify the admin");
+const supportSentAt = thread.messages[1].sentAt;
+const editInput = { id: "report", clientId: replyInput.clientId, expectedText: "Please try after updating.", text: "Stop completely, then start a normal run." };
+for (const user of [null, owner, { ...supportUser, active: false }]) {
+  await assert.rejects(routes.editSupportReply.handler(threadCtx(user), editInput), /Administrator/);
+}
+await routes.editSupportReply.handler(threadCtx(supportUser), editInput);
+assert.equal(thread.messages[1].text, editInput.text);
+assert.equal(thread.messages[1].sentAt, supportSentAt, "editing text preserves the original send time");
+await assert.rejects(routes.editSupportReply.handler(threadCtx(supportUser), editInput), /changed since/);
+await assert.rejects(routes.editSupportReply.handler(threadCtx(supportUser), { ...editInput, clientId: "missing" }), /not available/);
 assert.equal((await routes.images.handler(threadCtx(owner), { id: "report" })).length, 1);
 const visible = await routes.mine.handler(threadCtx(owner), { paginationOpts: { numItems: 10, cursor: null } });
 assert.equal(visible.page[0].adminNote, undefined, "internal notes must never reach scouts");
@@ -85,7 +95,7 @@ assert.equal((await routes.messageImages.handler(threadCtx(owner), { id: "report
 assert.equal(await routes.saveScoutReply.handler(threadCtx(owner), imageReply), false, "image reply is idempotent");
 assert.equal(scheduled.length, 2);
 await assert.rejects(routes.saveScoutReply.handler(threadCtx({ ...owner, active: false }), { ...imageReply, clientId: "f4bc7002-fb3e-422a-925f-1f110fdc499d" }), /not available/);
-console.log("Support conversation checks passed: ownership, private notes, replies, idempotency and reopening.");
+console.log("Support conversation checks passed: ownership, private notes, replies, safe edits, idempotency and reopening.");
 
 // Run the actual extension page script with DOM/browser doubles, including
 // capture cancellation and cleanup. These do not replace a real Chrome picker test.
