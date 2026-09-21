@@ -27,6 +27,7 @@ import type * as lib_cockroach from "../lib/cockroach.js";
 import type * as lib_codexGateway from "../lib/codexGateway.js";
 import type * as lib_ghl from "../lib/ghl.js";
 import type * as lib_leadUnassignment from "../lib/leadUnassignment.js";
+import type * as lib_profileLinkReview from "../lib/profileLinkReview.js";
 import type * as lib_scoutAiLogic from "../lib/scoutAiLogic.js";
 import type * as lib_veblenExclusions from "../lib/veblenExclusions.js";
 import type * as scoutAdmin from "../scoutAdmin.js";
@@ -66,6 +67,7 @@ declare const fullApi: ApiFromModules<{
   "lib/codexGateway": typeof lib_codexGateway;
   "lib/ghl": typeof lib_ghl;
   "lib/leadUnassignment": typeof lib_leadUnassignment;
+  "lib/profileLinkReview": typeof lib_profileLinkReview;
   "lib/scoutAiLogic": typeof lib_scoutAiLogic;
   "lib/veblenExclusions": typeof lib_veblenExclusions;
   scoutAdmin: typeof scoutAdmin;
