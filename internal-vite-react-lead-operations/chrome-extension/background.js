@@ -447,7 +447,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
       message: "Syncing accepted connections and contact details...",
     });
     review = await reviewAcceptedConnections(dashboard, runContext, {
-      forceReview: true,
+      allowDeferredScan: true,
     });
     progress.review = review;
     progress.reviewComplete = true;
@@ -461,7 +461,9 @@ async function runDailyWorkflow(specificLeadId, runContext) {
     });
     await checkpointRun(runContext, progress, {
       phase: "working_leads",
-      message: "Starting today’s leads...",
+      message: review.deferred
+        ? "Connections check postponed. Continuing with today’s leads..."
+        : "Starting today’s leads...",
       currentLead: null,
     });
   }
@@ -1571,7 +1573,7 @@ function clearActiveWorkflowTab(tabId) {
 async function reviewAcceptedConnections(
   dashboard,
   runContext,
-  { forceReview = false, keepConnectionTab = false, collectContacts = true } = {},
+  { forceReview = false, keepConnectionTab = false, collectContacts = true, allowDeferredScan = false } = {},
 ) {
   const empty = emptyConnectionReview();
 
@@ -1579,7 +1581,9 @@ async function reviewAcceptedConnections(
   const plan = await ScoutApi.authenticatedAction(
     "scouts:getConnectionReviewPlan",
   );
-  if (!forceReview && !plan.shouldReview) return empty;
+  if (!forceReview && !plan.shouldReview) {
+    return { ...empty, notNeeded: true };
+  }
   const lookbackDays = await readConnectionReviewLookbackDays();
 
   const tab = await createAutomationTab(runContext, CONNECTIONS_URL);
@@ -1593,17 +1597,51 @@ async function reviewAcceptedConnections(
     });
     throwIfWorkflowControlled(runContext);
     await waitForAutomationContentScript(runContext, tab.id);
-    const scan = await sendAutomationMessageToTab(runContext, tab.id, {
-      type: "SCAN_RECENT_CONNECTIONS",
-      options: {
-        checkpoint: plan.checkpoint,
-        cutoffDate: plan.cutoffDate,
-        lookbackDays,
-        maxProfiles: 1_000,
-      },
-    });
+    let scan;
+    try {
+      scan = await sendAutomationMessageToTab(runContext, tab.id, {
+        type: "SCAN_RECENT_CONNECTIONS",
+        options: {
+          checkpoint: plan.checkpoint,
+          cutoffDate: plan.cutoffDate,
+          lookbackDays,
+          maxProfiles: 1_000,
+        },
+      });
+    } catch (error) {
+      if (isWorkflowControlError(error) || isLinkedInAccessInterruptionError(error)) {
+        throw error;
+      }
+      scan = { ok: false, error: cleanError(error) };
+    }
     throwIfWorkflowControlled(runContext);
     if (!scan?.ok) {
+      const latestTab = await chrome.tabs.get(tab.id).catch(() => null);
+      const currentUrl = latestTab?.pendingUrl || latestTab?.url || "";
+      throwIfLinkedInAccessInterrupted(currentUrl, {
+        expectedUrl: CONNECTIONS_URL,
+        stage: "LinkedIn connections page",
+      });
+      if (!sameLinkedInDocument(currentUrl, CONNECTIONS_URL)) {
+        throw new LinkedInAccessInterruptionError("page_unavailable", {
+          pageUrl: currentUrl,
+          expectedUrl: CONNECTIONS_URL,
+          stage: "LinkedIn connections page",
+        });
+      }
+      const channelUnavailable =
+        isClosedMessageChannelError(scan?.error) ||
+        /^(?:Could not establish connection\. Receiving end does not exist\.?|Extension context invalidated\.?)$/i.test(
+          String(scan?.error || ""),
+        );
+      if (allowDeferredScan &&
+          (scan?.errorCode === "CONNECTION_CARDS_UNAVAILABLE" || channelUnavailable)) {
+        return {
+          ...empty,
+          deferred: true,
+          error: scan.error || "The connections check could not finish. It will be tried again later.",
+        };
+      }
       throw new Error(scan?.error || "We couldn’t check new connections.");
     }
     reviewResult = await ScoutApi.authenticatedAction(

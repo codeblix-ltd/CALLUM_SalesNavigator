@@ -323,7 +323,12 @@
       .catch((error) => {
         const message = cleanError(error);
         showWorkflowError(message);
-        sendResponse({ ok: false, error: message, requestAttempted: error?.requestAttempted === true });
+        sendResponse({
+          ok: false,
+          error: message,
+          errorCode: error?.code || null,
+          requestAttempted: error?.requestAttempted === true,
+        });
       });
     return true;
   }
@@ -1296,9 +1301,11 @@
       30_000,
     );
     if (!loaded) {
-      throw new Error(
-        "We couldn’t find your connections. Make sure you’re signed in and the list is sorted by Recently added.",
+      const error = new Error(
+        "LinkedIn did not show a readable connections list. The check was postponed.",
       );
+      error.code = "CONNECTION_CARDS_UNAVAILABLE";
+      throw error;
     }
 
     for (let pass = 0; pass < 100 && found.size < maxProfiles; pass++) {

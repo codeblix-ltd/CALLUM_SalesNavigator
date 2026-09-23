@@ -733,9 +733,16 @@ async function checkAcceptedConnections() {
 
 function renderConnectionReviewStatus(review) {
   if (!review || typeof review !== "object") return;
+  if (review.notNeeded) {
+    elements.connectionReviewStatus.textContent =
+      "No earlier requests need checking yet. Lead work can continue.";
+    return;
+  }
   if (review.error) {
     elements.connectionReviewStatus.textContent =
-      `Last check failed: ${review.error}`;
+      review.deferred
+        ? "The connections check was postponed. Scout moved on to today’s leads; the check can be tried again later."
+        : `Last check failed: ${review.error}`;
     return;
   }
   const scanned = formatCount(review.connectionsScanned, "connection");

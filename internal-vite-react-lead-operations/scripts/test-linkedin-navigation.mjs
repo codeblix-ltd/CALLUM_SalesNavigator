@@ -156,6 +156,105 @@ profileWaitEnv.waitForMatch=async(_find,timeout)=>{assert.equal(timeout,3500);re
 assert.equal(await profileWaitEnv.waitForProfileText(firstMain),hydratedMain,'sparse profiles still use the current main after a bounded wait');
 assert.match(content,/if \(!main\) throw new Error\("LinkedIn did not finish loading this profile\."\);[\s\S]{0,400}main = await waitForProfileText\(main\)/);
 
+// Ila regression: an empty connection-review plan must not open LinkedIn's
+// connections page. If a needed scan finds no readable cards, defer only that
+// review and continue the run without recording a false successful scan.
+const reviewSource=between(background,'async function reviewAcceptedConnections','async function readConnectionReviewLookbackDays');
+const scanAccessHelpers=between(background,'function sameLinkedInDocument','async function readLinkedInPageInfo')+
+  between(background,'function linkedInAccessInterruptionKind','function shouldReportEngagementProblem');
+function connectionReviewHarness({shouldReview,scanResponse,scanThrows=false,tabUrl='https://www.linkedin.com/mynetwork/invite-connect/connections/'}={}) {
+  const calls=[];
+  const review={reviewed:false,acceptedMatched:0,contactsChecked:0,emailsCollected:0,connectionsScanned:0};
+  const env={Error,Number,Array,Set,Date,URL,
+    CONNECTIONS_URL:'https://www.linkedin.com/mynetwork/invite-connect/connections/',
+    emptyConnectionReview:()=>({...review}),throwIfWorkflowControlled(){},
+    isWorkflowControlError:()=>false,cleanError:error=>error.message||String(error),
+    isClosedMessageChannelError:error=>/message (?:channel|port).*closed.*before.*response/i.test(String(error||'')),
+    readConnectionReviewLookbackDays:async()=>30,
+    createAutomationTab:async()=>{calls.push('open connections');return {id:7};},
+    waitForTabComplete:async()=>{},waitForAutomationContentScript:async()=>{},
+    sendAutomationMessageToTab:async()=>{if(scanThrows)throw Error('The message port closed before a response was received.');return scanResponse;},
+    clearActiveWorkflowTab:()=>{},
+    chrome:{tabs:{get:async()=>({url:tabUrl}),remove:async()=>{calls.push('close connections');}}},
+    ScoutApi:{authenticatedAction:async path=>{
+      calls.push(path);
+      if(path==='scouts:getConnectionReviewPlan')return {shouldReview,pendingLeads:[],contactLeads:[]};
+      throw Error('Unexpected action '+path);
+    }},
+  };
+  vm.runInNewContext(errorSource+scanAccessHelpers+reviewSource,env);
+  return {env,calls};
+}
+const noConnectionsToCheck=connectionReviewHarness({shouldReview:false});
+const noReview=await noConnectionsToCheck.env.reviewAcceptedConnections({},{});
+assert.equal(noReview.notNeeded,true);
+assert(!noConnectionsToCheck.calls.includes('open connections'),'do not open an unnecessary connections tab');
+const unreadableConnections=connectionReviewHarness({shouldReview:true,scanResponse:{ok:false,errorCode:'CONNECTION_CARDS_UNAVAILABLE',error:'No readable list'}});
+const deferredReview=await unreadableConnections.env.reviewAcceptedConnections({}, {}, {allowDeferredScan:true});
+assert.equal(deferredReview.deferred,true);
+assert.equal(deferredReview.reviewed,false,'an unreadable list is not a completed review');
+assert(!unreadableConnections.calls.includes('scouts:recordConnectionReview'),'do not record a false empty review');
+assert(unreadableConnections.calls.includes('close connections'),'close the failed scan tab');
+for(const redirectedUrl of ['https://www.linkedin.com/login','https://www.linkedin.com/checkpoint/challenge']) {
+  for(const scanResponse of [{ok:false,errorCode:'CONNECTION_CARDS_UNAVAILABLE',error:'No readable list'},{ok:false,error:'The message port closed before a response was received.'}]) {
+    const redirected=connectionReviewHarness({shouldReview:true,scanResponse,tabUrl:redirectedUrl});
+    await assert.rejects(redirected.env.reviewAcceptedConnections({}, {}, {allowDeferredScan:true}),/sign-in|security check/);
+    assert(redirected.calls.includes('close connections'),'close the redirected scan tab');
+    assert(!redirected.calls.includes('scouts:recordConnectionReview'));
+  }
+}
+const thrownChannel=connectionReviewHarness({shouldReview:true,scanThrows:true});
+assert.equal((await thrownChannel.env.reviewAcceptedConnections({}, {}, {allowDeferredScan:true})).deferred,true,'a closed channel on the same connections page is deferred');
+const thrownLogin=connectionReviewHarness({shouldReview:true,scanThrows:true,tabUrl:'https://www.linkedin.com/login'});
+await assert.rejects(thrownLogin.env.reviewAcceptedConnections({}, {}, {allowDeferredScan:true}),/sign-in/);
+const unexpectedScan=connectionReviewHarness({shouldReview:true,scanResponse:{ok:false,error:'Unexpected parser error'}});
+await assert.rejects(unexpectedScan.env.reviewAcceptedConnections({}, {}, {allowDeferredScan:true}),/Unexpected parser error/);
+const manualConnections=connectionReviewHarness({shouldReview:false,scanResponse:{ok:false,errorCode:'CONNECTION_CARDS_UNAVAILABLE',error:'No readable list'}});
+await assert.rejects(manualConnections.env.reviewAcceptedConnections({}, {}, {forceReview:true}),/No readable list/);
+assert(manualConnections.calls.includes('open connections'),'an explicit manual check still attempts the scan');
+assert.match(content,/error\.code = "CONNECTION_CARDS_UNAVAILABLE"/);
+assert.match(content,/errorCode: error\?\.code \|\| null/);
+
+function dailyConnectionReviewHarness(shouldReview) {
+  const calls=[],messages=[];
+  const review={reviewed:false,acceptedMatched:0,contactsChecked:0,emailsCollected:0,connectionsScanned:0};
+  const progress={autoWithdrawComplete:true,reviewComplete:false,review:{},targetRequests:null,requestsSent:0,processedLeads:0,timedLeads:0,results:[],failedLeads:[]};
+  const env={Set,Date,Boolean,Math,Error,URL,
+    CONNECTIONS_URL:'https://www.linkedin.com/mynetwork/invite-connect/connections/',
+    emptyConnectionReview:()=>({...review}),throwIfWorkflowControlled(){},
+    isWorkflowControlError:()=>false,cleanError:error=>error.message||String(error),
+    isClosedMessageChannelError:error=>/message (?:channel|port).*closed.*before.*response/i.test(String(error||'')),
+    updateRunProgress:async()=>{},checkpointRun:async(_c,_p,patch)=>messages.push(patch.message),
+    updateBadge:async()=>{},collectLocallyConfirmedConnectionRequests:()=>[],
+    ScoutApi:{authenticatedAction:async path=>{
+      calls.push(path);
+      if(path==='scouts:getDashboard')return {settings:{onboardingCompleted:true},usage:{requestRemaining:1}};
+      if(path==='scouts:getConnectionReviewPlan')return {shouldReview,pendingLeads:[],contactLeads:[]};
+      if(path==='scouts:claimNextLead')return null;
+      throw Error('Unexpected action '+path);
+    }},
+    chrome:{storage:{local:{set:async()=>{}}},tabs:{get:async()=>({url:'https://www.linkedin.com/mynetwork/invite-connect/connections/'}),remove:async()=>{}}},
+    readConnectionReviewLookbackDays:async()=>30,
+    createAutomationTab:async()=>{calls.push('open connections');return {id:7};},
+    waitForTabComplete:async()=>{},waitForAutomationContentScript:async()=>{},
+    sendAutomationMessageToTab:async()=>({ok:false,errorCode:'CONNECTION_CARDS_UNAVAILABLE',error:'No readable list'}),
+    clearActiveWorkflowTab:()=>{},
+  };
+  vm.runInNewContext(errorSource+scanAccessHelpers+reviewSource+between(background,'async function runDailyWorkflow','function ensureAutoLeadRunState'),env);
+  return {env,progress,calls,messages};
+}
+const ilaRun=dailyConnectionReviewHarness(false);
+await ilaRun.env.runDailyWorkflow(null,{resume:false,progress:ilaRun.progress});
+assert.equal(ilaRun.progress.reviewComplete,true);
+assert.equal(ilaRun.progress.review.notNeeded,true);
+assert(!ilaRun.calls.includes('open connections'));
+assert(ilaRun.calls.includes('scouts:claimNextLead'),'normal run reaches lead selection');
+const neededButUnreadable=dailyConnectionReviewHarness(true);
+await neededButUnreadable.env.runDailyWorkflow(null,{resume:false,progress:neededButUnreadable.progress});
+assert.equal(neededButUnreadable.progress.review.deferred,true);
+assert(neededButUnreadable.calls.includes('scouts:claimNextLead'),'deferred scan does not block lead work');
+assert(neededButUnreadable.messages.some(message=>/Connections check postponed/.test(message)));
+
 // Login/checkpoint interruptions are global: do not advance or consume leads.
 const daily=between(background,'async function runDailyWorkflow','function ensureAutoLeadRunState');
 const actions=[],checkpoints=[];
