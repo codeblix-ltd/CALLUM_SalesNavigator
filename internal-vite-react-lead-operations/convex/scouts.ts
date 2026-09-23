@@ -9,7 +9,7 @@ import { requestCodexGateway } from "./lib/codexGateway";
 import { getPool } from "./lib/cockroach";
 import { isGhlCompatibleEmail } from "./lib/ghl";
 import { upsertVeblenLeadMatches, veblenMatchExistsSql } from "./lib/veblenExclusions";
-import { profileLinkNeedsReviewSql, PROFILE_LINK_REVIEW_MESSAGE, ONLY_PROFILE_LINK_REVIEWS_MESSAGE } from "./lib/profileLinkReview";
+import { leadNeedsReviewSql, PROFILE_LINK_REVIEW_MESSAGE, ONLY_PROFILE_LINK_REVIEWS_MESSAGE } from "./lib/profileLinkReview";
 
 type ScoutIdentity = {
   userId: string;
@@ -373,7 +373,7 @@ export const getDashboard = action({
          INNER JOIN leads AS l ON l.id = a.lead_id
          WHERE a.operator_id = $1
            AND a.status IN ('viewed', 'engaged')
-           AND NOT (${profileLinkNeedsReviewSql()})
+           AND NOT (${leadNeedsReviewSql()})
          ORDER BY a.updated_at DESC, a.lead_id
          LIMIT 1`,
         [scout.operatorId],
@@ -462,7 +462,7 @@ export const getLeadProgress = action({
       filters.push(
         `(a.status IN ('failed', 'skipped', 'withdrawn')
           OR a.qualification_status = 'not_qualified'
-          OR (${profileLinkNeedsReviewSql()}))`,
+          OR (${leadNeedsReviewSql()}))`,
       );
     } else if (stage === "assigned") {
       filters.push(
@@ -470,7 +470,7 @@ export const getLeadProgress = action({
       );
     } else if (stage === "automation_ready") {
       filters.push(
-        `((a.status IN ('viewed', 'engaged', 'connected', 'connection_requested', 'accepted', 'email_collected') OR (a.status = 'assigned' AND a.qualification_status <> 'not_qualified')) AND NOT (${profileLinkNeedsReviewSql()}))`,
+        `((a.status IN ('viewed', 'engaged', 'connected', 'connection_requested', 'accepted', 'email_collected') OR (a.status = 'assigned' AND a.qualification_status <> 'not_qualified')) AND NOT (${leadNeedsReviewSql()}))`,
       );
     } else if (stage !== "all") {
       parameters.push(stage);
@@ -592,7 +592,7 @@ export const claimNextLead = action({
              coalesce(a.resolved_linkedin_url, l.linkedin_url) AS linkedin_url,
              a.status,
              a.qualification_status,
-             ${profileLinkNeedsReviewSql()} AS profile_link_needs_review
+             ${leadNeedsReviewSql()} AS lead_needs_review
            FROM lead_assignments AS a
            INNER JOIN leads AS l ON l.id = a.lead_id
            WHERE a.operator_id = $1
@@ -610,7 +610,7 @@ export const claimNextLead = action({
           await client.query("ROLLBACK");
           return null;
         }
-        if (row.profile_link_needs_review) {
+        if (row.lead_needs_review) {
           throw new Error(PROFILE_LINK_REVIEW_MESSAGE);
         }
         if (row.status === "assigned") {
@@ -670,7 +670,7 @@ export const claimNextLead = action({
          WHERE a.operator_id = $1
            AND a.status IN ('viewed', 'engaged')
            AND NOT (${veblenMatchExistsSql("l", "a")})
-           AND NOT (${profileLinkNeedsReviewSql()})
+           AND NOT (${leadNeedsReviewSql()})
            ${existingExclusionSql}
          ORDER BY a.updated_at DESC, a.lead_id
          LIMIT 1`,
@@ -693,7 +693,7 @@ export const claimNextLead = action({
           WHERE a.operator_id = $1
             AND (${queueStatusSql})
             AND NOT (${veblenMatchExistsSql("l", "a")})
-            AND NOT (${profileLinkNeedsReviewSql()})
+            AND NOT (${leadNeedsReviewSql()})
             ${selectedExclusionSql}
           ORDER BY
             a.assigned_at DESC,
@@ -709,7 +709,7 @@ export const claimNextLead = action({
            INNER JOIN leads AS l ON l.id = a.lead_id
            WHERE a.operator_id = $1 AND (${queueStatusSql})
              AND NOT (${veblenMatchExistsSql("l", "a")})
-             AND (${profileLinkNeedsReviewSql()})
+             AND (${leadNeedsReviewSql()})
              ${selectedExclusionSql}
            LIMIT 1`,
           queryParameters,

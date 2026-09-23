@@ -3,11 +3,14 @@
 export const UNVERIFIED_PROFILE_LINK_ERROR =
   "LinkedIn did not provide a verified profile link. Scout paused without skipping this lead. Please use Report Bug so support can check the link.";
 
+export const UNREADABLE_LINKEDIN_PAGE_ERROR =
+  "The LinkedIn page could not be read. Scout paused without skipping this lead. Check that LinkedIn opens in a normal tab, then press Resume. If it still fails, use Report Bug.";
+
 export const PROFILE_LINK_REVIEW_MESSAGE =
-  "This lead needs a profile-link review and is still saved. Please start a normal run to work on other leads. Support must check this link before it is retried.";
+  "This lead needs attention and is still saved. Please start a normal run to work on other leads. Support will check this lead before it is retried.";
 
 export const ONLY_PROFILE_LINK_REVIEWS_MESSAGE =
-  "The remaining leads need profile-link review and are still saved. Support must check their links before this run can continue.";
+  "The remaining leads need attention and are still saved. Support must check them before this run can continue.";
 
 // Keep the assignment, status, activity receipts and counters intact. A verified
 // readable replacement (or support clearing the diagnosed error) releases it.
@@ -18,4 +21,26 @@ export function profileLinkNeedsReviewSql(leadAlias = "l", assignmentAlias = "a"
   return `(coalesce(${assignmentAlias}.last_error, '') = '${error}'
     AND coalesce(${assignmentAlias}.resolved_linkedin_url, ${leadAlias}.linkedin_url, '')
       ~ '/in/AC[ow][A-Za-z0-9_-]{15,}/?([?#].*)?$')`;
+}
+
+// A single unreadable page can be transient. After two identical pauses on the
+// same lead within 24 hours, keep that lead for support but let a normal run
+// select another one. The hold persists until its diagnosed error is cleared.
+export function repeatedUnreadablePageNeedsReviewSql(assignmentAlias = "a") {
+  const error = UNREADABLE_LINKEDIN_PAGE_ERROR.replace(/'/g, "''");
+  return `(coalesce(${assignmentAlias}.last_error, '') = '${error}'
+    AND ${assignmentAlias}.last_error_at IS NOT NULL
+    AND (SELECT count(*)
+           FROM lead_assignment_events AS unreadable_events
+          WHERE unreadable_events.lead_id = ${assignmentAlias}.lead_id
+            AND unreadable_events.operator_id = ${assignmentAlias}.operator_id
+            AND unreadable_events.event_type = 'error'
+            AND unreadable_events.details->>'message' = '${error}'
+            AND unreadable_events.created_at >= ${assignmentAlias}.last_error_at - INTERVAL '24 hours'
+            AND unreadable_events.created_at <= ${assignmentAlias}.last_error_at + INTERVAL '1 minute') >= 2)`;
+}
+
+export function leadNeedsReviewSql(leadAlias = "l", assignmentAlias = "a") {
+  return `(${profileLinkNeedsReviewSql(leadAlias, assignmentAlias)}
+    OR ${repeatedUnreadablePageNeedsReviewSql(assignmentAlias)})`;
 }
