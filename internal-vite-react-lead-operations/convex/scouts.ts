@@ -87,6 +87,7 @@ type ScoutProgressLead = {
   employeeCount: number | null;
   profileUrl: string;
   status: string;
+  needsReview: boolean;
   qualificationStatus: string;
   qualificationNote: string | null;
   leadNote: string | null;
@@ -216,6 +217,7 @@ const dashboardValidator = v.object({
     emailCollected: v.number(),
     skipped: v.number(),
     failed: v.number(),
+    retryableFailed: v.number(),
   }),
   settings: settingsValidator,
   usage: usageValidator,
@@ -234,6 +236,7 @@ const scoutProgressLeadValidator = v.object({
   employeeCount: v.union(v.number(), v.null()),
   profileUrl: v.string(),
   status: v.string(),
+  needsReview: v.boolean(),
   qualificationStatus: v.string(),
   qualificationNote: optionalText,
   leadNote: optionalText,
@@ -334,30 +337,36 @@ export const getDashboard = action({
         `SELECT
            count(*)::FLOAT8 AS total,
            count(*) FILTER (
-             WHERE status = 'assigned' AND qualification_status <> 'not_qualified'
+             WHERE a.status = 'assigned' AND a.qualification_status <> 'not_qualified'
            )::FLOAT8 AS fresh,
            count(*) FILTER (
-             WHERE viewed_at IS NOT NULL
-                OR status IN ('viewed', 'engaged', 'connected', 'connection_requested', 'accepted', 'email_collected')
+             WHERE a.viewed_at IS NOT NULL
+                OR a.status IN ('viewed', 'engaged', 'connected', 'connection_requested', 'accepted', 'email_collected')
            )::FLOAT8 AS viewed,
            count(*) FILTER (
-             WHERE engaged_at IS NOT NULL
-                OR status IN ('engaged', 'connection_requested', 'accepted', 'email_collected')
+             WHERE a.engaged_at IS NOT NULL
+                OR a.status IN ('engaged', 'connection_requested', 'accepted', 'email_collected')
            )::FLOAT8 AS engaged,
            count(*) FILTER (
-             WHERE connection_requested_at IS NOT NULL
-                OR status IN ('connected', 'connection_requested', 'accepted', 'email_collected')
+             WHERE a.connection_requested_at IS NOT NULL
+                OR a.status IN ('connected', 'connection_requested', 'accepted', 'email_collected')
            )::FLOAT8 AS connection_requested,
            count(*) FILTER (
-             WHERE accepted_at IS NOT NULL OR status IN ('accepted', 'email_collected')
+             WHERE a.accepted_at IS NOT NULL OR a.status IN ('accepted', 'email_collected')
            )::FLOAT8 AS accepted,
            count(*) FILTER (
-             WHERE email_collected_at IS NOT NULL OR status = 'email_collected'
+             WHERE a.email_collected_at IS NOT NULL OR a.status = 'email_collected'
            )::FLOAT8 AS email_collected,
-           count(*) FILTER (WHERE status = 'skipped')::FLOAT8 AS skipped,
-           count(*) FILTER (WHERE status = 'failed')::FLOAT8 AS failed
-         FROM lead_assignments
-         WHERE operator_id = $1`,
+           count(*) FILTER (WHERE a.status = 'skipped')::FLOAT8 AS skipped,
+           count(*) FILTER (WHERE a.status = 'failed')::FLOAT8 AS failed,
+           count(*) FILTER (
+             WHERE a.status = 'failed'
+               AND NOT (${leadNeedsReviewSql()})
+               AND NOT (${veblenMatchExistsSql("l", "a")})
+           )::FLOAT8 AS retryable_failed
+         FROM lead_assignments AS a
+         INNER JOIN leads AS l ON l.id = a.lead_id
+         WHERE a.operator_id = $1`,
         [scout.operatorId],
       ),
       getOrCreateDailyUsage(scout.operatorId, settings),
@@ -391,6 +400,7 @@ export const getDashboard = action({
       emailCollected: Number(countRow.email_collected ?? 0),
       skipped: Number(countRow.skipped ?? 0),
       failed: Number(countRow.failed ?? 0),
+      retryableFailed: Number(countRow.retryable_failed ?? 0),
     };
 
     return {
@@ -510,6 +520,7 @@ export const getLeadProgress = action({
          l.employee_count::FLOAT8 AS employee_count,
          coalesce(a.resolved_linkedin_url, l.linkedin_url) AS profile_url,
          a.status,
+         ${leadNeedsReviewSql()} AS needs_review,
          a.qualification_status,
          a.qualification_note,
          l.lead_note,
@@ -2582,7 +2593,10 @@ export const classifyLanguages = action({
     if (
       args.context === "profile" &&
       samples.length === 1 &&
-      ["english", "non_english", "uncertain"].includes(
+      // An uncertain result can come from LinkedIn's partially rendered
+      // profile shell. Never reuse it for 90 days when a later read may have
+      // the missing prose.
+      ["english", "non_english"].includes(
         String(lead.profile_language_status || ""),
       ) &&
       lead.profile_language_checked_at &&
@@ -3155,6 +3169,7 @@ function emptyCounts() {
     emailCollected: 0,
     skipped: 0,
     failed: 0,
+    retryableFailed: 0,
   };
 }
 
@@ -3184,6 +3199,7 @@ function mapProgressLead(row: Record<string, unknown>): ScoutProgressLead {
         : Number(row.employee_count),
     profileUrl: normalizeLinkedInProfileUrl(row.profile_url),
     status: String(row.status ?? "assigned"),
+    needsReview: row.needs_review === true,
     qualificationStatus: String(row.qualification_status ?? "pending"),
     qualificationNote: nullableString(row.qualification_note),
     leadNote: nullableString(row.lead_note),

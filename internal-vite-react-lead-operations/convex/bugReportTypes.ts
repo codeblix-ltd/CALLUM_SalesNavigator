@@ -8,6 +8,9 @@ export const reportContext = v.object({
   pauseKind: v.optional(v.string()), pauseStage: v.optional(v.string()),
   pausePageUrl: v.optional(v.string()), pauseExpectedUrl: v.optional(v.string()),
   pauseOccurredAt: v.optional(v.string()),
+  leadIssueKind: v.optional(v.string()), leadIssueStage: v.optional(v.string()),
+  leadIssuePageUrl: v.optional(v.string()), leadIssueExpectedUrl: v.optional(v.string()),
+  leadIssueOccurredAt: v.optional(v.string()),
 });
 export const reportFields = {
   reporterId: v.id("users"), reporter: v.string(), operatorId: v.string(),

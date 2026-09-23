@@ -991,10 +991,15 @@ function renderDashboard(value, updatedAt) {
   elements.emailCount.textContent = formatNumber(value.counts.emailCollected);
   elements.failedCount.textContent = formatNumber(value.counts.failed);
   const hasFailedLeads = Number(value.counts.failed || 0) > 0;
-  elements.retryFailedLeads.hidden = !hasFailedLeads;
+  const retryableFailed = Number(value.counts.retryableFailed ?? value.counts.failed ?? 0);
+  const heldFailed = Math.max(0, Number(value.counts.failed || 0) - retryableFailed);
+  elements.retryFailedLeads.hidden = retryableFailed < 1;
   elements.failedActionNote.hidden = !hasFailedLeads;
+  elements.failedActionNote.textContent = heldFailed > 0
+    ? `${heldFailed} lead${heldFailed === 1 ? "" : "s"} need${heldFailed === 1 ? "s" : ""} a manager check before retry. Other failed leads can be retried from All leads and steps.`
+    : "Retrying is optional. Open All leads and steps to retry one lead or mark it rejected.";
   elements.retryFailedLeads.textContent = `Retry ${formatCount(
-    value.counts.failed,
+    retryableFailed,
     "failed lead",
   )}`;
   elements.requestUsage.textContent = `${formatNumber(value.usage.requestsSent)} / ${formatNumber(value.usage.requestLimit)}`;

@@ -14,6 +14,7 @@
   const MAX_CONNECTION_LOOKBACK_DAYS = 183;
   const COMMENT_REVIEW_TIMEOUT_MS = 5 * 60 * 1_000;
   const COMMENT_SUBMIT_CONFIRM_TIMEOUT_MS = 30_000;
+  const PROFILE_TEXT_SETTLE_TIMEOUT_MS = 3_500;
 
   // Listen for messages from background script or popup
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -322,7 +323,7 @@
       .catch((error) => {
         const message = cleanError(error);
         showWorkflowError(message);
-        sendResponse({ ok: false, error: message });
+        sendResponse({ ok: false, error: message, requestAttempted: error?.requestAttempted === true });
       });
     return true;
   }
@@ -861,6 +862,8 @@
   }
 
   async function runConnectionRequest(options = {}) {
+    let requestAttempted = false;
+    try {
     initOverlay();
     if (overlayContainer) overlayContainer.style.display = "block";
     updateStatus("Opening a connection request...");
@@ -986,6 +989,7 @@
       }
     }
 
+    requestAttempted = true;
     clickElement(sendBtn);
     addLog(
       "Sent",
@@ -1005,6 +1009,12 @@
     }
     updateStatus("Connection request sent.");
     return { success: true, confirmationPending: !modalClosed };
+    } catch (error) {
+      if (requestAttempted && error && typeof error === "object") {
+        error.requestAttempted = true;
+      }
+      throw error;
+    }
   }
 
   async function runConnectionStatusInspection(options = {}) {
@@ -1145,11 +1155,16 @@
         ? "Reading profile text for the English-language check..."
         : "Reading this profile for a personal connection note...",
     );
-    const main = await waitForMatch(
+    let main = await waitForMatch(
       () => document.querySelector("main") || null,
       20_000,
     );
     if (!main) throw new Error("LinkedIn did not finish loading this profile.");
+
+    // LinkedIn renders its profile shell before About and other readable text.
+    // Waiting only for <main> can classify a title fragment as uncertain and
+    // unnecessarily send the workflow to the slower recent-activity page.
+    main = await waitForProfileText(main);
 
     const fullName =
       getCurrentProfileName(options.expectedProfileName) ||
@@ -2840,6 +2855,19 @@
         element.textContent?.trim() === title && isElementVisible(element),
     );
     return heading?.closest("section") || null;
+  }
+
+  async function waitForProfileText(main) {
+    const readyMain = await waitForMatch(() => {
+      // LinkedIn can replace the whole <main> during hydration, so do not
+      // keep reading the first shell node after it detaches.
+      const currentMain = document.querySelector("main");
+      if (!currentMain) return null;
+      const about = findProfileSection(currentMain, "About");
+      return (extractProfileSectionText(about, "About", 3_000) || "").length >= 60
+        ? currentMain : null;
+    }, PROFILE_TEXT_SETTLE_TIMEOUT_MS);
+    return readyMain || document.querySelector("main") || main;
   }
 
   function extractProfileSectionText(section, heading, maximumLength) {

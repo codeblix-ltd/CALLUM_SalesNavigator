@@ -6,6 +6,9 @@ export const UNVERIFIED_PROFILE_LINK_ERROR =
 export const UNREADABLE_LINKEDIN_PAGE_ERROR =
   "The LinkedIn page could not be read. Scout paused without skipping this lead. Check that LinkedIn opens in a normal tab, then press Resume. If it still fails, use Report Bug.";
 
+export const UNCERTAIN_INVITATION_ERROR =
+  "The connection request could not be confirmed. Check LinkedIn Pending before this lead is retried; ask your manager to review it.";
+
 export const PROFILE_LINK_REVIEW_MESSAGE =
   "This lead needs attention and is still saved. Please start a normal run to work on other leads. Support will check this lead before it is retried.";
 
@@ -40,7 +43,17 @@ export function repeatedUnreadablePageNeedsReviewSql(assignmentAlias = "a") {
             AND unreadable_events.created_at <= ${assignmentAlias}.last_error_at + INTERVAL '1 minute') >= 2)`;
 }
 
+// If the page disappeared during an invitation attempt, LinkedIn may have
+// accepted the request even though the extension never received confirmation.
+// Keep this lead out of both normal and failed-only automatic queues until a
+// human checks Pending and clears the diagnosed error.
+export function uncertainInvitationNeedsReviewSql(assignmentAlias = "a") {
+  const error = UNCERTAIN_INVITATION_ERROR.replace(/'/g, "''");
+  return `coalesce(${assignmentAlias}.last_error, '') = '${error}'`;
+}
+
 export function leadNeedsReviewSql(leadAlias = "l", assignmentAlias = "a") {
   return `(${profileLinkNeedsReviewSql(leadAlias, assignmentAlias)}
-    OR ${repeatedUnreadablePageNeedsReviewSql(assignmentAlias)})`;
+    OR ${repeatedUnreadablePageNeedsReviewSql(assignmentAlias)}
+    OR ${uncertainInvitationNeedsReviewSql(assignmentAlias)})`;
 }

@@ -205,8 +205,9 @@ function renderSummary(dashboard) {
   elements.acceptedCount.textContent = formatNumber(counts.accepted);
   elements.emailCount.textContent = formatNumber(counts.emailCollected);
   elements.attentionCount.textContent = formatNumber(counts.failed);
-  elements.retryFailedLeads.hidden = Number(counts.failed || 0) < 1;
-  elements.retryFailedLeads.textContent = `Retry ${formatNumber(counts.failed)} failed lead${Number(counts.failed) === 1 ? "" : "s"}`;
+  const retryableFailed = Number(counts.retryableFailed ?? counts.failed ?? 0);
+  elements.retryFailedLeads.hidden = retryableFailed < 1;
+  elements.retryFailedLeads.textContent = `Retry ${formatNumber(retryableFailed)} failed lead${retryableFailed === 1 ? "" : "s"}`;
   const completion = counts.total ? Math.round((counts.emailCollected / counts.total) * 100) : 0;
   elements.completionRate.textContent = `${completion}% complete`;
   elements.requestUsage.textContent = `${formatNumber(usage.requestsSent)} of ${formatNumber(usage.requestLimit)}`;
@@ -294,7 +295,9 @@ function openDrawer(lead) {
     timelineItem(email ? "Email saved" : lead.status === "connection_requested" ? "Email waiting" : "Email checked", email || (emailUnavailable ? "No email available on LinkedIn" : lead.status === "connection_requested" ? "Available after connection acceptance" : "Not checked yet"), lead.emailCollectedAt || lead.workEmailCollectedAt || lead.originalEmailCheckedAt, Boolean(email) || emailUnavailable, lead.workEmailStatus === "error"),
   ].join("");
   const failedActions = lead.status === "failed"
-    ? `<button type="button" data-drawer-action="retry" data-lead-id="${escapeAttribute(lead.id)}">Retry this lead</button><button class="danger" type="button" data-drawer-action="reject" data-lead-id="${escapeAttribute(lead.id)}" data-lead-name="${escapeAttribute(lead.fullName || "this lead")}">Mark rejected</button>`
+    ? `${lead.needsReview
+        ? `<span class="drawer-note">This lead needs a manager to check it before retry.</span>`
+        : `<button type="button" data-drawer-action="retry" data-lead-id="${escapeAttribute(lead.id)}">Retry this lead</button>`}<button class="danger" type="button" data-drawer-action="reject" data-lead-id="${escapeAttribute(lead.id)}" data-lead-name="${escapeAttribute(lead.fullName || "this lead")}">Mark rejected</button>`
     : "";
   elements.drawerContent.innerHTML = `
     <header class="drawer-header">

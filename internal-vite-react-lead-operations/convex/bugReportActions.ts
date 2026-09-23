@@ -16,7 +16,7 @@ export const submit = action({
     if (!Number.isFinite(args.occurredAt) || args.occurredAt < 0 || args.occurredAt > Date.now() + 300000) throw new Error("Please check when the issue happened.");
     for (const value of Object.values(args.context)) if (typeof value === "string" && value.length > 1000) throw new Error("Report details are too long.");
     const context = { ...args.context };
-    for (const field of ["pausePageUrl", "pauseExpectedUrl"] as const) {
+    for (const field of ["pausePageUrl", "pauseExpectedUrl", "leadIssuePageUrl", "leadIssueExpectedUrl"] as const) {
       if (!context[field]) continue;
       try {
         const url = new URL(context[field]);

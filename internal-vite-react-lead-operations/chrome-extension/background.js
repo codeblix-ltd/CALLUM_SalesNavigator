@@ -18,6 +18,8 @@ const CONNECTION_NOTE_RETRY_DELAY_MS = 1_500;
 const LINKEDIN_TAB_LOAD_TIMEOUT_MS = 90_000;
 const LINKEDIN_OPTIONAL_TAB_LOAD_TIMEOUT_MS = 30_000;
 const LINKEDIN_TAB_READY_PROBE_MS = 1_000;
+const UNCERTAIN_INVITATION_ERROR =
+  "The connection request could not be confirmed. Check LinkedIn Pending before this lead is retried; ask your manager to review it.";
 const AUTOMATION_KEEP_AWAKE_LEVEL = "display";
 const DEFAULT_CONNECTION_REVIEW_LOOKBACK_DAYS = 30;
 const ALLOWED_CONNECTION_REVIEW_LOOKBACK_DAYS = new Set([7, 30, 90, 183]);
@@ -255,6 +257,7 @@ async function startDailyWorkflow(
       resumedAt: resume ? Date.now() : null,
       pausedAt: null,
       pauseDetails: null,
+      lastLeadIssue: null,
       stoppedAt: null,
       completedAt: null,
       phase: resume ? previousState.phase || "preparing" : "preparing",
@@ -291,8 +294,12 @@ async function startDailyWorkflow(
         status: "completed",
         phase: "completed",
         message: resolvedRetryFailedOnly
-          ? "Failed lead retry is complete."
-          : "Today’s work is complete.",
+          ? result.summary.failedLeads.length > 0
+            ? `Retry finished. ${result.summary.failedLeads.length} lead(s) still need attention.`
+            : "Failed lead retry is complete."
+          : result.summary.failedLeads.length > 0
+            ? `Today’s work is complete. ${result.summary.failedLeads.length} lead(s) need attention and can be retried later.`
+            : "Today’s work is complete.",
         currentLead: null,
         completedAt: Date.now(),
         progress: result.progress,
@@ -308,6 +315,7 @@ async function startDailyWorkflow(
           reason: cleanError(error),
           pauseDetails: {
             kind: error.kind || "service",
+            leadName: interruptedState.currentLead?.fullName || "",
             stage: error.stage || interruptedState.phase || "unknown",
             pageUrl: safeLinkedInDiagnosticUrl(error.pageUrl),
             expectedUrl: safeLinkedInDiagnosticUrl(error.expectedUrl),
@@ -463,7 +471,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
     progress.targetRequests = specificLeadId
       ? 1
       : retryFailedOnly
-        ? Math.min(dashboard.counts.failed, dashboard.usage.requestRemaining)
+        ? Math.min(dashboard.counts.retryableFailed ?? dashboard.counts.failed, dashboard.usage.requestRemaining)
         : dashboard.usage.requestRemaining;
   } else if (!specificLeadId) {
     progress.targetRequests = Math.min(
@@ -486,6 +494,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
     ...pendingConnectionLeadIds,
   ]);
   let resumeExistingLead = runContext.resume;
+  let consecutiveUnreadableLeads = 0;
   if (specificLeadId && pendingConnectionLeadIds.has(specificLeadId)) {
     progress.processedLeads = Math.max(progress.processedLeads, 1);
   }
@@ -532,6 +541,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
     });
 
     let connectionSyncPending = false;
+    let deferredIssueMessage = null;
     try {
       const workflowResult = await runLeadWorkflow(
         lead,
@@ -544,96 +554,126 @@ async function runDailyWorkflow(specificLeadId, runContext) {
       if (workflowResult.status === "connection_requested") {
         progress.requestsSent += 1;
       }
+      consecutiveUnreadableLeads = 0;
     } catch (error) {
       if (isWorkflowControlError(error)) throw error;
-      if (isLinkedInAccessInterruptionError(error)) throw error;
-      const message = cleanError(error);
-      // Stop a service/quota failure here instead of burning through every lead.
-      if (!error?.requestSubmitted && isRecoverableServiceError(error)) throw error;
-      const requestSent = error?.requestSubmitted === true;
-      if (requestSent) {
-        progress.requestsSent += 1;
-        connectionSyncPending = error?.persistencePending === true;
-        if (connectionSyncPending) {
-          pendingConnectionLeadIds.add(lead.id);
-          progress.pendingConnectionRequests = upsertPendingConnectionRequest(
-            progress.pendingConnectionRequests,
-            {
-              leadId: lead.id,
-              leadName: lead.fullName,
-              profileUrl: error?.profileUrl || lead.linkedinUrl,
-              confirmedAt: Date.now(),
-            },
-          );
+      const deferUnreadableLead = canDeferUnreadableLead(error);
+      if (isLinkedInAccessInterruptionError(error) && !deferUnreadableLead) {
+        if (error.requestOutcomeUncertain === true) {
+          await deferLeadForReview(lead, error, runContext, failedLeads);
+          progress.processedLeads += 1;
+          recordCompletedLeadTiming(progress, Date.now() - leadStartedAt);
+          await updateRunProgress(runContext, progress);
         }
-        results.push({
-          leadId: lead.id,
-          leadName: lead.fullName,
-          status: connectionSyncPending
-            ? "connection_requested_pending_sync"
-            : "connection_requested",
-          profileUrl: error?.profileUrl || lead.linkedinUrl,
-          engagedCount: error?.engagedCount ?? 0,
-        });
-      } else if (error?.knownConnection === true) {
-        await ScoutApi.authenticatedAction("scouts:reportError", {
-          leadId: lead.id,
-          message,
-        }).catch(() => {});
-        results.push({
-          leadId: lead.id,
-          leadName: lead.fullName,
-          status: "accepted_contact_check_failed",
-          profileUrl: error?.profileUrl || lead.linkedinUrl,
-          email: null,
-          connectionAlreadyPresent: true,
-          message,
-        });
-        failedLeads.push({
-          leadId: lead.id,
-          leadName: lead.fullName,
-          message,
-          requestSent: false,
-          connectionAlreadyPresent: true,
-        });
+        throw error;
+      }
+      const message = cleanError(error);
+      if (deferUnreadableLead || error?.requestOutcomeUncertain === true) {
+        // Keep the assignment and confirmed comment receipts. A known-safe
+        // page failure can be retried later; an unconfirmed invitation is
+        // held from *all* automatic retries until Pending is reviewed.
+        await deferLeadForReview(lead, error, runContext, failedLeads);
+        deferredIssueMessage = error.requestOutcomeUncertain === true
+          ? "The invitation could not be confirmed. This lead needs a Pending check; continuing with the next one..."
+          : "That LinkedIn page did not load. The lead was saved for later; trying the next one...";
+        consecutiveUnreadableLeads += 1;
+        if (!deferUnreadableLead) consecutiveUnreadableLeads = 0;
       } else {
-        const status =
-          /no recent posts|no supported post permalink/i.test(message)
-            ? "skipped"
-            : "failed";
-        try {
-          await ScoutApi.authenticatedAction("scouts:updateLeadStatus", {
+        consecutiveUnreadableLeads = 0;
+        // Stop a service/quota failure here instead of burning through every lead.
+        if (!error?.requestSubmitted && isRecoverableServiceError(error)) throw error;
+        const requestSent = error?.requestSubmitted === true;
+        if (requestSent) {
+          progress.requestsSent += 1;
+          connectionSyncPending = error?.persistencePending === true;
+          if (connectionSyncPending) {
+            pendingConnectionLeadIds.add(lead.id);
+            progress.pendingConnectionRequests = upsertPendingConnectionRequest(
+              progress.pendingConnectionRequests,
+              {
+                leadId: lead.id,
+                leadName: lead.fullName,
+                profileUrl: error?.profileUrl || lead.linkedinUrl,
+                confirmedAt: Date.now(),
+              },
+            );
+          }
+          results.push({
             leadId: lead.id,
-            status,
-            email: null,
-            error: message,
+            leadName: lead.fullName,
+            status: connectionSyncPending
+              ? "connection_requested_pending_sync"
+              : "connection_requested",
+            profileUrl: error?.profileUrl || lead.linkedinUrl,
+            engagedCount: error?.engagedCount ?? 0,
           });
-        } catch (statusError) {
+        } else if (error?.knownConnection === true) {
           await ScoutApi.authenticatedAction("scouts:reportError", {
             leadId: lead.id,
             message,
           }).catch(() => {});
-          console.warn(
-            "Could not record the failed lead status:",
-            cleanError(statusError),
-          );
+          results.push({
+            leadId: lead.id,
+            leadName: lead.fullName,
+            status: "accepted_contact_check_failed",
+            profileUrl: error?.profileUrl || lead.linkedinUrl,
+            email: null,
+            connectionAlreadyPresent: true,
+            message,
+          });
+          failedLeads.push({
+            leadId: lead.id,
+            leadName: lead.fullName,
+            message,
+            requestSent: false,
+            connectionAlreadyPresent: true,
+          });
+        } else {
+          const status =
+            /no recent posts|no supported post permalink/i.test(message)
+              ? "skipped"
+              : "failed";
+          try {
+            await ScoutApi.authenticatedAction("scouts:updateLeadStatus", {
+              leadId: lead.id,
+              status,
+              email: null,
+              error: message,
+            });
+          } catch (statusError) {
+            await ScoutApi.authenticatedAction("scouts:reportError", {
+              leadId: lead.id,
+              message,
+            }).catch(() => {});
+            console.warn(
+              "Could not record the failed lead status:",
+              cleanError(statusError),
+            );
+          }
+          failedLeads.push({
+            leadId: lead.id,
+            leadName: lead.fullName,
+            message,
+            requestSent: false,
+          });
+          if (specificLeadId) throw new Error(message);
         }
-        failedLeads.push({
-          leadId: lead.id,
-          leadName: lead.fullName,
-          message,
-          requestSent: false,
-        });
-        if (specificLeadId) throw new Error(message);
       }
     }
     progress.processedLeads += 1;
     recordCompletedLeadTiming(progress, Date.now() - leadStartedAt);
     await checkpointRun(runContext, progress, {
       phase: "working_leads",
-      message: "Lead finished. Continuing toward today’s request goal...",
+      message: deferredIssueMessage || "Lead finished. Continuing toward today’s request goal...",
       currentLead: null,
     });
+    if (consecutiveUnreadableLeads >= 2) {
+      const interruption = new LinkedInAccessInterruptionError("page_unavailable", {
+        stage: "Multiple LinkedIn pages failed to load",
+      });
+      interruption.message = "LinkedIn did not load on two leads in a row. Both were saved for later. Check that LinkedIn opens normally, then press Resume.";
+      throw interruption;
+    }
     dashboard = await ScoutApi.authenticatedAction("scouts:getDashboard");
     if (specificLeadId) break;
   }
@@ -656,6 +696,37 @@ async function runDailyWorkflow(specificLeadId, runContext) {
     requestLimitReached: dashboard.usage.requestRemaining <= 0,
   };
   return { summary, progress };
+}
+
+async function deferLeadForReview(lead, error, runContext, failedLeads) {
+  const invitationUnconfirmed = error.requestOutcomeUncertain === true;
+  const message = invitationUnconfirmed
+    ? UNCERTAIN_INVITATION_ERROR
+    : "LinkedIn did not finish loading this lead. Saved for a later retry.";
+  await ScoutApi.authenticatedAction("scouts:updateLeadStatus", {
+    leadId: lead.id,
+    status: "failed",
+    email: null,
+    error: message,
+  });
+  failedLeads.push({
+    leadId: lead.id,
+    leadName: lead.fullName,
+    message,
+    requestSent: false,
+    stage: error.stage || "LinkedIn page",
+    pageUrl: safeLinkedInDiagnosticUrl(error.pageUrl),
+  });
+  await updateActiveRunState(runContext, {
+    lastLeadIssue: {
+      kind: invitationUnconfirmed ? "invitation_unconfirmed" : error.kind || "page_unavailable",
+      leadName: lead.fullName,
+      stage: error.stage || "LinkedIn page",
+      pageUrl: safeLinkedInDiagnosticUrl(error.pageUrl),
+      expectedUrl: safeLinkedInDiagnosticUrl(error.expectedUrl),
+      occurredAt: error.occurredAt || Date.now(),
+    },
+  });
 }
 
 function ensureAutoLeadRunState() {
@@ -762,7 +833,7 @@ class LinkedInAccessInterruptionError extends Error {
   constructor(kind, details = {}) {
     super(
       kind === "page_unavailable"
-        ? "The LinkedIn page could not be read. Scout paused without skipping this lead. Check that LinkedIn opens in a normal tab, then press Resume. If it still fails, use Report Bug."
+        ? "The LinkedIn page could not be read. This lead was kept safe; check that LinkedIn opens normally."
         : kind === "profile_link"
         ? "LinkedIn did not provide a verified profile link. Scout paused without skipping this lead. Please use Report Bug so support can check the link."
         : kind === "checkpoint"
@@ -792,6 +863,11 @@ function isLinkedInAccessInterruptionError(error) {
     error instanceof LinkedInAccessInterruptionError ||
     error?.name === "LinkedInAccessInterruptionError"
   );
+}
+
+function canDeferUnreadableLead(error) {
+  return isLinkedInAccessInterruptionError(error) &&
+    error.kind === "page_unavailable";
 }
 
 async function requestWorkflowControl(action, { reason = null, pauseDetails = null } = {}) {
@@ -927,6 +1003,7 @@ function defaultAutoLeadRunState() {
     progress: null,
     result: null,
     error: null,
+    lastLeadIssue: null,
   };
 }
 
@@ -2068,72 +2145,43 @@ async function executeConnectionRequestWithRecovery(
     type: "EXECUTE_CONNECTION_REQUEST",
     options: requestOptions,
   };
-  let response = await sendAutomationMessageToTab(runContext, tabId, message);
+  const response = await sendAutomationMessageToTab(runContext, tabId, message);
   if (!isClosedMessageChannelError(response?.error)) {
     return { response, pendingResult: null };
   }
 
-  for (let recoveryAttempt = 0; recoveryAttempt < 2; recoveryAttempt++) {
-    await updateRunProgress(runContext, progress, {
-      phase: "connecting",
-      message: `LinkedIn refreshed while connecting to ${lead.fullName}. Checking for a sent request before retrying...`,
-    });
-    await waitForAutomationContentScript(runContext, tabId);
-    const inspection = await inspectConnectionStatus(
-      runContext,
-      tabId,
+  await updateRunProgress(runContext, progress, {
+    phase: "connecting",
+    message: `LinkedIn refreshed while connecting to ${lead.fullName}. Checking whether the request is Pending...`,
+  });
+  await waitForAutomationContentScript(runContext, tabId);
+  const inspection = await inspectConnectionStatus(
+    runContext,
+    tabId,
+    lead,
+    profileUrl,
+  );
+  if (inspection?.ok && inspection.result?.connectionState === "pending") {
+    const pendingResult = await recordPendingConnectionRequest(
       lead,
       profileUrl,
+      runContext,
+      progress,
+      engagedCount,
+      engagementSkipped,
+      engagementSkipReason,
     );
-    if (!inspection?.ok) {
-      return {
-        response: {
-          ok: false,
-          error:
-            "LinkedIn refreshed before the connection request could be confirmed. This lead was skipped safely.",
-        },
-        pendingResult: null,
-      };
-    }
-
-    const state = inspection.result?.connectionState;
-    if (state === "pending") {
-      const pendingResult = await recordPendingConnectionRequest(
-        lead,
-        profileUrl,
-        runContext,
-        progress,
-        engagedCount,
-        engagementSkipped,
-        engagementSkipReason,
-      );
-      return { response: { ok: true }, pendingResult };
-    }
-    if (!inspection.result?.connectAvailable) {
-      return {
-        response: {
-          ok: false,
-          error:
-            state === "connected"
-              ? "This lead is already connected. No duplicate request was sent."
-              : "The connection state could not be confirmed. Nothing was sent.",
-        },
-        pendingResult: null,
-      };
-    }
-    if (recoveryAttempt === 0) {
-      response = await sendAutomationMessageToTab(runContext, tabId, message);
-      if (!isClosedMessageChannelError(response?.error)) {
-        return { response, pendingResult: null };
-      }
-    }
+    return { response: { ok: true }, pendingResult };
   }
 
+  // A visible Connect button does not prove that the earlier click failed:
+  // LinkedIn may show stale actions while the invitation is being processed.
+  // Never send a second invitation after losing the first response.
   return {
     response: {
       ok: false,
-      error:
-        "LinkedIn refreshed twice before the connection request could be confirmed. This lead was skipped safely.",
+      error: UNCERTAIN_INVITATION_ERROR,
+      requestOutcomeUncertain: true,
     },
     pendingResult: null,
   };
@@ -2293,6 +2341,7 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
   let workflowTabId = null;
   let connectionReserved = false;
   let requestSubmitted = false;
+  let connectionAttemptStarted = false;
   let connectionPersistencePending = false;
   let completedEngagementCount = 0;
   let engagementSkipped = false;
@@ -2596,6 +2645,7 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
     });
     connectionReserved = true;
     throwIfWorkflowControlled(runContext);
+    connectionAttemptStarted = true;
     const connectionAttempt = await executeConnectionRequestWithRecovery(
       runContext,
       tab.id,
@@ -2620,9 +2670,18 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
     const connectResponse = connectionAttempt.response;
     if (!connectResponse?.ok) {
       throwIfWorkflowControlled(runContext);
-      throw new Error(
+      const connectionError = new Error(
         connectResponse?.error || "We couldn’t send the connection request.",
       );
+      connectionError.requestOutcomeUncertain =
+        connectResponse?.requestOutcomeUncertain === true ||
+        connectResponse?.requestAttempted === true;
+      throw connectionError;
+    }
+    if (connectResponse.result?.confirmationPending === true) {
+      const connectionError = new Error(UNCERTAIN_INVITATION_ERROR);
+      connectionError.requestOutcomeUncertain = true;
+      throw connectionError;
     }
     requestSubmitted = true;
     connectionPersistencePending = true;
@@ -2654,12 +2713,17 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
     const message = cleanError(error);
     knownConnectionDetected =
       knownConnectionDetected || error?.knownConnection === true;
-    if (connectionReserved && !requestSubmitted) {
+    const requestOutcomeUncertain = error?.requestOutcomeUncertain === true ||
+      (connectionAttemptStarted && isLinkedInAccessInterruptionError(error));
+    if (connectionReserved && !requestSubmitted && !requestOutcomeUncertain) {
       await ScoutApi.authenticatedAction("scouts:releaseConnectionRequest", {
         leadId: lead.id,
       }).catch(() => {});
     }
     if (isLinkedInAccessInterruptionError(error)) {
+      // A lost page during request submission may hide whether LinkedIn sent
+      // the invitation. Never queue an automatic retry in that state.
+      error.requestOutcomeUncertain = requestOutcomeUncertain;
       await ScoutApi.authenticatedAction("scouts:reportError", { leadId: lead.id, message }).catch(() => {});
       throw error;
     }
@@ -2719,6 +2783,7 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
     workflowError.profileUrl = resolvedProfileUrl;
     workflowError.engagedCount = completedEngagementCount;
     workflowError.knownConnection = knownConnectionDetected;
+    workflowError.requestOutcomeUncertain = requestOutcomeUncertain;
     throw workflowError;
   } finally {
     if (workflowTabId) {

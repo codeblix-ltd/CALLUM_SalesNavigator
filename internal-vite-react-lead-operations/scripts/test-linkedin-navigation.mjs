@@ -9,6 +9,7 @@ const errorSource=between(background,'class LinkedInAccessInterruptionError','as
 const navigation=between(background,'function sendMessageToTab','function clampInteger');
 const opaque='https://www.linkedin.com/in/ACwAAGHmBW4BBJ1iz-LC1V1wiuNVUhRzBdLTHWs';
 const canonical='https://www.linkedin.com/in/benedict-koh-43a08439a';
+const uncertainInvitationMessage='The connection request could not be confirmed. Check LinkedIn Pending before this lead is retried; ask your manager to review it.';
 
 function harness({url=opaque,status='complete',heartbeat=()=>null}={}) {
   let now=0,sequence=0,requests=0;
@@ -46,7 +47,7 @@ function harness({url=opaque,status='complete',heartbeat=()=>null}={}) {
 }
 
 const broken=harness();
-await assert.rejects(broken.settle(broken.sandbox.waitForTabComplete(1,{expectedUrl:opaque})),/paused without skipping/);
+await assert.rejects(broken.settle(broken.sandbox.waitForTabComplete(1,{expectedUrl:opaque})),/could not be read/);
 assert(broken.requests>0,'complete browser error document must be probed');
 assert(broken.now<=18000);assert.equal(broken.listeners.size,0);assert.equal(broken.timers.size,0);
 
@@ -56,18 +57,18 @@ assert.equal(healthy.now,0,'content ready need not wait for slow secondary resou
 assert.equal(healthy.timers.size,0);
 
 const old=harness({heartbeat:()=>({url:'https://www.linkedin.com/in/someone-else'})});
-await assert.rejects(old.settle(old.sandbox.waitForTabComplete(1,{expectedUrl:opaque,timeoutMs:10000})),/paused/);
+await assert.rejects(old.settle(old.sandbox.waitForTabComplete(1,{expectedUrl:opaque,timeoutMs:10000})),/could not be read/);
 const pending=harness({heartbeat:t=>({url:t.url})});
 pending.tab.pendingUrl=canonical;
-await assert.rejects(pending.settle(pending.sandbox.waitForTabComplete(1,{expectedUrl:canonical,timeoutMs:10000})),/paused/);
+await assert.rejects(pending.settle(pending.sandbox.waitForTabComplete(1,{expectedUrl:canonical,timeoutMs:10000})),/could not be read/);
 
 const hanging=harness({heartbeat:()=> 'never'});
-await assert.rejects(hanging.settle(hanging.sandbox.waitForTabComplete(1,{expectedUrl:opaque,timeoutMs:10000})),/paused/);
+await assert.rejects(hanging.settle(hanging.sandbox.waitForTabComplete(1,{expectedUrl:opaque,timeoutMs:10000})),/could not be read/);
 await hanging.settle(new Promise(resolve=>hanging.sandbox.setTimeout(resolve,3000)));
 assert.equal(hanging.timers.size,0,'late heartbeat timeout must release timers');
 for (const heartbeat of [()=>null, ()=>'never', ()=>({url:canonical})]) {
   const recovery=harness({heartbeat});
-  await assert.rejects(recovery.settle(recovery.sandbox.waitForContentScript(1,5000)),/paused without skipping/);
+  await assert.rejects(recovery.settle(recovery.sandbox.waitForContentScript(1,5000)),/could not be read/);
   assert(recovery.now<=8250,'content recovery must also be bounded');
   assert.equal(recovery.timers.size,0);
 }
@@ -137,8 +138,25 @@ assert.equal(linkFixture({links:[canonical+'/overlay/contact-info/','https://www
 assert.equal(linkFixture({links:['https://linkedin.com.evil.test/in/benedict/overlay/contact-info/']}),null);
 assert.equal(linkFixture({links:[opaque+'/overlay/contact-info/']}),null);
 
-// Integration: a typed page interruption leaves the lead resumable, never
-// writes a failed status, advances the queue, or counts a public action.
+// The profile shell is present before its About section. The extractor must
+// wait for readable text without hanging indefinitely on sparse profiles.
+const profileWait=between(content,'  async function waitForProfileText','  function extractProfileSectionText');
+const firstMain={name:'shell'},hydratedMain={name:'hydrated'};
+let currentMain=firstMain,waitChecks=0;
+const profileWaitEnv={PROFILE_TEXT_SETTLE_TIMEOUT_MS:3500,
+  document:{querySelector:()=>currentMain},
+  findProfileSection:main=>main===hydratedMain?{}:null,
+  extractProfileSectionText:section=>section?'This English About section has enough readable prose to classify the profile.':null,
+  waitForMatch:async(find,timeout)=>{assert.equal(timeout,3500);assert.equal(find(),null);waitChecks++;currentMain=hydratedMain;assert.equal(find(),hydratedMain);return hydratedMain;},
+};
+vm.runInNewContext(profileWait,profileWaitEnv);
+assert.equal(await profileWaitEnv.waitForProfileText(firstMain),hydratedMain,'extract from the latest hydrated main, not a detached shell');
+assert.equal(waitChecks,1);
+profileWaitEnv.waitForMatch=async(_find,timeout)=>{assert.equal(timeout,3500);return null;};
+assert.equal(await profileWaitEnv.waitForProfileText(firstMain),hydratedMain,'sparse profiles still use the current main after a bounded wait');
+assert.match(content,/if \(!main\) throw new Error\("LinkedIn did not finish loading this profile\."\);[\s\S]{0,400}main = await waitForProfileText\(main\)/);
+
+// Login/checkpoint interruptions are global: do not advance or consume leads.
 const daily=between(background,'async function runDailyWorkflow','function ensureAutoLeadRunState');
 const actions=[],checkpoints=[];
 const progress={autoWithdrawComplete:true,reviewComplete:true,review:{},targetRequests:1,requestsSent:0,processedLeads:0,timedLeads:0,results:[],failedLeads:[]};
@@ -147,14 +165,69 @@ const runEnv={Set,Date,Boolean,Math,Error,URL,
   collectLocallyConfirmedConnectionRequests:()=>[],isWorkflowControlError:()=>false,
   ScoutApi:{authenticatedAction:async(path)=>{actions.push(path);if(path==='scouts:getDashboard')return {settings:{onboardingCompleted:true},usage:{requestRemaining:1}};if(path==='scouts:claimNextLead')return {id:'lead',fullName:'Benedict Koh',linkedinUrl:opaque};throw Error('Unexpected API mutation '+path);}},
 };
-vm.runInNewContext(errorSource+daily+`\nasync function runLeadWorkflow(){throw new LinkedInAccessInterruptionError('page_unavailable');}`,runEnv);
-await assert.rejects(runEnv.runDailyWorkflow(null,{resume:true,progress}),/paused/);
+vm.runInNewContext(errorSource+daily+`\nasync function runLeadWorkflow(){throw new LinkedInAccessInterruptionError('login');}`,runEnv);
+await assert.rejects(runEnv.runDailyWorkflow(null,{resume:true,progress}),/sign-in/);
 assert.equal(actions.filter(x=>x==='scouts:claimNextLead').length,1);
 assert.equal(progress.processedLeads,0);assert.equal(progress.requestsSent,0);assert.equal(progress.failedLeads.length,0);
 assert.equal(checkpoints.at(-1).currentLead.id,'lead');
 assert(!actions.includes('scouts:updateLeadStatus'));
 assert.match(background,/autoWithdraw = await autoWithdrawOldRequests[\s\S]{0,170}isLinkedInAccessInterruptionError/);
 assert.match(background,/collectAcceptedContact\(lead, runContext\)\.catch[\s\S]{0,145}isLinkedInAccessInterruptionError/);
+
+// A one-off unreadable lead is saved for the Retry failed leads flow and the
+// next lead proceeds. Repeated unreadable pages indicate a wider outage and
+// pause after two leads instead of exhausting the whole queue.
+function leadRecoveryHarness(failingIds,uncertainRequest=false) {
+  const leads=[{id:'first',fullName:'First Lead',linkedinUrl:opaque},{id:'second',fullName:'Second Lead',linkedinUrl:canonical},{id:'third',fullName:'Third Lead',linkedinUrl:opaque}];
+  const calls=[],states=[],checkpoints=[];
+  const progress={autoWithdrawComplete:true,reviewComplete:true,review:{},targetRequests:1,requestsSent:0,processedLeads:0,timedLeads:0,results:[],failedLeads:[]};
+  let claimIndex=0;
+  const env={Set,Date,Boolean,Math,Error,URL,
+    UNCERTAIN_INVITATION_ERROR:uncertainInvitationMessage,
+    cleanError:e=>e.message||String(e),throwIfWorkflowControlled(){},
+    isWorkflowControlError:()=>false,isRecoverableServiceError:()=>false,
+    collectLocallyConfirmedConnectionRequests:()=>[],
+    updateRunProgress:async()=>{},updateActiveRunState:async(_c,patch)=>states.push(patch),
+    checkpointRun:async(_c,_p,patch)=>checkpoints.push(patch),
+    recordCompletedLeadTiming(){},updateBadge:async()=>{},
+    ScoutApi:{authenticatedAction:async(path,args)=>{
+      calls.push({path,args});
+      if(path==='scouts:getDashboard')return {settings:{onboardingCompleted:true},usage:{requestRemaining:1}};
+      if(path==='scouts:claimNextLead')return leads[claimIndex++]||null;
+      if(path==='scouts:updateLeadStatus')return null;
+      throw Error('Unexpected API mutation '+path);
+    }},
+  };
+  vm.runInNewContext(errorSource+daily+'\nthis.makePageError=(details)=>new LinkedInAccessInterruptionError("page_unavailable",details);',env);
+  env.runLeadWorkflow=async lead=>{
+    if(failingIds.includes(lead.id)){
+      const error=env.makePageError({stage:`${lead.fullName} recent activity`,pageUrl:`${lead.linkedinUrl}/recent-activity/all/`});
+      error.requestOutcomeUncertain=uncertainRequest;
+      throw error;
+    }
+    return {leadId:lead.id,status:'connection_requested'};
+  };
+  return {env,progress,calls,states,checkpoints,get claimed(){return claimIndex;}};
+}
+const oneFailure=leadRecoveryHarness(['first']);
+const oneOutcome=await oneFailure.env.runDailyWorkflow(null,{resume:false,progress:oneFailure.progress});
+assert.equal(oneOutcome.summary.requestsSent,1);
+assert.equal(oneFailure.progress.failedLeads.length,1);
+assert.equal(oneFailure.progress.failedLeads[0].leadId,'first');
+assert.equal(oneFailure.progress.processedLeads,2);
+assert.equal(oneFailure.calls.filter(call=>call.path==='scouts:updateLeadStatus').length,1);
+assert.equal(oneFailure.states.at(-1).lastLeadIssue.leadName,'First Lead');
+assert.match(oneFailure.checkpoints.find(item=>/saved for later/.test(item.message)).message,/trying the next one/);
+const wideFailure=leadRecoveryHarness(['first','second','third']);
+await assert.rejects(wideFailure.env.runDailyWorkflow(null,{resume:false,progress:wideFailure.progress}),/two leads in a row/);
+assert.equal(wideFailure.progress.failedLeads.length,2);
+assert.equal(wideFailure.progress.processedLeads,2);
+assert.equal(wideFailure.claimed,2,'do not consume a third lead when LinkedIn may be broadly unavailable');
+const uncertainRequest=leadRecoveryHarness(['first'],true);
+await uncertainRequest.env.runDailyWorkflow(null,{resume:false,progress:uncertainRequest.progress});
+assert.equal(uncertainRequest.calls.filter(call=>call.path==='scouts:updateLeadStatus').length,1);
+assert.match(uncertainRequest.calls.find(call=>call.path==='scouts:updateLeadStatus').args.error,/Check LinkedIn Pending/);
+assert.equal(uncertainRequest.states.at(-1).lastLeadIssue.kind,'invitation_unconfirmed');
 
 // Optional language/note fallback must never hide a navigation interruption.
 const noteAndLanguage=between(background,'async function createPersonalizedConnectionNoteWithRetry','async function recordRecentPostLanguageDecision');
@@ -188,6 +261,50 @@ const leadEnv={...fallbackEnv,Math,cleanError:e=>e.message,encodeURIComponent,
 vm.runInNewContext(errorSource+between(background,'async function runLeadWorkflow','function uniqueLeads'),leadEnv);
 await assert.rejects(leadEnv.runLeadWorkflow(lead,{includeNote:true,linkedinPremium:true},{}, {},progress),error=>error===fallbackEnv.interruption);
 assert.deepEqual(leadCalls,['scouts:recordProfileVisit','scouts:reportError'],'outer note catch must not continue to send a request');
+const attemptedActions=[];
+const attemptedEnv={...leadEnv,
+  UNCERTAIN_INVITATION_ERROR:uncertainInvitationMessage,
+  chrome:{storage:{local:{get:async()=>({})}},tabs:{update:async()=>{},remove:async()=>{}}},
+  getRequestedWorkflowControl:()=>null,
+  checkpointRun:async()=>{},updateRunProgress:async()=>{},
+  ScoutApi:{getAuth:async()=>({username:'jen'}),authenticatedAction:async path=>{attemptedActions.push(path);}},
+  createPersonalizedConnectionNoteWithRetry:async()=>'',
+  executeConnectionRequestWithRecovery:async()=>{throw fallbackEnv.interruption;},
+};
+vm.runInNewContext(errorSource+between(background,'async function runLeadWorkflow','function uniqueLeads'),attemptedEnv);
+fallbackEnv.interruption.requestOutcomeUncertain=false;
+await assert.rejects(attemptedEnv.runLeadWorkflow({...lead,status:'engaged'},{includeNote:false,linkedinPremium:false},{engagementRemaining:0},{},progress),error=>{
+  assert.equal(error.requestOutcomeUncertain,true,`a lost page after starting an invitation must never be queued for retry: ${error.message}; actions=${attemptedActions.join(',')}`);
+  return true;
+});
+assert(!attemptedActions.includes('scouts:releaseConnectionRequest'),'retain quota reservation while invitation outcome is uncertain');
+const postClickActions=[];
+const postClickEnv={...attemptedEnv,
+  ScoutApi:{getAuth:async()=>({username:'jen'}),authenticatedAction:async path=>{postClickActions.push(path);}},
+  executeConnectionRequestWithRecovery:async()=>({response:{ok:false,error:'LinkedIn lost the response after Send',requestAttempted:true},pendingResult:null}),
+};
+vm.runInNewContext(errorSource+between(background,'async function runLeadWorkflow','function uniqueLeads'),postClickEnv);
+await assert.rejects(postClickEnv.runLeadWorkflow({...lead,status:'engaged'},{includeNote:false,linkedinPremium:false},{engagementRemaining:0},{},progress),error=>{
+  assert.equal(error.requestOutcomeUncertain,true,'ordinary post-click errors must be held, not retried');
+  return true;
+});
+assert(!postClickActions.includes('scouts:releaseConnectionRequest'));
+
+const connectionRecovery=between(background,'async function executeConnectionRequestWithRecovery','async function createPersonalizedConnectionNoteWithRetry');
+let requestMessages=0;
+const connectionEnv={
+  UNCERTAIN_INVITATION_ERROR:'Check LinkedIn Pending',
+  sendAutomationMessageToTab:async()=>{requestMessages++;return {ok:false,error:'message channel closed'};},
+  isClosedMessageChannelError:error=>/message channel closed/.test(error||''),
+  updateRunProgress:async()=>{},waitForAutomationContentScript:async()=>{},
+  inspectConnectionStatus:async()=>({ok:true,result:{checked:true,connectAvailable:true,connectionState:'not_connected'}}),
+};
+vm.runInNewContext(connectionRecovery,connectionEnv);
+const lostResponse=await connectionEnv.executeConnectionRequestWithRecovery({},1,lead,canonical,{},progress,0);
+assert.equal(lostResponse.response.requestOutcomeUncertain,true);
+assert.equal(requestMessages,1,'a stale Connect button must never trigger a second Send after a lost response');
+assert.match(content,/requestAttempted = true;\s*clickElement\(sendBtn\)/);
+assert.match(content,/requestAttempted: error\?\.requestAttempted === true/);
 
 // Exercise the actual outer run catch and finalizer, not just the lead loop.
 let saved={runId:'run',status:'paused',progress,currentLead:null};
@@ -210,8 +327,8 @@ await runEnv.startDailyWorkflow(null,{resume:true});
 if(runEnv.workflowPromise)await runEnv.workflowPromise;
 assert.equal(saved.status,'paused');assert.equal(saved.phase,'paused');
 assert.equal(saved.currentLead.id,'lead');assert.equal(saved.progress.processedLeads,0);
-assert.match(saved.message,/paused without skipping/);
-assert.equal(saved.pauseDetails.kind,'page_unavailable');
+assert.match(saved.message,/sign-in/);
+assert.equal(saved.pauseDetails.kind,'login');
 assert.equal(saved.pauseDetails.stage,'engaging');
 assert.equal(typeof saved.pauseDetails.occurredAt,'number');
-console.log('LinkedIn navigation tests passed: error document, bounded recovery, verified identity, language/note interruption propagation, and final paused state without consuming leads.');
+console.log('LinkedIn navigation tests passed: bounded page checks, profile text settling, one-lead recovery, outage circuit breaker, safe invitation uncertainty, and global access pauses.');

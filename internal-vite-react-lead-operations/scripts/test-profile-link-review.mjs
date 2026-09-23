@@ -9,6 +9,10 @@ vm.runInNewContext(compile(readFileSync(new URL('../convex/lib/profileLinkReview
 const rules = module.exports;
 const source = readFileSync(new URL('../convex/scouts.ts',import.meta.url),'utf8');
 const claimSource = source.slice(source.indexOf('export const claimNextLead ='),source.indexOf('export const recordProfileVisit ='));
+const dashboardSource = source.slice(source.indexOf('export const getDashboard ='), source.indexOf('export const getLeadProgress ='));
+assert.match(dashboardSource,/a\.status = 'failed'[\s\S]{0,100}AND NOT \(\$\{leadNeedsReviewSql\(\)\}\)/,'retry count must exclude held leads');
+assert.match(dashboardSource,/retryable_failed[\s\S]{0,100}FROM lead_assignments AS a/,'retry count must use the actual assignment queue');
+assert.match(source,/\$\{leadNeedsReviewSql\(\)\} AS needs_review/,'lead details must expose whether retry is safe');
 const opaque = 'https://linkedin.com/in/ACwAAChbAucBI-585IxTOOxRyicxUoSvBFj438w';
 const id = '0a9673c9-13a7-4b66-9846-ed3077bd3b09';
 const nextId = '0a9673c9-13a7-4b66-9846-ed3077bd3b10';
@@ -19,7 +23,7 @@ const repeatedUnreadable={...base,linkedin_url:'https://www.linkedin.com/in/amee
 // effects; Cockroach predicate semantics are checked separately with --live.
 function harness(rows) {
  const sql=[],writes=[];
- const held = row => (row.last_error===rules.UNVERIFIED_PROFILE_LINK_ERROR && /\/in\/AC[ow][A-Za-z0-9_-]{15,}\/?([?#].*)?$/.test(row.linkedin_url)) || (row.last_error===rules.UNREADABLE_LINKEDIN_PAGE_ERROR && row.pause_count>=2);
+ const held = row => (row.last_error===rules.UNVERIFIED_PROFILE_LINK_ERROR && /\/in\/AC[ow][A-Za-z0-9_-]{15,}\/?([?#].*)?$/.test(row.linkedin_url)) || (row.last_error===rules.UNREADABLE_LINKEDIN_PAGE_ERROR && row.pause_count>=2) || row.last_error===rules.UNCERTAIN_INVITATION_ERROR;
  const query = async (text,args=[]) => {
   sql.push(text);
   if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(text))return {rows:[]};
@@ -69,6 +73,10 @@ for(const args of [{},{resumeExisting:true}]) {
 await assert.rejects(harness([repeatedUnreadable]).run({leadId:id}),/start a normal run/);
 assert.equal((await harness([{...repeatedUnreadable,pause_count:1}]).run({resumeExisting:true})).id,id,'one transient unreadable page remains retryable');
 assert.equal((await harness([{...repeatedUnreadable,last_error:null}]).run({resumeExisting:true})).id,id,'clearing the diagnosed error releases the held lead');
+const uncertainInvitation={...next,id,status:'failed',last_error:rules.UNCERTAIN_INVITATION_ERROR};
+await assert.rejects(harness([uncertainInvitation]).run({failedOnly:true}),/remaining leads need attention/);
+await assert.rejects(harness([uncertainInvitation]).run({leadId:id}),/start a normal run/);
+assert.equal((await harness([{...uncertainInvitation,last_error:null}]).run({failedOnly:true})).id,id,'reviewed uncertain invitations can be retried after the hold is cleared');
 const repaired=harness([{...base,linkedin_url:next.linkedin_url}]);
 assert.equal((await repaired.run({resumeExisting:true})).id,id,'verified repair re-enters queue');
 const pristine=harness([{...base,last_error:null}]);
@@ -84,6 +92,7 @@ assert.match(source.slice(source.indexOf('export const getDashboard'),source.ind
 assert.match(source,/stage === "needs_attention"[\s\S]{0,230}OR \(\$\{leadNeedsReviewSql\(\)\}\)/);
 assert.match(source,/stage === "automation_ready"[\s\S]{0,350}AND NOT \(\$\{leadNeedsReviewSql\(\)\}\)/);
 const oldBackground=readFileSync(new URL('../chrome-extension/background.js',import.meta.url),'utf8');
+assert(oldBackground.includes(rules.UNCERTAIN_INVITATION_ERROR),'extension and backend must agree on the durable invitation hold');
 const errors={Error,String};
 vm.runInNewContext(oldBackground.slice(oldBackground.indexOf('function cleanError('),oldBackground.indexOf('function sleep(ms)')),errors);
 assert.equal(errors.friendlyWorkflowError(new Error(rules.PROFILE_LINK_REVIEW_MESSAGE)),rules.PROFILE_LINK_REVIEW_MESSAGE);
@@ -105,6 +114,10 @@ if(process.argv.includes('--live')) {
    const result=await c.query(`SELECT ${rules.profileLinkNeedsReviewSql()} AS held FROM (SELECT $1::STRING AS last_error,$2::STRING AS resolved_linkedin_url) AS a CROSS JOIN (SELECT $3::STRING AS linkedin_url) AS l`,[lastError,resolved,imported]);
    assert.equal(result.rows[0].held,expected,'real Cockroach null/URL/error predicate');
   }
+  const dashboardCount=await c.query(`SELECT count(*) FILTER (WHERE a.status='failed' AND NOT (${rules.leadNeedsReviewSql()}))::FLOAT8 AS retryable_failed FROM lead_assignments AS a JOIN leads AS l ON l.id=a.lead_id WHERE a.operator_id=$1`,['jen']);
+  assert(Number.isFinite(Number(dashboardCount.rows[0].retryable_failed)),'dashboard retry count executes on Cockroach');
+  const progressReview=await c.query(`SELECT ${rules.leadNeedsReviewSql()} AS needs_review FROM lead_assignments AS a JOIN leads AS l ON l.id=a.lead_id WHERE a.operator_id=$1 LIMIT 1`,['jen']);
+  assert.equal(typeof progressReview.rows[0]?.needs_review,'boolean','progress review flag executes on Cockroach');
   if(process.argv.includes('--audit-jen')) {
    const jen=await c.query(`SELECT ${rules.leadNeedsReviewSql()} AS held, a.status FROM lead_assignments a JOIN leads l ON l.id=a.lead_id WHERE a.operator_id=$1 AND a.lead_id=$2::UUID`,['jen','10c419d9-e45a-4bca-92b3-149940cb7df0']);
    assert.equal(jen.rows.length,1,'Jen lead exists');

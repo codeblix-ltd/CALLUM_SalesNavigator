@@ -67,7 +67,8 @@ const { CodexAppServer, classifyLanguageLocally } = await import(
   pathToFileURL(gatewayClientPath).href
 );
 
-assert.equal(manifest.version, "0.10.40");
+assert.equal(manifest.version, "0.10.41");
+assert.match(scoutSource,/\["english", "non_english"\]\.includes\(\s*String\(lead\.profile_language_status/,'an uncertain profile read must not be cached for 90 days');
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
 ]);
@@ -217,6 +218,12 @@ assert.match(dashboardScript, /scouts:getLeadProgress/);
 assert.match(dashboardScript, /scouts:setLeadNote/);
 assert.match(dashboardScript, /scouts:rejectFailedLead/);
 assert.match(dashboardScript, /Retry this lead/);
+assert.match(dashboardScript, /const retryableFailed = Number\(counts\.retryableFailed/);
+assert.match(dashboardScript, /lead\.needsReview/);
+assert.match(popupScript, /const heldFailed = Math\.max/);
+assert.match(backgroundSource, /dashboard\.counts\.retryableFailed \?\? dashboard\.counts\.failed/);
+assert.match(scoutSource, /AS retryable_failed/);
+assert.match(scoutSource, /AS needs_review/);
 assert.match(dashboardScript, /Mark rejected/);
 assert.match(dashboardScript, /data-lead-note-form/);
 assert.match(dashboardScript, /maxlength="10000"/);
