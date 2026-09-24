@@ -269,7 +269,7 @@ function renderLeads(progress) {
       <td>${milestoneCell(outreachDone ? "Reached out" : "Not sent", shortDate(lead.connectionRequestedAt), outreachDone, lead.status === "withdrawn" ? "warning" : "")}</td>
       <td>${milestoneCell(lead.acceptedAt ? "Connected" : "Waiting", shortDate(lead.acceptedAt), Boolean(lead.acceptedAt))}</td>
       <td>${milestoneCell(email ? escapeHtml(email) : emailUnavailable ? "No email available" : lead.status === "connection_requested" ? "Waiting for connection" : "Not checked", email ? emailType(lead) : emailUnavailable ? originalEmailMeta(lead) : lead.status === "connection_requested" ? "Available after acceptance" : workEmailMeta(lead), Boolean(email) || emailUnavailable, lead.workEmailStatus === "error" ? "error" : emailUnavailable ? "warning" : "")}</td>
-      <td><span class="stage-pill ${lead.status === "failed" ? "is-error" : ""}">${escapeHtml(stageLabel(lead.status))}</span></td>
+      <td><span class="stage-pill ${lead.status === "failed" ? "is-error" : ""}">${escapeHtml(stageLabel(lead))}</span></td>
       <td><span class="updated-cell">${escapeHtml(formatRelativeTime(lead.updatedAt))}</span></td>`;
     elements.leadRows.append(row);
   }
@@ -297,15 +297,24 @@ function openDrawer(lead) {
   const failedActions = lead.status === "failed"
     ? `${lead.needsReview
         ? `<span class="drawer-note">This lead needs a manager to check it before retry.</span>`
-        : `<button type="button" data-drawer-action="retry" data-lead-id="${escapeAttribute(lead.id)}">Retry this lead</button>`}<button class="danger" type="button" data-drawer-action="reject" data-lead-id="${escapeAttribute(lead.id)}" data-lead-name="${escapeAttribute(lead.fullName || "this lead")}">Mark rejected</button>`
+        : `<button type="button" data-drawer-action="retry" data-lead-id="${escapeAttribute(lead.id)}">Retry this lead</button>`}`
     : "";
+  const rejectAction = ["skipped", "withdrawn"].includes(lead.status) ? "" : `
+    <section class="drawer-section reject-section"><details>
+      <summary>Reject this lead permanently</summary>
+      <p>Use this only after checking that the profile is unusable. Scout will not select it again. This does not undo any LinkedIn request or activity already sent.</p>
+      <label>Why reject this lead?<select data-reject-reason><option value="profile_unavailable">Profile does not open</option><option value="wrong_profile">Wrong person or profile</option><option value="other">Other blocker</option></select></label>
+      <label>Extra details <span>(required for Other blocker)</span><textarea data-reject-note maxlength="300" rows="2" placeholder="What did you see?"></textarea></label>
+      <button class="danger" type="button" data-drawer-action="reject" data-lead-id="${escapeAttribute(lead.id)}" data-lead-name="${escapeAttribute(lead.fullName || "this lead")}">Mark rejected</button>
+    </details></section>`;
   elements.drawerContent.innerHTML = `
     <header class="drawer-header">
-      <p class="eyebrow">${escapeHtml(stageLabel(lead.status))}</p>
+      <p class="eyebrow">${escapeHtml(stageLabel(lead))}</p>
       <h2 id="drawer-name">${escapeHtml(lead.fullName || "Unnamed lead")}</h2>
       <p>${escapeHtml([lead.currentTitle, lead.companyName].filter(Boolean).join(" · ") || "Lead details")}</p>
     </header>
     <div class="drawer-actions"><a href="${escapeAttribute(lead.profileUrl)}" target="_blank" rel="noreferrer">Open LinkedIn profile</a>${failedActions}</div>
+    ${rejectAction}
     <section class="drawer-section lead-note-section">
       <h3>Lead note</h3>
       <form class="lead-note-form" data-lead-note-form data-lead-id="${escapeAttribute(lead.id)}">
@@ -391,13 +400,25 @@ async function handleDrawerActionClick(event) {
       return;
     }
     if (button.dataset.drawerAction === "reject") {
+      const run = (await chrome.storage.local.get("autoLeadRunState")).autoLeadRunState;
+      if (["running", "pausing", "paused"].includes(run?.status)) {
+        throw new Error("Stop the current run completely before rejecting this lead.");
+      }
+      const reason = elements.drawerContent.querySelector("[data-reject-reason]")?.value;
+      const note = elements.drawerContent.querySelector("[data-reject-note]")?.value.trim() || "";
+      if (reason === "other" && !note) throw new Error("Add a short reason for Other blocker.");
       const confirmed = window.confirm(
-        `Mark ${button.dataset.leadName || "this lead"} as rejected? It will not be retried again.`,
+        `Permanently remove ${button.dataset.leadName || "this lead"} from Scout automation and cancel pending follow-ups? This will not undo LinkedIn activity already sent.`,
       );
       if (!confirmed) return;
-      await ScoutApi.authenticatedAction("scouts:rejectFailedLead", { leadId });
+      const latestRun = (await chrome.storage.local.get("autoLeadRunState")).autoLeadRunState;
+      if (["running", "pausing", "paused"].includes(latestRun?.status)) {
+        throw new Error("Stop the current run completely before rejecting this lead.");
+      }
+      await ScoutApi.authenticatedAction("scouts:rejectLead", { leadId, reason, note });
       closeDrawer();
       await loadDashboard({ includeSummary: true });
+      elements.lastUpdated.textContent = `${button.dataset.leadName || "This lead"} is rejected and will not be selected again.`;
     }
   } catch (error) {
     showError(readError(error));
@@ -485,7 +506,8 @@ function qualificationDetail(lead) {
   return lead.icpScore === null ? label : `${label} · score ${lead.icpScore} / 100`;
 }
 
-function stageLabel(status) {
+function stageLabel(lead) {
+  if (lead.status === "skipped" && /^Rejected by scout/i.test(lead.qualificationNote || "")) return "Rejected";
   const labels = {
     assigned: "Ready to check",
     viewed: "Profile opened",
@@ -498,7 +520,7 @@ function stageLabel(status) {
     skipped: "Skipped",
     failed: "Needs attention",
   };
-  return labels[status] || String(status || "Unknown").replaceAll("_", " ");
+  return labels[lead.status] || String(lead.status || "Unknown").replaceAll("_", " ");
 }
 
 function hasOutreach(lead) {

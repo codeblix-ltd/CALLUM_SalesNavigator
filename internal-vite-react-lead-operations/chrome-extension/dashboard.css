@@ -201,6 +201,13 @@ tbody tr:last-child td { border-bottom: 0; }
 .detail-grid strong { overflow-wrap: anywhere; color: #3a4553; font-size: 11px; line-height: 1.45; }
 .drawer-note { margin: 0; padding: 11px 12px; color: #6f5b3e; background: #fff8eb; border: 1px solid #f1dfbc; border-radius: 8px; font-size: 10px; line-height: 1.5; }
 .drawer-note.error { color: #8f4141; background: #fff1f1; border-color: #efcccc; }
+.reject-section { background: #fffafb; margin: 0 -12px; padding: 18px 12px; border-radius: 10px; }
+.reject-section summary { color: #923d4b; font-size: 12px; font-weight: 750; cursor: pointer; }
+.reject-section p { color: #6d5960; font-size: 11px; line-height: 1.5; }
+.reject-section label { display: grid; gap: 6px; margin: 12px 0; color: #5e6875; font-size: 11px; font-weight: 700; }
+.reject-section label span { font-weight: 400; }
+.reject-section select, .reject-section textarea { width: 100%; padding: 9px; border: 1px solid #d5dae2; border-radius: 7px; background: white; color: #1f2937; }
+.reject-section button.danger { padding: 9px 12px; color: #98434c; background: #fff2f3; border: 1px solid #e8c7cc; border-radius: 7px; font-size: 11px; font-weight: 750; }
 .lead-note-form label { display: block; margin-bottom: 9px; color: #76808e; font-size: 10px; line-height: 1.45; }
 .lead-note-form textarea { width: 100%; min-height: 112px; resize: vertical; padding: 11px 12px; color: #344052; background: #fbfbfd; border: 1px solid #d9dee7; border-radius: 8px; outline: none; font-size: 11px; line-height: 1.55; }
 .lead-note-form textarea:focus { background: #fff; border-color: #8067d2; box-shadow: 0 0 0 3px rgba(102, 72, 197, .1); }

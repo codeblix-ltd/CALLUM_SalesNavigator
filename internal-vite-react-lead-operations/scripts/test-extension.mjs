@@ -67,7 +67,7 @@ const { CodexAppServer, classifyLanguageLocally } = await import(
   pathToFileURL(gatewayClientPath).href
 );
 
-assert.equal(manifest.version, "0.10.43");
+assert.equal(manifest.version, "0.10.44");
 assert.match(scoutSource,/\["english", "non_english"\]\.includes\(\s*String\(lead\.profile_language_status/,'an uncertain profile read must not be cached for 90 days');
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
@@ -216,7 +216,10 @@ assert.match(dashboardSource, /id="retry-failed-leads"/);
 assert.match(dashboardSource, /id="lead-drawer"/);
 assert.match(dashboardScript, /scouts:getLeadProgress/);
 assert.match(dashboardScript, /scouts:setLeadNote/);
-assert.match(dashboardScript, /scouts:rejectFailedLead/);
+assert.match(dashboardScript, /scouts:rejectLead/);
+assert.match(dashboardScript, /Stop the current run completely before rejecting this lead/);
+assert.match(dashboardScript, /Reject this lead permanently/);
+assert.match(dashboardSource, /value="rejected">Rejected by you/);
 assert.match(dashboardScript, /Retry this lead/);
 assert.match(dashboardScript, /const retryableFailed = Number\(counts\.retryableFailed/);
 assert.match(dashboardScript, /lead\.needsReview/);
@@ -993,6 +996,8 @@ assert.match(schemaSource, /original_email_status IN \('pending', 'found', 'not_
 assert.match(schemaSource, /event_type = 'contact_info_checked'/);
 assert.match(scoutSource, /export const markOldRequestWithdrawn/);
 assert.match(scoutSource, /export const rejectFailedLead/);
+assert.match(scoutSource, /export const rejectLead/);
+assert.match(scoutSource, /UPDATE lead_followup_tasks[\s\S]*status = 'cancelled'/);
 assert.match(scoutSource, /source: "scout_dashboard"/);
 assert.match(scoutSource, /failedOnly: v\.optional\(v\.boolean\(\)\)/);
 assert.match(scoutSource, /\["viewed", "engaged", "failed"\]\.includes\(row\.status\)/);

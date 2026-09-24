@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { v } from "convex/values";
 import type { PoolClient } from "pg";
 import { internal } from "./_generated/api";
-import { action } from "./_generated/server";
+import { action, type ActionCtx } from "./_generated/server";
 import { requestCodexGateway } from "./lib/codexGateway";
 import { getPool } from "./lib/cockroach";
 import { isGhlCompatibleEmail } from "./lib/ghl";
@@ -442,6 +442,7 @@ export const getLeadProgress = action({
       "email_collected",
       "reached_out",
       "needs_attention",
+      "rejected",
     ]);
     const stage = allowedStages.has(String(args.stage))
       ? String(args.stage)
@@ -472,8 +473,11 @@ export const getLeadProgress = action({
       filters.push(
         `(a.status IN ('failed', 'skipped', 'withdrawn')
           OR a.qualification_status = 'not_qualified'
-          OR (${leadNeedsReviewSql()}))`,
+          OR (${leadNeedsReviewSql()}))
+          AND NOT (a.status = 'skipped' AND coalesce(a.qualification_note, '') LIKE 'Rejected by scout%')`,
       );
+    } else if (stage === "rejected") {
+      filters.push("a.status = 'skipped' AND a.qualification_note LIKE 'Rejected by scout%'");
     } else if (stage === "assigned") {
       filters.push(
         "a.status = 'assigned' AND a.qualification_status <> 'not_qualified'",
@@ -1940,53 +1944,93 @@ export const rejectFailedLead = action({
   args: { leadId: v.string() },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
-    const database = getPool();
-    const client = await database.connect();
-    try {
-      await client.query("BEGIN");
-      const current = await client.query(
-        `SELECT status, connection_request_reserved_on::STRING AS reserved_on
-           FROM lead_assignments
-          WHERE lead_id = $1::UUID AND operator_id = $2
-          FOR UPDATE`,
-        [args.leadId, scout.operatorId],
-      );
-      const row = current.rows[0];
-      if (!row) throw new Error("This lead is not assigned to you.");
-      if (row.status !== "failed") {
-        throw new Error("Only a lead that needs attention can be rejected here.");
-      }
-      if (row.reserved_on) {
-        throw new Error(
-          "This lead may still have a connection request syncing. Refresh the extension before rejecting it.",
-        );
-      }
-      await client.query(
-        `UPDATE lead_assignments
-            SET status = 'skipped',
-                qualification_status = 'not_qualified',
-                qualification_note = coalesce(
-                  qualification_note,
-                  'Rejected by scout after automation retry'
-                ),
-                updated_at = now()
-          WHERE lead_id = $1::UUID AND operator_id = $2 AND status = 'failed'`,
-        [args.leadId, scout.operatorId],
-      );
-      await insertEvent(client, args.leadId, scout.operatorId, "lead_rejected", {
-        source: "scout_dashboard",
-      });
-      await client.query("COMMIT");
-      return null;
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally {
-      client.release();
-    }
+    return rejectLeadForScout(ctx, args.leadId, "other", "Automation could not continue", true);
   },
 });
+
+const rejectionReason = v.union(
+  v.literal("profile_unavailable"),
+  v.literal("wrong_profile"),
+  v.literal("other"),
+);
+
+export const rejectLead = action({
+  args: { leadId: v.string(), reason: rejectionReason, note: v.optional(v.string()) },
+  returns: v.null(),
+  handler: async (ctx, args) => rejectLeadForScout(ctx, args.leadId, args.reason, args.note ?? "", false),
+});
+
+async function rejectLeadForScout(
+  ctx: ActionCtx,
+  leadId: string,
+  reason: "profile_unavailable" | "wrong_profile" | "other",
+  note: string,
+  onlyFailed: boolean,
+): Promise<null> {
+  const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
+  const detail = note.trim();
+  if (detail.length > 300 || (reason === "other" && !detail)) {
+    throw new Error("Add a short reason of up to 300 characters.");
+  }
+  const reasonText = reason === "profile_unavailable"
+    ? "Profile does not open"
+    : reason === "wrong_profile"
+      ? "Wrong person or profile"
+      : detail;
+  const label = `Rejected by scout: ${reasonText}${reason !== "other" && detail ? ` — ${detail}` : ""}`;
+  const database = getPool();
+  const client = await database.connect();
+  try {
+    await client.query("BEGIN");
+    const current = await client.query(
+      `SELECT status, connection_request_reserved_on::STRING AS reserved_on,
+              qualification_note
+         FROM lead_assignments
+        WHERE lead_id = $1::UUID AND operator_id = $2
+        FOR UPDATE`,
+      [leadId, scout.operatorId],
+    );
+    const row = current.rows[0];
+    if (!row) throw new Error("This lead is not assigned to you.");
+    if (onlyFailed && row.status !== "failed") {
+      throw new Error("Only a lead that needs attention can be rejected here.");
+    }
+    if (["skipped", "withdrawn"].includes(String(row.status))) {
+      throw new Error("This lead is already out of the automation queue.");
+    }
+    if (row.reserved_on) {
+      throw new Error("A connection request may still be in progress. Stop the run and refresh before rejecting this lead.");
+    }
+    const priorNote = String(row.qualification_note || "").trim();
+    const savedNote = priorNote && !priorNote.startsWith("Rejected by scout:")
+      ? `${label} | Previous note: ${priorNote.slice(0, 500)}`
+      : label;
+    await client.query(
+      `UPDATE lead_assignments
+          SET status = 'skipped',
+              qualification_note = $3,
+              updated_at = now()
+        WHERE lead_id = $1::UUID AND operator_id = $2`,
+      [leadId, scout.operatorId, savedNote],
+    );
+    await client.query(
+      `UPDATE lead_followup_tasks
+          SET status = 'cancelled', completed_at = now(), updated_at = now()
+        WHERE lead_id = $1::UUID AND operator_id = $2 AND status = 'pending'`,
+      [leadId, scout.operatorId],
+    );
+    await insertEvent(client, leadId, scout.operatorId, "lead_rejected", {
+      source: "scout_dashboard", reason, note: detail, previousStatus: row.status,
+    });
+    await client.query("COMMIT");
+    return null;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
 
 export const getScoutOperations = action({
   args: {},
@@ -2036,6 +2080,7 @@ export const getScoutOperations = action({
              ON a.lead_id = t.lead_id AND a.operator_id = t.operator_id
            WHERE t.operator_id = $1
              AND t.status = 'pending'
+             AND a.status IN ('accepted', 'email_collected')
              AND NOT EXISTS (
                SELECT 1
                  FROM lead_followup_tasks AS earlier
@@ -2981,6 +3026,7 @@ async function ensureAcceptedFollowupTasks(operatorId: string) {
       FROM lead_assignments AS a
       INNER JOIN leads AS l ON l.id = a.lead_id
       WHERE a.operator_id = $1
+        AND a.status IN ('accepted', 'email_collected')
         AND a.accepted_at >= now() - INTERVAL '30 days'
         AND NOT EXISTS (
           SELECT 1
@@ -2995,12 +3041,30 @@ async function ensureAcceptedFollowupTasks(operatorId: string) {
   const client = await database.connect();
   try {
     for (const row of missing.rows) {
-      await createFollowupTasks(
-        client,
-        String(row.lead_id),
-        operatorId,
-        nullableString(row.first_name),
-      );
+      await client.query("BEGIN");
+      try {
+        // The assignment lock serializes synthesis with a scout rejection:
+        // either these tasks are created first and then cancelled, or the
+        // rejected status wins and no tasks are created.
+        const current = await client.query(
+          `SELECT status FROM lead_assignments
+            WHERE lead_id = $1::UUID AND operator_id = $2
+            FOR UPDATE`,
+          [String(row.lead_id), operatorId],
+        );
+        if (["accepted", "email_collected"].includes(String(current.rows[0]?.status || ""))) {
+          await createFollowupTasks(
+            client,
+            String(row.lead_id),
+            operatorId,
+            nullableString(row.first_name),
+          );
+        }
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      }
     }
   } finally {
     client.release();
