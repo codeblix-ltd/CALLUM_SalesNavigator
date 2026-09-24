@@ -1684,11 +1684,14 @@ async function reviewAcceptedConnections(
       },
     });
     const result = await collectAcceptedContact(lead, runContext).catch(async (error) => {
-      if (isWorkflowControlError(error) || isLinkedInAccessInterruptionError(error)) throw error;
+      if (isWorkflowControlError(error)) throw error;
+      if (isLinkedInAccessInterruptionError(error) &&
+          !["page_unavailable", "profile_link"].includes(error.kind)) throw error;
       await ScoutApi.authenticatedAction("scouts:reportError", {
         leadId: lead.id,
         message: cleanError(error),
-      }).catch(() => {});
+        source: "accepted_contact",
+      });
       return null;
     });
     if (!result) continue;

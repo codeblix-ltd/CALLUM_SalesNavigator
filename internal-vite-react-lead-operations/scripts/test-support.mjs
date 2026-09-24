@@ -9,7 +9,7 @@ function backend(file) {
   const validator = new Proxy(() => ({}), { get: () => validator });
   const refs = new Proxy({}, { get: (_, group) => new Proxy({}, { get: (_, name) => `${String(group)}:${String(name)}` }) });
   const server = new Proxy({}, { get: () => definition => definition });
-  const require = id => id === "convex/values" ? { v: validator } : id === "./_generated/server" ? server : id === "./_generated/api" ? { internal: refs } : id === "@convex-dev/auth/server" ? { getAuthUserId: async ctx => ctx.userId } : {};
+  const require = id => id === "convex/values" ? { v: validator } : id === "./_generated/server" ? server : id === "./_generated/api" ? { internal: refs } : id === "./bugReportTypes" ? { reportFields: { context: validator }, reportContext: validator, reportStatus: validator, reportDocument: validator } : id === "@convex-dev/auth/server" ? { getAuthUserId: async ctx => ctx.userId } : {};
   const source = ts.transpileModule(readFileSync(new URL(`../convex/${file}.ts`, import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   vm.runInNewContext(source, { module, exports: module.exports, require, Buffer, Blob, Uint8Array, Date, URL });
   return module.exports;
@@ -40,6 +40,7 @@ assert.equal(deletes, 2, "failed save cleans up uploaded images");
 const replyAction = actions.scoutReply.handler;
 const replyArgs = { id: "report", clientId: valid.clientId, text: "Still broken", screenshots: valid.screenshots };
 await replyAction({ ...ctx, runMutation: async (ref, args) => { assert.equal(ref, "bugReports:saveScoutReply"); assert.equal(args.userId, "scout"); assert.equal(args.screenshots.length, 1); return true; } }, replyArgs);
+await replyAction({ ...ctx, runMutation: async (_ref, args) => { assert.equal(args.context.pageUrl, "https://www.linkedin.com/in/test"); assert.equal(args.occurredAt, valid.occurredAt); return true; } }, { ...replyArgs, screenshots: [], context: valid.context, occurredAt: valid.occurredAt });
 assert.equal(stores, 4, "reply screenshot is uploaded");
 await replyAction({ ...ctx, runMutation: async () => false }, replyArgs);
 assert.equal(deletes, 3, "duplicate reply screenshot is discarded");
@@ -87,13 +88,47 @@ const visible = await routes.mine.handler(threadCtx(owner), { paginationOpts: { 
 assert.equal(visible.page[0].adminNote, undefined, "internal notes must never reach scouts");
 assert.equal(visible.page[0].reporterId, undefined);
 assert.equal(visible.page[0].messages.length, 2);
+const activeCtx = {
+  userId: "owner",
+  db: {
+    get: async () => owner,
+    query: () => ({ withIndex: (_name, fn) => {
+      const query = { status: "", eq(field, value) { if (field === "status") this.status = value; return this; } };
+      fn(query);
+      return { order: () => ({ collect: async () => query.status === "open"
+        ? [{ _id: "open-report", status: "open", description: "Open issue", updatedAt: 20, messages: [] }]
+        : [{ _id: "older-report", status: "investigating", description: "Older issue", updatedAt: 10, messages: [] }] }) };
+    } }) },
+};
+assert.equal((await routes.active.handler(activeCtx, {})).map(report => report.id).join(","), "open-report,older-report", "scout sees unresolved conversations first");
+let insertedNewReport = 0;
+const saveCtx = activeRows => ({
+  db: {
+    get: async () => owner,
+    insert: async () => { insertedNewReport++; return "new-report"; },
+    query: () => ({ withIndex: (name, fn) => {
+      const query = { status: "", eq(field, value) { if (field === "status") this.status = value; return this; } };
+      fn(query);
+      if (name === "by_reporter_client") return { unique: async () => null };
+      if (name === "by_reporter_status_updatedAt") return { order: () => ({ collect: async () => query.status === "open" ? activeRows : [] }) };
+      return { order: () => ({ take: async () => [] }) };
+    } }) },
+  scheduler: ctx.scheduler,
+});
+const saveArgs = { ...valid, reporterId: "owner", reporter: "Test", operatorId: "test", screenshots: [], status: "open", adminNote: "", updatedAt: Date.now() };
+await assert.rejects(routes.save.handler(saveCtx([{ messages: [] }]), saveArgs), /already have an open report/i);
+assert.equal(insertedNewReport, 0, "old extension clients cannot create a duplicate active report");
+await routes.save.handler(saveCtx([{ messages: Array(100).fill({}) }]), saveArgs);
+assert.equal(insertedNewReport, 1, "a full conversation does not permanently block reporting");
 await assert.rejects(routes.reply.handler(threadCtx(owner), { ...replyInput, text: " " }), /Write a reply/);
 const imageReply = { ...replyInput, clientId: "f4bc7002-fb3e-422a-925f-1f110fdc499c", screenshots: ["reply-image"], userId: "owner" };
+thread.status = "investigating";
 await routes.saveScoutReply.handler(threadCtx(owner), imageReply);
+assert.equal(thread.status, "open", "an update to an investigating ticket returns it to the admin's open inbox");
 assert.equal(thread.messages[2].screenshots[0], "reply-image");
 assert.equal((await routes.messageImages.handler(threadCtx(owner), { id: "report", clientId: imageReply.clientId }))[0], "https://private.example/image");
 assert.equal(await routes.saveScoutReply.handler(threadCtx(owner), imageReply), false, "image reply is idempotent");
-assert.equal(scheduled.length, 2);
+assert.equal(scheduled.length, 3, "only the first scout reply and allowed new report notify support");
 await assert.rejects(routes.saveScoutReply.handler(threadCtx({ ...owner, active: false }), { ...imageReply, clientId: "f4bc7002-fb3e-422a-925f-1f110fdc499d" }), /not available/);
 console.log("Support conversation checks passed: ownership, private notes, replies, safe edits, idempotency and reopening.");
 
@@ -102,10 +137,10 @@ console.log("Support conversation checks passed: ownership, private notes, repli
 const elements = new Map();
 const element = () => ({ value: "", hidden: false, disabled: false, textContent: "", files: [], append() {}, replaceChildren() {}, querySelectorAll() { return []; } });
 const get = id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); };
-let stopped = 0, mode = "cancel", posted, releaseCapture;
+let stopped = 0, mode = "cancel", posted, postedPath, releaseCapture, activeReportRows = [];
 const chrome = { runtime: { getManifest: () => ({ version: "0.10.31" }) }, tabs: { get: async () => ({ url: "https://www.linkedin.com/in/test?secret=excluded#hash" }) }, storage: { local: { get: async () => ({ autoLeadRunState: { status: "paused", message: "Checking connection", currentLead: { fullName: "Test lead" }, secret: "DO NOT INCLUDE" } }) } } };
 const doc = { getElementById: get, addEventListener() {}, createElement: tag => tag === "video" ? { play: async () => {}, requestVideoFrameCallback: callback => callback(), videoWidth: mode === "success" ? 100 : 0, videoHeight: mode === "success" ? 100 : 0 } : tag === "canvas" ? { getContext: () => ({ fillRect() {}, drawImage() {} }), toDataURL: () => `data:image/jpeg;base64,${valid.screenshots[0]}` } : element() };
-const sandbox = { document: doc, window: { addEventListener() {} }, chrome, navigator: { userAgent: "Chrome", mediaDevices: { getDisplayMedia: async () => { if (mode === "cancel") throw Object.assign(new Error("cancelled"), { name: "NotAllowedError" }); return { getTracks: () => [{ stop: () => { stopped++; } }] }; } } }, ScoutApi: { getAuth: async () => ({ token: "secret" }), authenticatedAction: async (_, args) => { posted = args; return "report"; } }, crypto: { randomUUID: () => valid.clientId }, location: { search: "?tab=4" }, URLSearchParams, URL, Date, Intl, setTimeout: callback => { if (mode === "timeout") callback(); }, clearTimeout() {}, console };
+const sandbox = { document: doc, window: { addEventListener() {} }, chrome, navigator: { userAgent: "Chrome", mediaDevices: { getDisplayMedia: async () => { if (mode === "cancel") throw Object.assign(new Error("cancelled"), { name: "NotAllowedError" }); return { getTracks: () => [{ stop: () => { stopped++; } }] }; } } }, ScoutApi: { getAuth: async () => ({ token: "secret" }), authenticatedQuery: async () => activeReportRows, authenticatedAction: async (path, args) => { postedPath = path; posted = args; return "report"; } }, crypto: { randomUUID: () => valid.clientId }, location: { search: "?tab=4" }, URLSearchParams, URL, Date, Intl, setTimeout: callback => { if (mode === "timeout") callback(); }, clearTimeout() {}, console, Event };
 const focusCalls = [];
 chrome.tabs.getCurrent = async () => ({ id: 42, windowId: 7 });
 chrome.tabs.update = async (id, options) => {
@@ -146,6 +181,18 @@ await get("report-form").onsubmit({ preventDefault() {} });
 assert.equal(posted.description, "Test report"); assert.equal(posted.context.version, "0.10.31"); assert.equal(get("report-form").hidden, true);
 assert.equal(posted.screenshots.length, 1, "finished capture must be attached to submission");
 assert.match(get("status").textContent, /Report received/);
+activeReportRows = [{ id: "open-report", status: "investigating", description: "Earlier pause", updatedAt: Date.now() }];
+await sandbox.refreshActiveReports();
+assert.equal(get("active-report-notice").hidden, false, "open conversation is visually prominent");
+assert.equal(get("send").textContent, "Send update");
+assert.equal(get("description").maxLength, 2000);
+get("report-form").hidden = false;
+get("description").value = "A new screenshot of the same issue";
+await get("report-form").onsubmit({ preventDefault() {} });
+assert.equal(postedPath, "bugReportActions:scoutReply", "a new bug-form update attaches to the active ticket");
+assert.equal(posted.id, "open-report");
+assert.equal(posted.context.version, "0.10.31");
+assert.match(get("status").textContent, /Update added/);
 console.log("Support tests passed: authenticated submission, validation, idempotency, cleanup, admin authorization, context privacy, capture cancellation, frame failure, and send confirmation.");
 
 // Retained pause evidence works even when the failed tab has been closed.

@@ -20,7 +20,11 @@ export default defineSchema({
   bugReports: defineTable(reportFields)
     .index("by_reporter_client", ["reporterId", "clientId"])
     .index("by_reporter", ["reporterId"])
-    .index("by_status", ["status"]),
+    .index("by_reporter_updatedAt", ["reporterId", "updatedAt"])
+    .index("by_reporter_status_updatedAt", ["reporterId", "status", "updatedAt"])
+    .index("by_status", ["status"])
+    .index("by_status_updatedAt", ["status", "updatedAt"])
+    .index("by_updatedAt", ["updatedAt"]),
   users: defineTable({
     name: v.optional(v.string()),
     image: v.optional(v.string()),

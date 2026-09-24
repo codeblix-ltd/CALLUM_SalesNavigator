@@ -1389,6 +1389,26 @@ export const getConnectionReviewPlan = action({
          WHERE a.operator_id = $1
            AND a.status = 'accepted'
            AND coalesce(l.original_email_status, 'pending') = 'pending'
+           -- Retry an unreadable accepted-contact page later, without letting
+           -- unrelated lead errors hide an otherwise valid contact check.
+           AND NOT EXISTS (
+             SELECT 1 FROM (
+               SELECT count(*) AS failure_count, max(e.created_at) AS latest_failure
+                 FROM lead_assignment_events AS e
+                WHERE e.lead_id = a.lead_id
+                  AND e.operator_id = a.operator_id
+                  AND e.created_at > now() - INTERVAL '7 days'
+                  AND (
+                    e.event_type = 'accepted_contact_error'
+                    OR (e.event_type = 'error' AND (
+                      e.details->>'message' LIKE 'No tab with id%'
+                      OR e.details->>'message' = 'LinkedIn opened the wrong profile. Nothing was saved.'
+                    ))
+                  )
+             ) AS failures
+             WHERE failures.latest_failure > now() - INTERVAL '24 hours'
+                OR (failures.failure_count >= 2 AND failures.latest_failure > now() - INTERVAL '7 days')
+           )
          ORDER BY a.accepted_at, a.lead_id
          LIMIT 1000`,
         [scout.operatorId],
@@ -2498,7 +2518,7 @@ export const recordEngagementSkip = action({
 });
 
 export const reportError = action({
-  args: { leadId: v.union(v.string(), v.null()), message: v.string() },
+  args: { leadId: v.union(v.string(), v.null()), message: v.string(), source: v.optional(v.literal("accepted_contact")) },
   returns: v.null(),
   handler: async (ctx, args) => {
     const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
@@ -2513,10 +2533,10 @@ export const reportError = action({
       );
       await database.query(
         `INSERT INTO lead_assignment_events (lead_id, operator_id, event_type, details)
-         SELECT lead_id, operator_id, 'error', $3::JSONB
+         SELECT lead_id, operator_id, $4, $3::JSONB
            FROM lead_assignments
           WHERE lead_id = $1::UUID AND operator_id = $2`,
-        [args.leadId, scout.operatorId, JSON.stringify({ message })],
+        [args.leadId, scout.operatorId, JSON.stringify({ message }), args.source === "accepted_contact" ? "accepted_contact_error" : "error"],
       );
     }
     return null;

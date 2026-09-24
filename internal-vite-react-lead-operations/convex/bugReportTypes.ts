@@ -1,7 +1,6 @@
 import { v } from "convex/values";
 
 export const reportStatus = v.union(v.literal("open"), v.literal("investigating"), v.literal("resolved"));
-export const reportMessage = v.object({ clientId: v.string(), author: v.union(v.literal("scout"), v.literal("support")), text: v.string(), sentAt: v.number(), screenshots: v.optional(v.array(v.id("_storage"))) });
 export const reportContext = v.object({
   version: v.string(), browser: v.string(), timezone: v.string(),
   pageUrl: v.string(), runStatus: v.string(), runStep: v.string(), lead: v.string(),
@@ -11,6 +10,11 @@ export const reportContext = v.object({
   leadIssueKind: v.optional(v.string()), leadIssueStage: v.optional(v.string()),
   leadIssuePageUrl: v.optional(v.string()), leadIssueExpectedUrl: v.optional(v.string()),
   leadIssueOccurredAt: v.optional(v.string()),
+});
+export const reportMessage = v.object({
+  clientId: v.string(), author: v.union(v.literal("scout"), v.literal("support")),
+  text: v.string(), sentAt: v.number(), screenshots: v.optional(v.array(v.id("_storage"))),
+  occurredAt: v.optional(v.number()), context: v.optional(reportContext),
 });
 export const reportFields = {
   reporterId: v.id("users"), reporter: v.string(), operatorId: v.string(),

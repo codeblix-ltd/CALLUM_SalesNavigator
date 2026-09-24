@@ -67,7 +67,7 @@ const { CodexAppServer, classifyLanguageLocally } = await import(
   pathToFileURL(gatewayClientPath).href
 );
 
-assert.equal(manifest.version, "0.10.42");
+assert.equal(manifest.version, "0.10.43");
 assert.match(scoutSource,/\["english", "non_english"\]\.includes\(\s*String\(lead\.profile_language_status/,'an uncertain profile read must not be cached for 90 days');
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
@@ -979,6 +979,10 @@ assert.match(scoutSource, /UPDATE leads AS l/);
 assert.match(scoutSource, /lead_note_updated_at/);
 assert.match(scoutSource, /original_email_status = CASE/);
 assert.match(scoutSource, /coalesce\(l\.original_email_status, 'pending'\) = 'pending'/);
+assert.match(scoutSource, /e\.event_type = 'accepted_contact_error'/);
+assert.match(scoutSource, /failures\.latest_failure > now\(\) - INTERVAL '24 hours'/);
+assert.match(scoutSource, /failures\.failure_count >= 2 AND failures\.latest_failure > now\(\) - INTERVAL '7 days'/);
+assert.match(backgroundSource, /source: "accepted_contact"/);
 assert.match(leadDirectorySource, /l\.lead_note/);
 assert.match(leadDirectorySource, /originalEmailStatus/);
 assert.match(adminAppSource, /Lead note/);

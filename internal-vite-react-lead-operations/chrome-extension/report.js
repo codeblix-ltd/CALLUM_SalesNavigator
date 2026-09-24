@@ -6,6 +6,7 @@ let context;
 let sending = false;
 let imageBusy = false;
 let stream;
+let activeReports = [];
 const tell = text => { $("status").textContent = text; };
 const short = value => typeof value === "string" ? value.slice(0, 1000) : "";
 const version = chrome.runtime.getManifest().version;
@@ -122,6 +123,7 @@ async function initialize() {
   Object.assign(context, pauseReportContext(run), leadIssueReportContext(run));
   $("context").textContent = JSON.stringify(context, null, 2);
   await showIdentity();
+  await refreshActiveReports();
 }
 
 function pauseReportContext(run) {
@@ -160,6 +162,27 @@ async function showIdentity() {
   const auth = await ScoutApi.getAuth();
   $("login").hidden = Boolean(auth?.token);
   $("identity").textContent = auth?.token ? "Sent privately under your signed-in scout account." : "Sign in below, or save a copy for your manager.";
+}
+async function refreshActiveReports() {
+  const auth = await ScoutApi.getAuth();
+  activeReports = auth?.token
+    ? await ScoutApi.authenticatedQuery("bugReports:active", {})
+    : [];
+  const choice = $("active-report-choice");
+  const selected = choice.value;
+  choice.replaceChildren();
+  for (const report of activeReports) {
+    const option = document.createElement("option");
+    option.value = report.id;
+    option.textContent = `${report.status === "investigating" ? "Under review" : "Open"}: ${report.description.slice(0, 100)}`;
+    choice.append(option);
+  }
+  if (activeReports.some(report => report.id === selected)) choice.value = selected;
+  $("active-report-notice").hidden = activeReports.length === 0;
+  $("report-heading").textContent = activeReports.length ? "Add to your open report." : "Show us what went wrong.";
+  $("description").maxLength = activeReports.length ? 2000 : 5000;
+  $("send").textContent = activeReports.length ? "Send update" : "Send report";
+  return activeReports.find(report => report.id === choice.value) || activeReports[0] || null;
 }
 function render() {
   $("previews").replaceChildren();
@@ -218,7 +241,7 @@ $("attach").onclick = () => $("files").click();
 document.addEventListener("paste", event => { if (event.clipboardData.files.length) { event.preventDefault(); void attach(event.clipboardData.files); } });
 $("sign-in").onclick = async () => {
   $("sign-in").disabled = true;
-  try { await ScoutApi.signIn($("username").value.trim(), $("password").value); $("password").value = ""; await showIdentity(); tell("Signed in. You can now send your report."); }
+  try { await ScoutApi.signIn($("username").value.trim(), $("password").value); $("password").value = ""; await showIdentity(); await refreshActiveReports(); tell("Signed in. You can now send your report or update."); }
   catch (error) { tell(error.message); } finally { $("sign-in").disabled = false; }
 };
 $("download").onclick = () => {
@@ -233,11 +256,21 @@ $("report-form").onsubmit = async event => {
   $("report-form").querySelectorAll("button,input,textarea").forEach(el => { el.disabled = true; });
   tell("Sending your report securely…");
   try {
-    await ScoutApi.authenticatedAction("bugReportActions:submit", { clientId, description: $("description").value, occurredAt: new Date($("occurred").value).getTime(), context, screenshots: [...pictures] });
+    const active = await refreshActiveReports();
+    const description = $("description").value;
+    if (active && description.trim().length > 2000) throw new Error("Keep your update under 2,000 characters.");
+    const occurredAt = new Date($("occurred").value).getTime();
+    if (active) {
+      await ScoutApi.authenticatedAction("bugReportActions:scoutReply", {
+        id: active.id, clientId, text: description, occurredAt, context, screenshots: [...pictures],
+      });
+    } else {
+      await ScoutApi.authenticatedAction("bugReportActions:submit", { clientId, description, occurredAt, context, screenshots: [...pictures] });
+    }
     pictures.length = 0; $("description").value = ""; $("report-form").hidden = true;
-    tell("Report received. Check My reports & replies for updates.");
+    tell(active ? "Update added to your open report. Check My reports & replies for updates." : "Report received. Check My reports & replies for updates.");
     window.dispatchEvent?.(new Event("scout-report-sent"));
-  } catch (error) { tell(`${error.message} Your report is still here. You can retry or save a copy.`); await showIdentity(); }
+  } catch (error) { tell(`${error.message} Your message and screenshots are still here. You can retry or save a copy.`); await showIdentity(); await refreshActiveReports().catch(() => {}); }
   finally { sending = false; $("report-form").querySelectorAll("button,input,textarea").forEach(el => { el.disabled = false; }); }
 };
 initialize().catch(error => tell(`Unable to load report details: ${error.message}. Reopen Report bug to retry.`));

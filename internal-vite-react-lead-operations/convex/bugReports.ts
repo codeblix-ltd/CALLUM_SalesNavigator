@@ -26,8 +26,27 @@ export const mine = query({
     const userId = await getAuthUserId(ctx);
     const user = userId ? await ctx.db.get(userId) : null;
     if (!user?.active || user.role !== "scout") throw new Error("Sign in is required.");
-    const result = await ctx.db.query("bugReports").withIndex("by_reporter", q => q.eq("reporterId", userId!)).order("desc").paginate({ ...args.paginationOpts, numItems: Math.min(20, args.paginationOpts.numItems) });
+    const result = await ctx.db.query("bugReports").withIndex("by_reporter_updatedAt", q => q.eq("reporterId", userId!)).order("desc").paginate({ ...args.paginationOpts, numItems: Math.min(20, args.paginationOpts.numItems) });
     return { ...result, page: result.page.map(r => ({ _id: r._id, description: r.description, status: r.status, updatedAt: r.updatedAt, occurredAt: r.occurredAt, messages: r.messages ?? [], screenshotCount: r.screenshots.length })) };
+  },
+});
+
+export const active = query({
+  args: {},
+  returns: v.array(v.object({ id: v.id("bugReports"), status: reportStatus, description: v.string(), updatedAt: v.number() })),
+  handler: async ctx => {
+    const userId = await getAuthUserId(ctx);
+    const user = userId ? await ctx.db.get(userId) : null;
+    if (!user?.active || user.role !== "scout") throw new Error("Sign in is required.");
+    const [open, investigating] = await Promise.all([
+      ctx.db.query("bugReports").withIndex("by_reporter_status_updatedAt", q => q.eq("reporterId", userId!).eq("status", "open")).order("desc").collect(),
+      ctx.db.query("bugReports").withIndex("by_reporter_status_updatedAt", q => q.eq("reporterId", userId!).eq("status", "investigating")).order("desc").collect(),
+    ]);
+    return [...open, ...investigating]
+      .filter(report => (report.messages?.length ?? 0) < 100)
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, 20)
+      .map(report => ({ id: report._id, status: report.status, description: report.description, updatedAt: report.updatedAt }));
   },
 });
 
@@ -43,7 +62,7 @@ export const reply = mutation({
     if (messages.some(m => m.clientId === args.clientId && m.author === author)) return null;
     if (messages.length >= 100) throw new Error("This conversation is full. Please open a new report.");
     if (messages.filter(m => m.author === author && m.sentAt > Date.now() - 60_000).length >= 5) throw new Error("Please wait a minute before sending another reply.");
-    await ctx.db.patch(report._id, { messages: [...messages, { clientId: args.clientId, author, text, sentAt: Date.now() }], updatedAt: Date.now(), ...(author === "scout" && report.status === "resolved" ? { status: "open" as const } : {}) });
+    await ctx.db.patch(report._id, { messages: [...messages, { clientId: args.clientId, author, text, sentAt: Date.now() }], updatedAt: Date.now(), ...(author === "scout" ? { status: "open" as const } : {}) });
     if (author === "scout") await ctx.scheduler.runAfter(0, internal.bugReportEmail.send, { id: report._id, clientId: args.clientId });
     return null;
   },
@@ -80,7 +99,7 @@ export const editSupportReply = mutation({
 });
 
 export const saveScoutReply = internalMutation({
-  args: { id: v.id("bugReports"), userId: v.id("users"), clientId: v.string(), text: v.string(), screenshots: v.array(v.id("_storage")) },
+  args: { id: v.id("bugReports"), userId: v.id("users"), clientId: v.string(), text: v.string(), screenshots: v.array(v.id("_storage")), occurredAt: v.optional(v.number()), context: v.optional(reportFields.context) },
   returns: v.boolean(),
   handler: async (ctx, args) => {
     const user = await ctx.db.get(args.userId);
@@ -93,7 +112,7 @@ export const saveScoutReply = internalMutation({
     if (messages.length >= 100) throw new Error("This conversation is full. Please open a new report.");
     if (messages.filter(m => m.author === "scout" && m.sentAt > Date.now() - 60_000).length >= 5) throw new Error("Please wait a minute before sending another reply.");
     const now = Date.now();
-    await ctx.db.patch(report._id, { messages: [...messages, { clientId: args.clientId, author: "scout", text, sentAt: now, screenshots: args.screenshots }], updatedAt: now, ...(report.status === "resolved" ? { status: "open" as const } : {}) });
+    await ctx.db.patch(report._id, { messages: [...messages, { clientId: args.clientId, author: "scout", text, sentAt: now, screenshots: args.screenshots, ...(args.occurredAt === undefined ? {} : { occurredAt: args.occurredAt }), ...(args.context === undefined ? {} : { context: args.context }) }], updatedAt: now, status: "open" });
     await ctx.scheduler.runAfter(0, internal.bugReportEmail.send, { id: report._id, clientId: args.clientId });
     return true;
   },
@@ -111,6 +130,13 @@ export const save = internalMutation({
     if (!user?.active || user.role !== "scout") throw new Error("Sign in is required.");
     const existing = await ctx.db.query("bugReports").withIndex("by_reporter_client", q => q.eq("reporterId", args.reporterId).eq("clientId", args.clientId)).unique();
     if (existing) return { id: existing._id, inserted: false };
+    const [open, investigating] = await Promise.all([
+      ctx.db.query("bugReports").withIndex("by_reporter_status_updatedAt", q => q.eq("reporterId", args.reporterId).eq("status", "open")).order("desc").collect(),
+      ctx.db.query("bugReports").withIndex("by_reporter_status_updatedAt", q => q.eq("reporterId", args.reporterId).eq("status", "investigating")).order("desc").collect(),
+    ]);
+    if ([...open, ...investigating].some(report => (report.messages?.length ?? 0) < 100)) {
+      throw new Error("You already have an open report. Add this update under My reports & replies.");
+    }
     const recent = await ctx.db.query("bugReports").withIndex("by_reporter", q => q.eq("reporterId", args.reporterId)).order("desc").take(10);
     if (recent.length === 10 && recent[9]._creationTime > Date.now() - 3600000) throw new Error("You have sent 10 reports this hour. Please try again later.");
     const id = await ctx.db.insert("bugReports", args);
@@ -124,7 +150,7 @@ export const list = query({
   returns: v.object({ page: v.array(reportDocument), isDone: v.boolean(), continueCursor: v.string() }),
   handler: async (ctx, args) => {
     await admin(ctx);
-    const rows = args.status ? ctx.db.query("bugReports").withIndex("by_status", q => q.eq("status", args.status!)) : ctx.db.query("bugReports");
+    const rows = args.status ? ctx.db.query("bugReports").withIndex("by_status_updatedAt", q => q.eq("status", args.status!)) : ctx.db.query("bugReports").withIndex("by_updatedAt");
     const result = await rows.order("desc").paginate({ ...args.paginationOpts, numItems: Math.min(30, args.paginationOpts.numItems) });
     return { page: result.page, isDone: result.isDone, continueCursor: result.continueCursor };
   },

@@ -19,7 +19,7 @@ export function BugReports() {
     </div>
     <div className="bug-layout"><div className="bug-list">
       {status === "LoadingFirstPage" ? <p>Loading reports…</p> : results.length === 0 ? <p>No {filter === "all" ? "" : filter} reports yet. Scouts can use Report bug in extension v0.10.31 or later.</p> : results.map(item => <button key={item._id} className={selected === item._id ? "selected" : ""} onClick={() => setSelected(item._id)}>
-        <span><strong>{item.reporter}</strong><small>{labels[item.status]}</small></span><p>{item.description.slice(0, 160)}</p><small>Received {date(item._creationTime)} · v{item.context.version} · {item.screenshots.length} image(s)</small>
+        <span><strong>{item.reporter}</strong><small>{labels[item.status]}</small></span><p>{(item.messages?.at(-1)?.text ?? item.description).slice(0, 160)}</p><small>Updated {date(item.updatedAt)} · received {date(item._creationTime)} · v{item.context.version}</small>
       </button>)}
       {status === "CanLoadMore" && <button onClick={() => loadMore(20)}>Load older reports</button>}
       {status === "LoadingMore" && <p>Loading older reports…</p>}
@@ -43,7 +43,7 @@ function ReportDetail({ report }: { report: Doc<"bugReports"> }) {
     <div className="bug-images">{images === undefined ? <p>Loading screenshots…</p> : images.map((url, index) => url ? <a href={url} key={index} target="_blank" rel="noreferrer"><img src={url} alt={`Scout screenshot ${index + 1}`} /><span>Open screenshot {index + 1}</span></a> : <p key={index}>Screenshot unavailable</p>)}</div>
     <details><summary>Technical details</summary><dl>{Object.entries(report.context).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{value || "Not available"}</dd></div>)}</dl></details>
     <h3>Conversation</h3>
-    {(report.messages ?? []).map(item => <div key={`${item.author}:${item.clientId}`}><strong>{item.author === "support" ? "Callum support" : report.reporter}</strong><small> · {date(item.sentAt)}</small><p className="bug-description">{item.text}</p>{item.screenshots?.length ? <ReplyImages id={report._id} clientId={item.clientId} /> : null}</div>)}
+    {(report.messages ?? []).map(item => <div key={`${item.author}:${item.clientId}`}><strong>{item.author === "support" ? "Callum support" : report.reporter}</strong><small> · {date(item.sentAt)}</small><p className="bug-description">{item.text}</p>{item.occurredAt ? <small>Happened {date(item.occurredAt)} (scout supplied)</small> : null}{item.context ? <details><summary>Technical details for this update</summary><dl>{Object.entries(item.context).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{value || "Not available"}</dd></div>)}</dl></details> : null}{item.screenshots?.length ? <ReplyImages id={report._id} clientId={item.clientId} /> : null}</div>)}
     <form onSubmit={async event => { event.preventDefault(); setBusy(true); try { await reply({ id: report._id, clientId: replyId, text: replyText }); setReplyText(""); setReplyId(crypto.randomUUID()); setMessage("Reply sent."); } catch(error) { setMessage(error instanceof Error ? error.message : "Could not send."); } finally { setBusy(false); } }}>
       <label>Reply to scout<textarea required maxLength={2000} rows={3} disabled={busy} value={replyText} onChange={event => { setReplyText(event.target.value); setReplyId(crypto.randomUUID()); }} placeholder="What changed and what to try next…" /></label><button disabled={busy}>Send reply</button>
     </form>
