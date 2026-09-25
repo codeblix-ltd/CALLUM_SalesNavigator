@@ -4,7 +4,7 @@
 
 The local V2 architecture, migration, protocol fixtures, Cockroach action reconciliation, remote config update, Chrome MCP lifecycle, 1k/10k real-catalog shadow workloads, and local API smoke have evidence in sibling validation files. These results do not substitute for all 15 gates in the context kit.
 
-Branch-scoped V2 GitHub Actions runs `36155386021` and `36159922057` passed and uploaded static web files to the V2 FTP directory. Public V2 web/API DNS remains unresolved, and no dedicated backend is deployed.
+Branch-scoped V2 GitHub Actions run `36162224393` passed tests, build, and V2-only FTP upload on the 2.2.0 code. Public V2 web/API DNS remains unresolved, and no dedicated backend is deployed.
 
 Read-only comment-state, canary-scoped contact-email, and sent-invitation inspection have fixture and Cockroach tests. The 2.2.0 Chrome shadow run `fe2814e0-e619-4575-9870-4a9bd20c5bd8` proved invitation command routing with config 11, then hit LinkedIn authwall; no invitation age or action was observed. The inspection records only a single matching card's identity, age, and Withdraw-control presence. It does not withdraw anything.
 
