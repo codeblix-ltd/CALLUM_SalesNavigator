@@ -15,7 +15,7 @@ const buildSha=/sha:\s*'([a-f0-9]+)'/.exec(buildText)?.[1];
 if(!buildSha)throw new Error('Extension build SHA missing');
 const db=openDatabase(),control=new ControlPlane(db);
 const operatorId=`v2browser_${randomUUID().slice(0,8)}`;
-let server,mcp,id,hotfixVersion=null;
+let server,mcp,id,hotfixVersion=null,priorConfigVersion=null;
 let buffer='',nextId=0;const pending=new Map();
 function bindMcp(child){child.stdout.on('data',chunk=>{buffer+=chunk.toString();let pos;while((pos=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,pos).trim();buffer=buffer.slice(pos+1);if(!line.startsWith('{'))continue;try{const x=JSON.parse(line);if(x.id&&pending.has(x.id)){const p=pending.get(x.id);pending.delete(x.id);x.error?p.reject(new Error(x.error.message)):p.resolve(x.result);}}catch{}}});child.stderr.on('data',()=>{});}
 function call(method,params={}){const requestId=++nextId;return new Promise((resolve,reject)=>{pending.set(requestId,{resolve,reject});mcp.stdin.write(JSON.stringify({jsonrpc:'2.0',id:requestId,method,params})+'\n');setTimeout(()=>{if(pending.has(requestId)){pending.delete(requestId);reject(new Error(`${method} timeout`));}},120000).unref();});}
@@ -53,6 +53,7 @@ try {
   }
   let hotfix=null;
   if(process.argv.includes('--hotfix')){
+    priorConfigVersion=Number((await db.query("SELECT active_config_version FROM callum_v2.release_channels WHERE channel='dev'")).rows[0].active_config_version);
     const draft=await control.createConfig({...DEFAULT_CONFIG,connect:['button[data-callum-v2-hotfix="connect"]']});
     hotfixVersion=Number(draft.version);
     await control.activateConfig(hotfixVersion,'dev');
@@ -72,6 +73,6 @@ try {
     authwallRedirect:pages.includes('/authwall'),serviceWorkerPresent:pages.includes('background.js')}));
 } finally {
   if(id&&mcp)await tool('uninstall_extension',{id}).catch(()=>{});
-  if(hotfixVersion)await control.activateConfig(1,'dev').catch(()=>{});
+  if(hotfixVersion && priorConfigVersion!==null)await control.activateConfig(priorConfigVersion,'dev').catch(()=>{});
   mcp?.kill();server?.kill();await db.close();
 }
