@@ -15,7 +15,7 @@ test('operator ownership and revocation are rechecked at claim and action author
     const otherIssued=await control.createInstallation(other,'2.5.0','a142581d');
     const ownerInstallation=await control.installation(ownerIssued.token),otherInstallation=await control.installation(otherIssued.token);
     const configVersion=Number((await db.query("SELECT active_config_version FROM callum_v2.release_channels WHERE channel='dev'")).rows[0].active_config_version);
-    const leadId=randomUUID(),profileKey='qa-authorization-fixture';
+    const leadId=randomUUID(),profileKey=`qa-authorization-${leadId.slice(0,8)}`;
     process.env.V2_QA_PROFILE_KEY=profileKey;
     const run=(await db.query("INSERT INTO callum_v2.runs(operator_id,installation_id,mode,config_version) VALUES ($1,$2,'live_canary',$3) RETURNING id",
       [owner,ownerInstallation.id,configVersion])).rows[0];

@@ -18,7 +18,7 @@ test('Cockroach V2 command lease, lost ACK, reconciliation, and duplicate pay in
     await db.query(`INSERT INTO callum_v2.pay_rules(version,event_type,amount_minor,currency,enabled)
       VALUES ($1,'connection_confirmed',0,'USD',true)`,[ruleVersion]);
     async function setup(suffix) {
-      const leadId=randomUUID(),target=`callum-v2-fixture-${suffix}`;
+      const leadId=randomUUID(),target=`callum-v2-fixture-${suffix}-${leadId.slice(0,8)}`;
       process.env.V2_QA_PROFILE_KEY=target;
       const run=(await db.query(`INSERT INTO callum_v2.runs(operator_id,installation_id,mode,config_version)
         VALUES ($1,$2,'live_canary',1) RETURNING *`,[operatorId,install.id])).rows[0];

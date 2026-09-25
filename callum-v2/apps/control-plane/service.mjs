@@ -185,14 +185,16 @@ export class ControlPlane {
           AND o.created_at>now()-INTERVAL '2 minutes'`,
         [inspectionCommandId,runId,leadId,run.profile_key,SENT_INVITATIONS_URL,run.installation_id])).rows[0];
       if (!source || Number(source.config_version)!==Number(config.version) || source.facts.invitationEligible!==true) throw new Error('WITHDRAWAL_PRECONDITION_FAILED');
-      const otherIntent=(await q.query(`SELECT id FROM callum_v2.action_intents WHERE operator_id=$1 AND lead_id=$2
-        AND action_type<>'withdraw' AND state IN ('reserved','submitted','reconcile_required') LIMIT 1`,[run.operator_id,leadId])).rows[0];
+      const otherIntent=(await q.query(`SELECT id FROM callum_v2.action_intents WHERE lead_id=$1
+        AND action_type<>'withdraw' AND state IN ('reserved','submitted','reconcile_required') LIMIT 1`,[leadId])).rows[0];
       if (otherIntent) throw new Error('ACTION_CONFLICT');
+      const target=(await q.query(`INSERT INTO callum_v2.action_targets(action_type,target_key)
+        VALUES ('withdraw',$1) ON CONFLICT DO NOTHING RETURNING target_key`,[run.profile_key])).rows[0];
+      if (!target) throw new Error('WITHDRAWAL_ALREADY_RESERVED');
       const intent=(await q.query(`INSERT INTO callum_v2.action_intents(run_id,operator_id,lead_id,action_type,target_key,state)
-        VALUES ($1,$2,$3,'withdraw',$4,'reserved') ON CONFLICT (operator_id,lead_id,action_type,target_key)
-        DO UPDATE SET updated_at=callum_v2.action_intents.updated_at RETURNING id,state,run_id`,
+        VALUES ($1,$2,$3,'withdraw',$4,'reserved') ON CONFLICT DO NOTHING RETURNING id,state,run_id`,
         [runId,run.operator_id,leadId,run.profile_key])).rows[0];
-      if (intent.state!=='reserved' || intent.run_id!==runId) throw new Error('WITHDRAWAL_ALREADY_RESERVED');
+      if (!intent || intent.state!=='reserved' || intent.run_id!==runId) throw new Error('WITHDRAWAL_ALREADY_RESERVED');
       const lead={id:leadId,profile_key:run.profile_key,linkedin_url:SENT_INVITATIONS_URL};
       const command=await this.enqueue(q,{...run,config_version:config.version},lead,'EXECUTE_WITHDRAW',
         `withdraw:${intent.id}`,intent.id,{expectedName:run.full_name,sourceInspectionId:inspectionCommandId});
@@ -249,12 +251,14 @@ export class ControlPlane {
         source.target_profile_key!==draft.profile_key||source.payload?.postUrl!==draft.post_url||source.payload?.actorProfileKey!==draft.actor_profile_key||
         !source.facts?.profileMatched||!source.facts?.pageReady||!source.facts?.targetPostPresent||!source.facts?.targetPostAuthoredByLead||
         !source.facts?.viewerMatched||!source.facts?.commentBoxAvailable)throw new Error('COMMENT_PRECONDITION_FAILED');
-      const conflict=(await q.query(`SELECT id FROM callum_v2.action_intents WHERE operator_id=$1 AND lead_id=$2 AND state IN ('reserved','submitted','reconcile_required') LIMIT 1`,[draft.operator_id,draft.lead_id])).rows[0];
+      const conflict=(await q.query(`SELECT id FROM callum_v2.action_intents WHERE lead_id=$1 AND state IN ('reserved','submitted','reconcile_required') LIMIT 1`,[draft.lead_id])).rows[0];
       if(conflict)throw new Error('ACTION_CONFLICT');
+      const target=(await q.query(`INSERT INTO callum_v2.action_targets(action_type,target_key)
+        VALUES ('comment',$1) ON CONFLICT DO NOTHING RETURNING target_key`,[draft.post_url])).rows[0];
+      if(!target)throw new Error('COMMENT_ALREADY_RESERVED');
       const intent=(await q.query(`INSERT INTO callum_v2.action_intents(run_id,operator_id,lead_id,action_type,target_key,state)
-        VALUES ($1,$2,$3,'comment',$4,'reserved') ON CONFLICT (operator_id,lead_id,action_type,target_key)
-        DO UPDATE SET updated_at=callum_v2.action_intents.updated_at RETURNING id,state,run_id`,[draft.run_id,draft.operator_id,draft.lead_id,draft.post_url])).rows[0];
-      if(intent.state!=='reserved'||intent.run_id!==draft.run_id)throw new Error('COMMENT_ALREADY_RESERVED');
+        VALUES ($1,$2,$3,'comment',$4,'reserved') ON CONFLICT DO NOTHING RETURNING id,state,run_id`,[draft.run_id,draft.operator_id,draft.lead_id,draft.post_url])).rows[0];
+      if(!intent||intent.state!=='reserved'||intent.run_id!==draft.run_id)throw new Error('COMMENT_ALREADY_RESERVED');
       const command=await this.enqueue(q,{...draft,id:draft.run_id,config_version:config.version},{id:draft.lead_id,profile_key:draft.profile_key,linkedin_url:draft.linkedin_url},
         'EXECUTE_COMMENT',`comment:${intent.id}`,intent.id,{postUrl:draft.post_url,approvedText:draft.body,bodySha256:draft.body_sha256,
           draftId,actorProfileKey:draft.actor_profile_key,sourceInspectionId:draft.inspection_command_id,expectedName:draft.full_name});
@@ -554,8 +558,8 @@ export class ControlPlane {
   }
 
   async reserveConnect(q, c) {
-    const otherIntent=(await q.query(`SELECT id FROM callum_v2.action_intents WHERE operator_id=$1 AND lead_id=$2
-      AND action_type<>'connect' AND state IN ('reserved','submitted','reconcile_required') LIMIT 1`,[c.operator_id,c.lead_id])).rows[0];
+    const otherIntent=(await q.query(`SELECT id FROM callum_v2.action_intents WHERE lead_id=$1
+      AND action_type<>'connect' AND state IN ('reserved','submitted','reconcile_required') LIMIT 1`,[c.lead_id])).rows[0];
     if(otherIntent)return {stage:'paused',event:'connection_reservation_conflict',diagnosticCode:'ACTION_CONFLICT'};
     const op = (await q.query('SELECT daily_connection_limit FROM callum_v2.operators WHERE id=$1 FOR UPDATE', [c.operator_id])).rows[0];
     const used = (await q.query(`SELECT count(*)::INT4 AS n FROM callum_v2.action_intents
@@ -563,11 +567,13 @@ export class ControlPlane {
     if (used >= op.daily_connection_limit) {
       return {stage:'paused',event:'daily_limit_reached',diagnosticCode:'DAILY_LIMIT'};
     }
+    const target=(await q.query(`INSERT INTO callum_v2.action_targets(action_type,target_key)
+      VALUES ('connect',$1) ON CONFLICT DO NOTHING RETURNING target_key`,[c.target_profile_key])).rows[0];
+    if (!target) return {stage:'paused',event:'connection_reservation_conflict',diagnosticCode:'ACTION_CONFLICT'};
     const { rows } = await q.query(`INSERT INTO callum_v2.action_intents(run_id,operator_id,lead_id,action_type,target_key,state)
-      VALUES ($1,$2,$3,'connect',$4,'reserved') ON CONFLICT (operator_id,lead_id,action_type,target_key)
-      DO UPDATE SET updated_at=callum_v2.action_intents.updated_at RETURNING id,state,run_id`, [c.run_id,c.operator_id,c.lead_id,c.target_profile_key]);
+      VALUES ($1,$2,$3,'connect',$4,'reserved') ON CONFLICT DO NOTHING RETURNING id,state,run_id`, [c.run_id,c.operator_id,c.lead_id,c.target_profile_key]);
     const intent = rows[0];
-    if (intent.state !== 'reserved' || intent.run_id !== c.run_id) {
+    if (!intent || intent.state !== 'reserved' || intent.run_id !== c.run_id) {
       return {stage:'paused',event:'connection_reservation_conflict',diagnosticCode:'ACTION_CONFLICT'};
     }
     await this.enqueue(q, c, { id: c.lead_id, profile_key: c.target_profile_key, linkedin_url: c.target_url },

@@ -9,7 +9,8 @@ const enabled=process.env.V2_TEST_DB==='1'&&!!process.env.COCKROACH_DATABASE_URL
 test('reviewed QA comment authorizes once, then reconciles uncertain submission without resend', {skip:!enabled},async()=>{
   const db=openDatabase(),control=new ControlPlane(db),operatorId=`v2comment_${randomUUID().slice(0,8)}`;
   const previousQa=process.env.V2_QA_PROFILE_KEY,qaKey='qa-comment-test',actorKey='qa-comment-actor';
-  const post='https://www.linkedin.com/feed/update/urn:li:activity:123456789';
+  const postId=BigInt('0x'+randomUUID().replaceAll('-','').slice(0,12));
+  const post=`https://www.linkedin.com/feed/update/urn:li:activity:${postId}`;
   let previousConfig=null,ruleVersion=null;
   try{
     await control.seed();
@@ -71,7 +72,7 @@ test('reviewed QA comment authorizes once, then reconciles uncertain submission 
     assert.equal((await db.query('SELECT state FROM callum_v2.action_intents WHERE id=$1',[approved.actionIntentId])).rows[0].state,'confirmed');
     assert.equal((await control.claim(installation)).command,null);
 
-    const lateLeadId=randomUUID(),latePost='https://www.linkedin.com/feed/update/urn:li:activity:987654321';
+    const lateLeadId=randomUUID(),latePost=`https://www.linkedin.com/feed/update/urn:li:activity:${postId+1n}`;
     const lateRun=(await db.query("INSERT INTO callum_v2.runs(operator_id,installation_id,mode,config_version) VALUES ($1,$2,'live_canary',$3) RETURNING id",
       [operatorId,installation.id,config.version])).rows[0];
     await db.query("INSERT INTO callum_v2.run_leads(run_id,lead_id,profile_key,linkedin_url,full_name) VALUES ($1,$2,$3,$4,'QA Comment Test')",
@@ -96,7 +97,7 @@ test('reviewed QA comment authorizes once, then reconciles uncertain submission 
     assert.equal((await db.query('SELECT count(*)::INT4 n FROM callum_v2.pay_ledger WHERE action_intent_id=$1',[lateApproved.actionIntentId])).rows[0].n,1);
     assert.equal((await db.query("SELECT count(*)::INT4 n FROM callum_v2.commands WHERE run_id=$1 AND type='EXECUTE_COMMENT'",[lateRun.id])).rows[0].n,1);
 
-    const directLeadId=randomUUID(),directPost='https://www.linkedin.com/feed/update/urn:li:activity:1122334455';
+    const directLeadId=randomUUID(),directPost=`https://www.linkedin.com/feed/update/urn:li:activity:${postId+2n}`;
     const directRun=(await db.query("INSERT INTO callum_v2.runs(operator_id,installation_id,mode,config_version) VALUES ($1,$2,'live_canary',$3) RETURNING id",
       [operatorId,installation.id,config.version])).rows[0];
     await db.query("INSERT INTO callum_v2.run_leads(run_id,lead_id,profile_key,linkedin_url,full_name) VALUES ($1,$2,$3,$4,'QA Comment Test')",

@@ -9,7 +9,7 @@ const enabled=process.env.V2_TEST_DB==='1' && !!process.env.COCKROACH_DATABASE_U
 test('withdrawal intent authorizes once and uncertainty only reconciles by observation', {skip:!enabled}, async()=>{
   const db=openDatabase(),control=new ControlPlane(db);
   const operatorId=`v2withdraw_${randomUUID().slice(0,8)}`;
-  const qaKey='qa-withdraw-fixture';
+  let qaKey;
   const previousQa=process.env.V2_QA_PROFILE_KEY;
   let previousConfig=null;
   try {
@@ -21,9 +21,10 @@ test('withdrawal intent authorizes once and uncertainty only reconciles by obser
     const draft=await control.createConfig(DEFAULT_CONFIG,'2.5.0');
     const version=Number(draft.version);
     await control.activateConfig(version,'dev');
-    process.env.V2_QA_PROFILE_KEY=qaKey;
     async function fixture(ageDays) {
       const leadId=randomUUID();
+      qaKey=`qa-withdraw-${leadId.slice(0,8)}`;
+      process.env.V2_QA_PROFILE_KEY=qaKey;
       const run=(await db.query(`INSERT INTO callum_v2.runs(operator_id,installation_id,mode,config_version)
         VALUES ($1,$2,'live_canary',$3) RETURNING id`,[operatorId,installation.id,version])).rows[0];
       await db.query(`INSERT INTO callum_v2.run_leads(run_id,lead_id,profile_key,linkedin_url,full_name)
@@ -34,7 +35,7 @@ test('withdrawal intent authorizes once and uncertainty only reconciles by obser
       await control.acknowledge(installation,{commandId:inspected.id,status:'observed',facts:{
         profileMatched:true,profileKey:qaKey,pageReady:true,invitationFound:true,invitationNameMatched:true,
         invitationWithdrawAvailable:true,invitationAgeDays:ageDays,diagnosticCode:'OK'}});
-      return {runId:run.id,leadId,inspectionCommandId:inspected.id};
+      return {runId:run.id,leadId,inspectionCommandId:inspected.id,qaKey};
     }
     const first=await fixture(35);
     await db.query("UPDATE callum_v2.run_leads SET stage='completed' WHERE run_id=$1",[first.runId]);
@@ -77,7 +78,7 @@ test('withdrawal intent authorizes once and uncertainty only reconciles by obser
     assert.equal((await control.acknowledge(installation,{commandId:reconcile.command.id,status:'observed',facts:{
       profileMatched:false,profileKey:null,pageReady:true,invitationFound:false,diagnosticCode:'INVITATION_NOT_FOUND'}})).stage,'paused');
     assert.equal((await db.query('SELECT state FROM callum_v2.action_intents WHERE run_id=$1',[lost.runId])).rows[0].state,'reconcile_required');
-    assert.equal((await control.acknowledge(installation,{commandId:lostQueue.id,status:'confirmed',facts:{...confirmation,invitationAgeDays:45}})).stage,'completed');
+    assert.equal((await control.acknowledge(installation,{commandId:lostQueue.id,status:'confirmed',facts:{...confirmation,profileKey:lost.qaKey,invitationAgeDays:45}})).stage,'completed');
     assert.equal((await db.query('SELECT stage FROM callum_v2.run_leads WHERE run_id=$1',[lost.runId])).rows[0].stage,'completed');
     assert.equal((await db.query("SELECT count(*)::INT4 n FROM callum_v2.commands WHERE run_id=$1 AND type='EXECUTE_WITHDRAW'",[lost.runId])).rows[0].n,1);
 

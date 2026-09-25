@@ -33,3 +33,10 @@ test('comment migration creates only V2 review state and expands the command con
   assert.match(sql,/EXECUTE_COMMENT/);
   assert.doesNotMatch(sql,/\b(?:ALTER|DROP|TRUNCATE|UPDATE|DELETE)\s+(?:TABLE\s+)?public\./i);
 });
+test('global action target migration stays in V2 and preserves historical intents',async()=>{
+  const sql=await readFile(new URL('../database/migrations/005_global_action_targets.sql',import.meta.url),'utf8');
+  assert.match(sql,/CREATE TABLE IF NOT EXISTS callum_v2\.action_targets/);
+  assert.match(sql,/PRIMARY KEY \(action_type, target_key\)/);
+  assert.match(sql,/SELECT DISTINCT action_type, target_key FROM callum_v2\.action_intents/);
+  assert.doesNotMatch(sql,/\b(?:ALTER|DROP|TRUNCATE|UPDATE|DELETE)\s+(?:TABLE\s+)?public\./i);
+});

@@ -12,7 +12,7 @@ const enabled=process.env.V2_TEST_DB==='1'&&!!process.env.COCKROACH_DATABASE_URL
 test('new backend process reconciles an authorized lost-ACK action without redelivery', {skip:!enabled},async()=>{
   const db=openDatabase(),control=new ControlPlane(db);
   const operatorId=`v2restart_${randomUUID().slice(0,8)}`;
-  const profileKey='qa-backend-restart';
+  const profileKey=`qa-backend-restart-${randomUUID().slice(0,8)}`;
   const port=20000+Math.floor(Math.random()*10000);
   const origin=`http://127.0.0.1:${port}`;
   let server=null;
