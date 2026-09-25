@@ -5,7 +5,7 @@ import { DEFAULT_CONFIG, validateConfig } from '../../packages/linkedin-config/i
 
 const hash = x => createHash('sha256').update(x).digest('hex');
 const SENT_INVITATIONS_URL = 'https://www.linkedin.com/mynetwork/invitation-manager/sent/';
-export const CURRENT_EXTENSION_VERSION = '2.4.0';
+export const CURRENT_EXTENSION_VERSION = '2.5.0';
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const versionAtLeast = (actual, minimum) => {
   const a = String(actual).split('.').map(Number), b = String(minimum).split('.').map(Number);
@@ -219,7 +219,9 @@ export class ControlPlane {
       if(draft.run_status!=='running'||draft.mode!=='live_canary'||!draft.installation_id||!draft.actor_profile_key||
         !process.env.V2_QA_PROFILE_KEY||draft.profile_key!==process.env.V2_QA_PROFILE_KEY.toLowerCase()||!draft.full_name?.trim())throw new Error('QA_RECIPIENT_REQUIRED');
       const config=await this.activeConfig(q,{cohort:draft.cohort,extension_version:CURRENT_EXTENSION_VERSION});
-      if(['postScope','postLink','postAuthor','viewerProfile','commentButton','commentItem','commentAuthor','commentText','commentEditor','commentSubmit'].some(k=>!config.config[k]?.length))throw new Error('CONFIG_INCOMPATIBLE');
+      if(['postScope','postDetailScope','postLink','postAuthor','viewerProfile','viewerMenuTrigger','viewerMenu','viewerMenuProfile',
+        'commentButton','commentItem','commentOptionButton','commentAuthor','commentText','commentEditor','commentSubmit'].some(k=>!config.config[k]?.length) ||
+        !config.config.labels.commentSubmit?.length)throw new Error('CONFIG_INCOMPATIBLE');
       const source=(await q.query(`SELECT c.config_version,c.installation_id,c.target_profile_key,c.payload,o.facts FROM callum_v2.commands c
         JOIN callum_v2.observations o ON o.command_id=c.id
         WHERE c.id=$1 AND c.run_id=$2 AND c.lead_id=$3 AND c.type='INSPECT_COMMENT_STATE' AND c.status='completed'
@@ -252,7 +254,8 @@ export class ControlPlane {
       (id,run_id,operator_id,lead_id,action_intent_id,type,idempotency_key,target_profile_key,target_url,config_version,protocol_version,payload,expires_at)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
       ON CONFLICT (idempotency_key) DO UPDATE SET idempotency_key=excluded.idempotency_key RETURNING *`,
-      [id, run.run_id || run.id, run.operator_id, lead.id || lead.lead_id, actionIntentId, type, key, lead.profile_key, lead.linkedin_url, run.config_version, PROTOCOL_VERSION, payload, expires]);
+      [id, run.run_id || run.id, run.operator_id, lead.id || lead.lead_id, actionIntentId, type, key, lead.profile_key,
+        type==='EXECUTE_COMMENT' ? payload.postUrl : lead.linkedin_url, run.config_version, PROTOCOL_VERSION, payload, expires]);
     return rows[0];
   }
 
@@ -289,6 +292,10 @@ export class ControlPlane {
 
   async claim(installation) {
     return this.db.tx(async q => {
+      const enabled=(await q.query(`SELECT i.disabled,o.enabled FROM callum_v2.installations i
+        JOIN callum_v2.operators o ON o.id=i.operator_id WHERE i.id=$1 AND i.operator_id=$2`,
+        [installation.id,installation.operator_id])).rows[0];
+      if(!enabled||enabled.disabled||!enabled.enabled)throw new Error('UNAUTHORIZED');
       await this.recoverExpired(q, installation.operator_id);
       const config = await this.activeConfig(q, installation);
       const { rows } = await q.query(`SELECT c.* FROM callum_v2.commands c JOIN callum_v2.runs r ON r.id=c.run_id
@@ -333,13 +340,16 @@ export class ControlPlane {
 
   async authorizeAction(installation, commandId) {
     return this.db.tx(async q => {
-      const { rows } = await q.query(`SELECT c.*,i.state AS intent_state,i.action_type AS intent_type,r.status AS run_status,r.mode AS run_mode,r.installation_id AS run_installation_id FROM callum_v2.commands c
+      const { rows } = await q.query(`SELECT c.*,i.state AS intent_state,i.action_type AS intent_type,r.status AS run_status,r.mode AS run_mode,r.installation_id AS run_installation_id,
+        installation.disabled AS installation_disabled,op.enabled AS operator_enabled FROM callum_v2.commands c
         JOIN callum_v2.action_intents i ON i.id=c.action_intent_id JOIN callum_v2.runs r ON r.id=c.run_id
+        JOIN callum_v2.installations installation ON installation.id=c.installation_id
+        JOIN callum_v2.operators op ON op.id=c.operator_id
         WHERE c.id=$1 AND c.operator_id=$2 FOR UPDATE OF c`, [commandId, installation.operator_id]);
       const c = rows[0];
       const withdraw=c?.type==='EXECUTE_WITHDRAW';
       const comment=c?.type==='EXECUTE_COMMENT';
-      if (!c || !['EXECUTE_CONNECT','EXECUTE_WITHDRAW','EXECUTE_COMMENT'].includes(c.type) || c.intent_type !== (withdraw?'withdraw':comment?'comment':'connect') ||
+      if (!c || c.installation_disabled || !c.operator_enabled || !['EXECUTE_CONNECT','EXECUTE_WITHDRAW','EXECUTE_COMMENT'].includes(c.type) || c.intent_type !== (withdraw?'withdraw':comment?'comment':'connect') ||
           c.installation_id !== installation.id || c.status !== 'leased' || c.intent_state !== 'reserved' ||
           c.run_status !== 'running' || c.expires_at <= new Date() || c.lease_expires_at <= new Date()) throw new Error('ACTION_NOT_AUTHORIZED');
       if (withdraw) {
@@ -492,7 +502,7 @@ export class ControlPlane {
     const otherIntent=(await q.query(`SELECT id FROM callum_v2.action_intents WHERE operator_id=$1 AND lead_id=$2
       AND action_type<>'connect' AND state IN ('reserved','submitted','reconcile_required') LIMIT 1`,[c.operator_id,c.lead_id])).rows[0];
     if(otherIntent)return {stage:'paused',event:'connection_reservation_conflict',diagnosticCode:'ACTION_CONFLICT'};
-    const op = (await q.query('SELECT daily_connection_limit FROM callum_v2.operators WHERE id=$1', [c.operator_id])).rows[0];
+    const op = (await q.query('SELECT daily_connection_limit FROM callum_v2.operators WHERE id=$1 FOR UPDATE', [c.operator_id])).rows[0];
     const used = (await q.query(`SELECT count(*)::INT4 AS n FROM callum_v2.action_intents
       WHERE operator_id=$1 AND action_type='connect' AND created_at >= date_trunc('day',now()) AND state IN ('reserved','submitted','reconcile_required','confirmed')`, [c.operator_id])).rows[0].n;
     if (used >= op.daily_connection_limit) {

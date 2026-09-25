@@ -64,7 +64,7 @@ test('withdrawal navigation failure cannot reach authorization or a click',async
 test('comment navigation failure cannot reach authorization or a click',async()=>{
   let ack=null,authorizations=0;
   const command={id:'c',type:'EXECUTE_COMMENT',protocolVersion:1,configVersion:1,
-    targetUrl:'https://www.linkedin.com/in/qa-test/',expiresAt:new Date(Date.now()+60000).toISOString(),actionIntentId:'intent'};
+    targetUrl:'https://www.linkedin.com/feed/update/urn:li:activity:123',payload:{postUrl:'https://www.linkedin.com/feed/update/urn:li:activity:123'},expiresAt:new Date(Date.now()+60000).toISOString(),actionIntentId:'intent'};
   const reply=value=>({ok:true,json:async()=>value});
   const x=worker({storage:async()=>({v2Token:'a'.repeat(40),v2Environment:'local'}),
     tabQuery:async()=>{throw new Error('TAB_CLOSED')},
@@ -102,7 +102,7 @@ test('service worker restart after an ACK network loss never repeats the action 
 });
 test('authorization network loss before the primitive reports not submitted',async()=>{
   const command={id:'authorize-lost',type:'EXECUTE_COMMENT',protocolVersion:1,configVersion:1,
-    targetUrl:'https://www.linkedin.com/in/qa-test/',expiresAt:new Date(Date.now()+60000).toISOString(),actionIntentId:'intent'};
+    targetUrl:'https://www.linkedin.com/feed/update/urn:li:activity:123',payload:{postUrl:'https://www.linkedin.com/feed/update/urn:li:activity:123'},expiresAt:new Date(Date.now()+60000).toISOString(),actionIntentId:'intent'};
   const reply=value=>({ok:true,json:async()=>value});let clicks=0,ack=null;
   const x=worker({storage:async()=>({v2Token:'a'.repeat(40),v2Environment:'local'}),
     tabQuery:async()=>[{id:7,url:command.targetUrl,status:'complete'}],

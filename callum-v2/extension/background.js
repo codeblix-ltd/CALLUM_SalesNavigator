@@ -24,7 +24,11 @@ async function api(endpoint, token, path, payload = null) {
 function assertCommand(c, configVersion) {
   if (!c || !['INSPECT_PROFILE', 'EXECUTE_CONNECT', 'INSPECT_COMMENT_STATE', 'EXTRACT_CONTACT_INFO', 'INSPECT_PENDING_INVITATION', 'EXECUTE_WITHDRAW','EXECUTE_COMMENT'].includes(c.type) || c.protocolVersion !== CALLUM_V2_BUILD.protocol || c.configVersion !== configVersion) throw new Error('CONFIG_INCOMPATIBLE');
   const url = new URL(c.targetUrl);
-  const validPath=['INSPECT_PENDING_INVITATION','EXECUTE_WITHDRAW'].includes(c.type) ? /^\/mynetwork\/invitation-manager\/sent\/?$/i.test(url.pathname) && !url.search && !url.hash : /^\/in\/[a-z0-9_%.-]+\/?$/i.test(url.pathname);
+  const postTarget=['EXECUTE_COMMENT','INSPECT_COMMENT_STATE'].includes(c.type) &&
+    /^\/feed\/update\/urn:li:activity:\d+$/i.test(url.pathname) && !url.search && !url.hash &&
+    c.targetUrl===c.payload?.postUrl && (c.type==='EXECUTE_COMMENT'||c.payload?.reconcile===true);
+  const validPath=['INSPECT_PENDING_INVITATION','EXECUTE_WITHDRAW'].includes(c.type) ? /^\/mynetwork\/invitation-manager\/sent\/?$/i.test(url.pathname) && !url.search && !url.hash :
+    c.type==='EXECUTE_COMMENT' ? postTarget : /^\/in\/[a-z0-9_%.-]+\/?$/i.test(url.pathname) || postTarget;
   if (url.protocol !== 'https:' || !['linkedin.com','www.linkedin.com'].includes(url.hostname) || !validPath) throw new Error('PROFILE_MISMATCH');
   if (Date.parse(c.expiresAt) <= Date.now() || !c.id || !c.actionIntentId && ['EXECUTE_CONNECT','EXECUTE_WITHDRAW','EXECUTE_COMMENT'].includes(c.type)) throw new Error('COMMAND_EXPIRED');
 }

@@ -98,6 +98,56 @@ test('recent post observation returns bounded URLs without post text',async()=>{
   assert.equal(late.postUrls.length,5);
   assert.equal(late.postUrls.includes('https://www.linkedin.com/feed/update/urn:li:activity:105'),true);
 });
+test('authenticated-style activity cards and Me menu resolve only an unambiguous viewer',async()=>{
+  const post='https://www.linkedin.com/feed/update/urn:li:activity:123456789';
+  const html=`<nav><button id="me" aria-expanded="false">Me</button></nav><main><section class="pv-top-card"><h1>QA Test</h1></section>
+    <section role="list"><div role="listitem"><a href="/in/qa-test/">QA Test</a><a href="${post}">Post</a>
+    <a aria-label="Comment" href="${post}">Comment</a></div></section></main>`;
+  const {adapter,document}=fixture(html);
+  let opens=0;
+  document.getElementById('me').click=()=>{
+    opens++;document.getElementById('me').setAttribute('aria-expanded','true');
+    const menu=document.createElement('div');menu.setAttribute('role','menu');
+    menu.innerHTML='<a href="/in/qa-actor/">View profile</a><a href="/in/qa-actor/">QA Actor</a>';
+    document.body.append(menu);
+  };
+  const cmd={...command,payload:{...command.payload,postUrl:post,actorProfileKey:'qa-actor'}};
+  const facts=await adapter.inspectCommentState(DEFAULT_CONFIG,cmd);
+  assert.equal(facts.targetPostPresent,true);assert.equal(facts.targetPostAuthoredByLead,true);
+  assert.equal(facts.commentBoxAvailable,true);assert.equal(facts.viewerMatched,true);assert.equal(opens,1);
+  assert.equal((await adapter.inspectCommentState(DEFAULT_CONFIG,cmd)).viewerMatched,true);
+  assert.equal(opens,1);
+  const result=await adapter.comment(DEFAULT_CONFIG,{...cmd,payload:{...cmd.payload,approvedText:'Approved comment.'}});
+  assert.equal(result.status,'not_submitted');assert.equal(result.facts.diagnosticCode,'COMMENT_POST_NAVIGATION_REQUIRED');
+  const wrong=await adapter.inspectCommentState(DEFAULT_CONFIG,{...cmd,payload:{...cmd.payload,actorProfileKey:'someone-else'}});
+  assert.equal(wrong.viewerMatched,false);
+  document.querySelector('[role="menu"]').insertAdjacentHTML('beforeend','<a href="/in/someone-else/">Other</a>');
+  assert.equal((await adapter.inspectCommentState(DEFAULT_CONFIG,cmd)).viewerMatched,false);
+});
+test('post detail action verifies lead, viewer and exact authored comment before confirmation',async()=>{
+  const post='https://www.linkedin.com/feed/update/urn:li:activity:123456789';
+  const html=`<header><a href="/in/qa-actor/">Me</a></header><main><div role="listitem">
+    <a href="/in/qa-test/">QA Test</a><button aria-label="Comment">Comment</button>
+    <div contenteditable="true" role="textbox"></div><button type="submit">Post</button><div id="comments"></div></div></main>`;
+  const {adapter,document}=fixture(html,post+'/');
+  const cmd={targetProfileKey:'qa-test',payload:{expectedName:'QA Test',postUrl:post,actorProfileKey:'qa-actor',approvedText:'Approved QA comment.'}};
+  let sends=0;
+  document.querySelector('button[type="submit"]').click=()=>{
+    sends++;
+    const item=document.createElement('div');
+    item.innerHTML=`<a href="/in/qa-actor/">Actor</a><button aria-label="View more options for Actor comment"></button>
+      <p>${document.querySelector('[contenteditable]').textContent}</p>`;
+    document.getElementById('comments').append(item);
+  };
+  const before=await adapter.inspectCommentState(DEFAULT_CONFIG,cmd);
+  assert.equal(before.profileMatched,true);assert.equal(before.targetPostAuthoredByLead,true);
+  assert.equal(before.viewerMatched,true);assert.equal(before.ownCommentPresent,false);
+  const result=await adapter.comment(DEFAULT_CONFIG,cmd);
+  assert.equal(result.status,'confirmed');assert.equal(result.facts.commentPostcondition,true);assert.equal(sends,1);
+  assert.equal((await adapter.comment(DEFAULT_CONFIG,cmd)).status,'not_submitted');assert.equal(sends,1);
+  const wrong=fixture(html.replace('href="/in/qa-test/"','href="/in/other/"'),post);
+  assert.equal((await wrong.adapter.comment(DEFAULT_CONFIG,cmd)).status,'not_submitted');
+});
 test('approved comment targets one authored post and confirms only the signed-in actor',async()=>{
   const post='https://www.linkedin.com/feed/update/urn:li:activity:123456789';
   const html=`<header><a href="/in/qa-actor/">Me</a></header><main><section class="pv-top-card"><h1>QA Test</h1></section>

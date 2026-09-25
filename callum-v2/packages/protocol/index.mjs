@@ -7,7 +7,8 @@ export const DIAGNOSTIC_CODES = new Set([
   'CONFIG_INVALID', 'CONFIG_INCOMPATIBLE', 'STORAGE_UNAVAILABLE', 'POSTCONDITION_UNKNOWN',
   'COMMAND_EXPIRED', 'KILL_SWITCH', 'UNEXPECTED_BROWSER_STATE', 'NO_RECENT_POSTS',
   'CONTACT_INFO_EMPTY', 'INVITATION_NOT_FOUND', 'INVITATION_AGE_UNKNOWN', 'INVITATION_TOO_RECENT',
-  'WITHDRAW_DIALOG_UNKNOWN','POST_AUTHOR_MISMATCH','COMMENT_ALREADY_PRESENT','COMMENT_EDITOR_UNAVAILABLE'
+  'WITHDRAW_DIALOG_UNKNOWN','POST_AUTHOR_MISMATCH','COMMENT_ALREADY_PRESENT','COMMENT_EDITOR_UNAVAILABLE',
+  'COMMENT_POST_NAVIGATION_REQUIRED'
 ]);
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -16,7 +17,12 @@ export function assertCommand(value, now = Date.now()) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('COMMAND_INVALID');
   for (const key of ['id', 'runId', 'leadId', 'traceId']) if (!uuid.test(value[key] || '')) throw new Error('COMMAND_INVALID');
   if (!COMMAND_TYPES.has(value.type) || typeof value.operatorId !== 'string' || !value.operatorId) throw new Error('COMMAND_INVALID');
-  if (!profile.test(value.targetProfileKey || '') || !(['INSPECT_PENDING_INVITATION','EXECUTE_WITHDRAW'].includes(value.type) ? isLinkedInSentInvitationsUrl(value.targetUrl) : isLinkedInProfileUrl(value.targetUrl))) throw new Error('COMMAND_TARGET_INVALID');
+  const postTarget=['EXECUTE_COMMENT','INSPECT_COMMENT_STATE'].includes(value.type) &&
+    linkedInPostUrl(value.targetUrl)===value.targetUrl && value.payload?.postUrl===value.targetUrl &&
+    (value.type==='EXECUTE_COMMENT'||value.payload?.reconcile===true);
+  const validTarget=['INSPECT_PENDING_INVITATION','EXECUTE_WITHDRAW'].includes(value.type) ? isLinkedInSentInvitationsUrl(value.targetUrl) :
+    value.type==='EXECUTE_COMMENT' ? postTarget : isLinkedInProfileUrl(value.targetUrl) || postTarget;
+  if (!profile.test(value.targetProfileKey || '') || !validTarget) throw new Error('COMMAND_TARGET_INVALID');
   if (!Number.isSafeInteger(value.configVersion) || value.protocolVersion !== PROTOCOL_VERSION) throw new Error('COMMAND_VERSION_INVALID');
   if (!uuid.test(value.actionIntentId || '') && ACTION_TYPES.has(value.type)) throw new Error('COMMAND_INTENT_MISSING');
   if (typeof value.idempotencyKey !== 'string' || value.idempotencyKey.length < 12 || value.idempotencyKey.length > 200) throw new Error('COMMAND_INVALID');

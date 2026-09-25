@@ -9,7 +9,7 @@ test('run pause/resume, operator disable, global kill and daily limit gate comma
   const db=openDatabase(),control=new ControlPlane(db),operatorId=`v2state_${randomUUID().slice(0,8)}`;
   try{
     await control.seed();await control.createOperator(operatorId,'dev',0);
-    const issued=await control.createInstallation(operatorId,'2.4.0','b4e9668a');
+    const issued=await control.createInstallation(operatorId,'2.5.0','b4e9668a');
     const installation=await control.installation(issued.token);
     const configVersion=Number((await db.query("SELECT active_config_version FROM callum_v2.release_channels WHERE channel='dev'")).rows[0].active_config_version);
     async function fixture(mode){

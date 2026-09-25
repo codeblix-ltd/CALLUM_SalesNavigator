@@ -15,10 +15,10 @@ test('reviewed QA comment authorizes once, then reconciles uncertain submission 
     await control.seed();
     previousConfig=Number((await db.query("SELECT active_config_version FROM callum_v2.release_channels WHERE channel='dev'")).rows[0].active_config_version);
     await control.createOperator(operatorId,'dev',0);
-    const issued=await control.createInstallation(operatorId,'2.4.0','a1b2c3d4',`https://www.linkedin.com/in/${actorKey}/`);
+    const issued=await control.createInstallation(operatorId,'2.5.0','a1b2c3d4',`https://www.linkedin.com/in/${actorKey}/`);
     const installation=await control.installation(issued.token);
     assert.equal(installation.actor_profile_key,actorKey);
-    const config=await control.createConfig(DEFAULT_CONFIG,'2.4.0');
+    const config=await control.createConfig(DEFAULT_CONFIG,'2.5.0');
     await control.activateConfig(Number(config.version),'dev');
     process.env.V2_QA_PROFILE_KEY=qaKey;
     const leadId=randomUUID();
@@ -44,6 +44,7 @@ test('reviewed QA comment authorizes once, then reconciles uncertain submission 
     await control.setFlag('comment',false);
     const action=(await control.claim(installation)).command;
     assert.equal(action.type,'EXECUTE_COMMENT');
+    assert.equal(action.targetUrl,post);
     assert.equal(action.payload.approvedText,'Approved QA comment.');
     assert.equal((await control.authorizeAction(installation,action.id)).authorized,true);
     await assert.rejects(()=>control.authorizeAction(installation,action.id),/ACTION_NOT_AUTHORIZED/);
@@ -55,6 +56,7 @@ test('reviewed QA comment authorizes once, then reconciles uncertain submission 
       diagnosticCode:'POSTCONDITION_UNKNOWN'}})).stage,'reconcile_required');
     const reconciliation=(await control.claim(installation)).command;
     assert.equal(reconciliation.type,'INSPECT_COMMENT_STATE');
+    assert.equal(reconciliation.targetUrl,post);
     assert.equal(reconciliation.payload.reconcile,true);
     assert.equal(reconciliation.payload.approvedText,'Approved QA comment.');
     const outcome=await control.acknowledge(installation,{commandId:reconciliation.id,status:'observed',facts:{

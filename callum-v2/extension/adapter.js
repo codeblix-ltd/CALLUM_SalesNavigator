@@ -91,13 +91,62 @@ globalThis.CallumAdapter = (() => {
       return `https://www.linkedin.com${url.pathname.replace(/\/$/,'')}`;
     }catch{return null;}
   };
+  const selected = (root, selectors) => selectors?.flatMap(selector=>{try{return [...root.querySelectorAll(selector)].filter(visible)}catch{return []}}) || [];
+  const profileKeys = (root, selectors) => selected(root, selectors).map(a=>{
+    try{return key(new URL(a.getAttribute('href'),location.href).href)}catch{return null}
+  }).filter(Boolean);
+  async function signedInViewer(config, actorKey) {
+    if(!actorKey)return false;
+    const direct=profileKeys(document,config.viewerProfile);
+    if(direct.length)return new Set(direct).size===1 && direct[0]===actorKey;
+    if(!config.viewerMenuTrigger||!config.viewerMenu||!config.viewerMenuProfile||!config.labels.viewerMenu)return false;
+    const triggers=selected(document,config.viewerMenuTrigger).filter(el=>config.labels.viewerMenu.some(label=>
+      norm(el.getAttribute('aria-label')||el.textContent)===norm(label)));
+    if(triggers.length!==1)return false;
+    const trigger=triggers[0];
+    const prior=new Set(selected(document,config.viewerMenu));
+    const alreadyOpen=trigger.getAttribute('aria-expanded')==='true';
+    if(!alreadyOpen)trigger.click();
+    const deadline=Date.now()+Math.min(config.waitMs,1000);
+    do {
+      const menus=selected(document,config.viewerMenu).filter(menu=>alreadyOpen||!prior.has(menu));
+      const candidates=menus.map(menu=>profileKeys(menu,config.viewerMenuProfile)).filter(keys=>keys.length);
+      if(candidates.length===1)return new Set(candidates[0]).size===1 && candidates[0][0]===actorKey;
+      if(candidates.length>1)return false;
+      if(Date.now()>=deadline)break;
+      await new Promise(r=>setTimeout(r,100));
+    } while(true);
+    return false;
+  }
+  function postDetailNode(config) {
+    const nodes=[...new Set(selected(document,config.postDetailScope))].filter(node=>first(node,config.commentButton));
+    return nodes.length===1 ? nodes[0] : null;
+  }
   async function inspectCommentState(config, command) {
+    const target=postUrl(command.payload?.postUrl||'');
+    if(target && postUrl(location.href)===target){
+      CallumConfig.validate(config);
+      const node=postDetailNode(config);
+      if(!node)return {profileMatched:false,profileKey:null,pageReady:false,diagnosticCode:'PAGE_HYDRATING'};
+      const commentControl=first(node,config.commentButton);
+      const authors=selected(node,config.postAuthor).filter(a=>!!(a.compareDocumentPosition(commentControl)&4)).map(a=>{
+        try{return key(new URL(a.getAttribute('href'),location.href).href)}catch{return null}
+      }).filter(Boolean);
+      const authorMatched=authors.length>0 && new Set(authors).size===1 && authors[0]===norm(command.targetProfileKey);
+      const actorKey=norm(command.payload?.actorProfileKey);
+      const viewerMatched=await signedInViewer(config,actorKey);
+      const ownCommentPresent=!!actorKey && typeof command.payload?.approvedText==='string' &&
+        matchingOwnComment(node,config,actorKey,command.payload.approvedText);
+      return {profileMatched:authorMatched,profileKey:authorMatched?norm(command.targetProfileKey):null,pageReady:true,
+        postUrls:[target],targetPostPresent:true,commentBoxAvailable:!!commentControl,targetPostAuthoredByLead:authorMatched,
+        viewerMatched,ownCommentPresent,diagnosticCode:authorMatched?'OK':'POST_AUTHOR_MISMATCH'};
+    }
     const ctx=context(config,command);
     if(!ctx.matched)return {profileMatched:false,profileKey:ctx.currentKey,pageReady:!!ctx.heading,diagnosticCode:'PROFILE_MISMATCH'};
     if(!ctx.scope || !config.postScope || !config.postLink || !config.commentButton)return {profileMatched:true,profileKey:ctx.currentKey,pageReady:false,diagnosticCode:'PAGE_HYDRATING'};
     const nodes=[...new Set(config.postScope.flatMap(selector=>{try{return [...document.querySelectorAll(selector)].filter(visible)}catch{return []}}))].slice(0,20);
     const postUrls=[];let commentBoxAvailable=false;const targets=[];
-    const target=postUrl(command.payload?.postUrl||'');let targetPostPresent=false;
+    let targetPostPresent=false;
     for(const node of nodes){
       const anchor=first(node,config.postLink);
       const urn=node.getAttribute('data-urn')||node.querySelector('[data-urn*="urn:li:activity:"]')?.getAttribute('data-urn');
@@ -111,11 +160,14 @@ globalThis.CallumAdapter = (() => {
       else commentBoxAvailable ||= available;
     }
     const targetNode=targets[0]||null;
-    const authors=targetNode && config.postAuthor ? config.postAuthor.flatMap(selector=>{try{return [...targetNode.querySelectorAll(selector)].filter(visible).map(a=>key(new URL(a.getAttribute('href'),location.href).href)).filter(Boolean)}catch{return []}}) : [];
+    const commentControl=targetNode && first(targetNode,config.commentButton);
+    const authors=targetNode ? selected(targetNode,config.postAuthor).filter(a=>
+      !commentControl || !!(a.compareDocumentPosition(commentControl)&4)).map(a=>{
+      try{return key(new URL(a.getAttribute('href'),location.href).href)}catch{return null}
+    }).filter(Boolean) : [];
     const targetPostAuthoredByLead=authors.length>0 && [...new Set(authors)].length===1 && authors[0]===ctx.currentKey;
     const actorKey=norm(command.payload?.actorProfileKey);
-    const viewers=config.viewerProfile ? config.viewerProfile.flatMap(selector=>{try{return [...document.querySelectorAll(selector)].filter(visible).map(a=>key(new URL(a.getAttribute('href'),location.href).href)).filter(Boolean)}catch{return []}}) : [];
-    const viewerMatched=!!actorKey && viewers.length>0 && [...new Set(viewers)].length===1 && viewers[0]===actorKey;
+    const viewerMatched=await signedInViewer(config,actorKey);
     const ownCommentPresent=!!targetNode && !!actorKey && typeof command.payload?.approvedText==='string' && matchingOwnComment(targetNode,config,actorKey,command.payload.approvedText);
     return {profileMatched:true,profileKey:ctx.currentKey,pageReady:true,postUrls,
       targetPostPresent,commentBoxAvailable,targetPostAuthoredByLead,viewerMatched,ownCommentPresent,
@@ -125,13 +177,22 @@ globalThis.CallumAdapter = (() => {
   function matchingOwnComment(post,config,actorKey,text){
     if(!config.commentItem || !config.commentAuthor || !config.commentText)return false;
     const items=[...new Set(config.commentItem.flatMap(selector=>{try{return [...post.querySelectorAll(selector)].filter(visible)}catch{return []}}))];
-    return items.some(item=>{
+    if(items.some(item=>{
       const author=first(item,config.commentAuthor);
       const content=first(item,config.commentText);
       if(!author||!content)return false;
       let actual=null;try{actual=key(new URL(author.getAttribute('href'),location.href).href)}catch{}
       return actual===actorKey && exactText(content.textContent)===exactText(text);
-    });
+    }))return true;
+    for(const button of selected(post,config.commentOptionButton)){
+      let node=button.parentElement;
+      for(let depth=0;node&&node!==post&&depth<6;depth++,node=node.parentElement){
+        const authors=profileKeys(node,config.commentAuthor);
+        if(authors.length && new Set(authors).size===1 && authors[0]===actorKey &&
+          [...node.querySelectorAll('p')].some(p=>visible(p)&&exactText(p.textContent)===exactText(text)))return true;
+      }
+    }
+    return false;
   }
   async function comment(config,command){
     const payload=command.payload||{};
@@ -141,16 +202,20 @@ globalThis.CallumAdapter = (() => {
     let before=await inspectCommentState(config,command);
     const safe=before.profileMatched&&before.pageReady&&before.targetPostPresent&&before.targetPostAuthoredByLead&&before.viewerMatched&&before.commentBoxAvailable;
     if(!safe||before.ownCommentPresent)return {status:'not_submitted',facts:{...before,diagnosticCode:before.ownCommentPresent?'COMMENT_ALREADY_PRESENT':before.diagnosticCode}};
-    const nodes=[...new Set(config.postScope.flatMap(selector=>{try{return [...document.querySelectorAll(selector)].filter(visible)}catch{return []}}))];
+    const onDetail=postUrl(location.href)===postUrl(payload.postUrl);
+    const nodes=onDetail?[postDetailNode(config)].filter(Boolean):[...new Set(config.postScope.flatMap(selector=>{try{return [...document.querySelectorAll(selector)].filter(visible)}catch{return []}}))];
     const matches=nodes.filter(node=>{
+      if(onDetail)return true;
       const anchor=first(node,config.postLink),urn=node.getAttribute('data-urn')||'';
       return postUrl(anchor?.getAttribute('href')||'')===payload.postUrl || postUrl(`/feed/update/${urn}`)===payload.postUrl;
     });
     if(matches.length!==1)return {status:'not_submitted',facts:{...before,diagnosticCode:'UNEXPECTED_BROWSER_STATE'}};
     const node=matches[0],open=first(node,config.commentButton);
     if(!open)return {status:'not_submitted',facts:{...before,diagnosticCode:'ACTION_UNAVAILABLE'}};
-    open.click();
-    const deadline=Date.now()+config.waitMs;let editor=null;
+    if(open.tagName==='A')return {status:'not_submitted',facts:{...before,diagnosticCode:'COMMENT_POST_NAVIGATION_REQUIRED'}};
+    let editor=first(node,config.commentEditor);
+    if(!editor)open.click();
+    const deadline=Date.now()+config.waitMs;
     while(Date.now()<deadline){editor=first(node,config.commentEditor);if(editor)break;await new Promise(r=>setTimeout(r,250));}
     if(!editor)return {status:'not_submitted',facts:{...before,diagnosticCode:'COMMENT_EDITOR_UNAVAILABLE'}};
     before=await inspectCommentState(config,command);
@@ -162,7 +227,12 @@ globalThis.CallumAdapter = (() => {
     if(document.execCommand)inserted=document.execCommand('insertText',false,text);
     if(!inserted){editor.textContent=text;editor.dispatchEvent(new Event('input',{bubbles:true}));}
     const exact=exactText(editor.innerText||editor.textContent)===exactText(text);
-    const submit=first(node,config.commentSubmit);
+    const submits=[...new Set(selected(node,config.commentSubmit))].filter(button=>button.tagName==='BUTTON' &&
+      config.labels.commentSubmit?.some(label=>{
+        const shown=norm(button.getAttribute('aria-label')||button.textContent);
+        return shown===norm(label)||shown.startsWith(`${norm(label)} `);
+      }));
+    const submit=submits.length===1?submits[0]:null;
     if(!exact||!submit||submit.disabled)return {status:'not_submitted',facts:{...before,diagnosticCode:'COMMENT_EDITOR_UNAVAILABLE'}};
     submit.click();
     const end=Date.now()+config.waitMs;

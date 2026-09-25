@@ -18,6 +18,13 @@ test('protocol rejects stale, cross-site and incompatible commands',()=>{
   assert.throws(()=>assertCommand({...invitation,targetUrl:'https://www.linkedin.com/mynetwork/invitation-manager/sent/?x=1'}),/COMMAND_TARGET_INVALID/);
   assert.throws(()=>assertCommand({...invitation,type:'EXECUTE_WITHDRAW'}),/COMMAND_INTENT_MISSING/);
   assert.doesNotThrow(()=>assertCommand({...invitation,type:'EXECUTE_WITHDRAW',actionIntentId:randomUUID()}));
+  const post='https://www.linkedin.com/feed/update/urn:li:activity:123456789';
+  const comment={...command(),type:'EXECUTE_COMMENT',targetUrl:post,payload:{postUrl:post},actionIntentId:randomUUID()};
+  assert.doesNotThrow(()=>assertCommand(comment));
+  assert.throws(()=>assertCommand({...comment,targetUrl:'https://www.linkedin.com/in/qa-test/'}),/COMMAND_TARGET_INVALID/);
+  assert.throws(()=>assertCommand({...comment,payload:{postUrl:'https://www.linkedin.com/feed/update/urn:li:activity:99'}}),/COMMAND_TARGET_INVALID/);
+  assert.doesNotThrow(()=>assertCommand({...comment,type:'INSPECT_COMMENT_STATE',payload:{postUrl:post,reconcile:true}}));
+  assert.throws(()=>assertCommand({...comment,type:'INSPECT_COMMENT_STATE',payload:{postUrl:post}}),/COMMAND_TARGET_INVALID/);
 });
 test('profile key normalization excludes unrelated hosts and paths',()=>{
   assert.equal(profileKeyFromUrl('https://www.linkedin.com/in/QA-Test/?trk=foo'),'qa-test');
