@@ -19,3 +19,5 @@ Environment: Node 24 fixtures, Cockroach V2 test rows, isolated Chrome. Baseline
 | Chrome restart/resume, tab closure, DB retry/transaction conflict, network loss before action, comment/withdraw uncertainty | Pending dedicated injection | Safety cannot be claimed from unit tests alone |
 
 `pnpm test` is the local suite. `V2_TEST_DB=1 node --env-file=<local server env> --test tests/db.integration.test.mjs tests/remote-config.integration.test.mjs` is the Cockroach suite, run sequentially because configuration tests change the dev release pointer.
+
+The 2.4.0 comment integration passed one-time authorization, comment kill before claim, uncertain ACK → read-only inspection, expired lease → read-only inspection, a late action ACK after reconciliation, direct confirmation, and one pay line per confirmed intent. An identical comment by another actor did not satisfy the fixture postcondition; wrong post author or signed-in actor blocked submission. This remains simulated DOM plus Cockroach, not an authenticated LinkedIn submission.
