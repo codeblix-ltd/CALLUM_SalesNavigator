@@ -6,6 +6,7 @@ Environment: Node 24 fixtures, Cockroach V2 test rows, isolated Chrome. Baseline
 | --- | --- | --- |
 | Duplicate result and command claim | Cockroach integration: duplicate ACK idempotent; leased action not redelivered | Not a multi-host race test |
 | Worker/network lost after authorization and click, ACK lost | Forced action lease expiry yielded only `INSPECT_PROFILE` reconciliation; Pending confirmed one intent | Browser click itself was simulated |
+| Late action ACK after reconciliation queued or leased | Cockroach regression: a confirmed late ACK cancelled the queued observation; a leased stale observation could not overwrite the confirmed lead/intent | Real browser timing race remains untested |
 | Reconciliation and pay | Zero-amount fixture rule yielded one ledger row with version after confirmed result; rule disabled after test | No business rate approved |
 | Wrong profile, hydration, Pending, Connected, InMail ambiguity, no action | Adapter fixtures and authenticated page structure review | Not broad real-profile coverage |
 | Storage unavailable/full, backend unavailable | Background VM tests pause before tab/action | Chrome quota fault not injected in live browser |
