@@ -7,7 +7,9 @@ const hash = x => createHash('sha256').update(x).digest('hex');
 const SENT_INVITATIONS_URL = 'https://www.linkedin.com/mynetwork/invitation-manager/sent/';
 export const CURRENT_EXTENSION_VERSION = '2.5.0';
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const extensionVersionPattern = /^2\.(?:0|[1-9]\d{0,5})\.(?:0|[1-9]\d{0,5})$/;
 const versionAtLeast = (actual, minimum) => {
+  if (!extensionVersionPattern.test(actual) || !extensionVersionPattern.test(minimum)) return false;
   const a = String(actual).split('.').map(Number), b = String(minimum).split('.').map(Number);
   for (let i=0;i<3;i++) {
     if ((a[i] || 0) > (b[i] || 0)) return true;
@@ -37,7 +39,7 @@ export class ControlPlane {
   }
 
   async createInstallation(operatorId, extensionVersion, buildSha, actorProfileUrl = null) {
-    if (!/^2\.\d+\.\d+/.test(extensionVersion) || !/^[a-f0-9]{7,40}$/i.test(buildSha)) throw new Error('INSTALLATION_INVALID');
+    if (!extensionVersionPattern.test(extensionVersion) || !/^[a-f0-9]{7,40}$/i.test(buildSha)) throw new Error('INSTALLATION_INVALID');
     const actorKey=actorProfileUrl===null?null:profileKeyFromUrl(actorProfileUrl);
     if(actorProfileUrl!==null&&!actorKey)throw new Error('INSTALLATION_ACTOR_INVALID');
     const token = randomBytes(32).toString('base64url');
@@ -758,7 +760,7 @@ export class ControlPlane {
 
   async createConfig(config, minVersion = CURRENT_EXTENSION_VERSION) {
     const clean = validateConfig(config);
-    if (!/^2\.\d+\.\d+$/.test(minVersion)) throw new Error('CONFIG_INVALID');
+    if (!extensionVersionPattern.test(minVersion)) throw new Error('CONFIG_INVALID');
     const { rows } = await this.db.query(`INSERT INTO callum_v2.remote_configs(version,status,min_extension_version,rollout_percent,config,checksum)
       SELECT coalesce(max(version),0)+1,'draft',$1,0,$2,$3 FROM callum_v2.remote_configs RETURNING version,checksum`,
       [minVersion,clean,hash(JSON.stringify(clean))]);

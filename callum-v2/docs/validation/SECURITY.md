@@ -19,3 +19,11 @@ The 2.5 extension build scan found no DB URL, admin token, private key marker, `
 `pnpm audit --prod --audit-level high` returned "No known vulnerabilities found" on 2026-09-26 for the locked production dependencies. This registry check does not establish that the application or deployed infrastructure is free of vulnerabilities.
 
 The support diagnostic API now returns only selected browser booleans and an email-present flag alongside workflow metadata. A Cockroach regression stored a test contact email in an observation and confirmed that the diagnostic response omitted the address. The broader admin overview still requires managed staff identity and a retention/access policy before rollout.
+
+## Follow-up review: migration and version boundary
+
+Migration `005_global_action_targets` added a V2-only primary key on `(action_type,target_key)` and backfilled historical target keys. The control plane now claims that guard in the same transaction as a new Connect, comment or withdrawal intent. A concurrent Cockroach test used two operators and different lead IDs for one profile and observed one reservation, intent and action command. Direct writes to `action_intents` bypass the service guard, so production action creation must remain behind the control plane; V1/V2 ownership is still not atomic.
+
+Installation issue and remote-config minimum versions now require exact, bounded V2 version strings. The focused test rejects suffixes, leading zeros, oversized components and the wrong major version, and accepts `2.5.0`. This closes a compatibility-input gap; it does not attest that an operator's reported extension build actually matches the installed package.
+
+A local scan of all 12 `dist` files found no exact occurrence of the configured Cockroach URL. The local environment did not contain `V2_ADMIN_TOKEN`, so its value could not be compared with the package. Neither secret variable name appears in the web/extension source or distribution. The server returns a newly issued installation token only at creation, while the admin page displays that token until the page closes. Public staging TLS, a deployed-package review, managed staff identity and a token rotation procedure remain open.
