@@ -8,14 +8,15 @@ import { DEFAULT_CONFIG } from '../packages/linkedin-config/index.mjs';
 const configCode=await readFile(new URL('../extension/config.js',import.meta.url),'utf8');
 const adapterCode=await readFile(new URL('../extension/adapter.js',import.meta.url),'utf8');
 function fixture(body, url='https://www.linkedin.com/in/qa-test/') {
-  const { window }=parseHTML(`<html><body>${body}</body></html>`);
+  const viewer=/<(?:header|nav)\b/i.test(body)?'':'<header><a href="/in/qa-actor/">Me</a></header>';
+  const { window }=parseHTML(`<html><body>${viewer}${body}</body></html>`);
   window.HTMLElement.prototype.getClientRects=function(){return [1]};
   const sandbox={document:window.document,location:{href:url},URL,Date,setTimeout,Event:window.Event,getComputedStyle:()=>({visibility:'visible'})};
   sandbox.globalThis=sandbox;
   vm.createContext(sandbox);vm.runInContext(configCode,sandbox);vm.runInContext(adapterCode,sandbox);
   return {adapter:sandbox.CallumAdapter,document:window.document};
 }
-const command={targetProfileKey:'qa-test',payload:{expectedName:'QA Test'}};
+const command={targetProfileKey:'qa-test',payload:{expectedName:'QA Test',actorProfileKey:'qa-actor'}};
 const page=action=>`<main><section class="pv-top-card"><h1>QA Test</h1><span>· 2nd</span>${action}</section><aside><button aria-label="Connect">Other person</button></aside></main>`;
 
 test('direct Connect scoped to the target card and bullet degree',async()=>{
@@ -66,6 +67,28 @@ test('one logical send confirms visible Pending and refuses second send',async()
   assert.equal(first.status,'confirmed');assert.equal(sends,1);
   const second=await adapter.connect(DEFAULT_CONFIG,command);
   assert.equal(second.status,'not_submitted');assert.equal(sends,1);
+});
+test('Connect refuses an absent or different signed-in actor before clicking',async()=>{
+  const {adapter,document}=fixture('<header><a href="/in/another-actor/">Me</a></header>'+page('<button id="connect" aria-label="Connect">Connect</button>'));
+  let clicks=0;document.getElementById('connect').click=()=>clicks++;
+  const mismatch=await adapter.connect(DEFAULT_CONFIG,command);
+  assert.equal(mismatch.status,'not_submitted');assert.equal(mismatch.facts.viewerMatched,false);
+  assert.equal(mismatch.facts.diagnosticCode,'VIEWER_MISMATCH');assert.equal(clicks,0);
+  const missing=await adapter.connect(DEFAULT_CONFIG,{...command,payload:{expectedName:'QA Test'}});
+  assert.equal(missing.status,'not_submitted');assert.equal(clicks,0);
+});
+test('Connect rechecks the actor before the final Send click',async()=>{
+  const {adapter,document}=fixture(page('<button id="connect" aria-label="Connect">Connect</button>'));
+  let sends=0;
+  document.getElementById('connect').click=()=>{
+    document.querySelector('header a').setAttribute('href','/in/another-actor/');
+    const dialog=document.createElement('div');dialog.setAttribute('role','dialog');
+    const send=document.createElement('button');send.textContent='Send';send.click=()=>sends++;
+    dialog.append(send);document.body.append(dialog);
+  };
+  const result=await adapter.connect(DEFAULT_CONFIG,command);
+  assert.equal(result.status,'not_submitted');assert.equal(result.facts.diagnosticCode,'VIEWER_MISMATCH');
+  assert.equal(sends,0);
 });
 test('opening an invite dialog without a Send button is not a submission',async()=>{
   const {adapter,document}=fixture(page('<button id="connect" aria-label="Connect">Connect</button>'));
@@ -248,6 +271,30 @@ test('one targeted old invitation is withdrawn through one confirmed dialog',asy
   const second=await adapter.withdraw(DEFAULT_CONFIG,command);
   assert.equal(second.status,'not_submitted');
   assert.equal(starts,1);assert.equal(confirms,1);
+});
+test('withdrawal refuses a different signed-in actor before opening the dialog',async()=>{
+  const manager='https://www.linkedin.com/mynetwork/invitation-manager/sent/';
+  const html='<header><a href="/in/another-actor/">Me</a></header><main><h1>Sent invitations</h1><div role="listitem"><a href="/in/qa-test/">QA Test</a><p>Sent 35 days ago</p><button id="start" aria-label="Withdraw invitation sent to QA Test">Withdraw</button></div></main>';
+  const {adapter,document}=fixture(html,manager);let clicks=0;
+  document.getElementById('start').click=()=>clicks++;
+  const result=await adapter.withdraw(DEFAULT_CONFIG,command);
+  assert.equal(result.status,'not_submitted');assert.equal(result.facts.viewerMatched,false);
+  assert.equal(result.facts.diagnosticCode,'VIEWER_MISMATCH');assert.equal(clicks,0);
+});
+test('withdrawal rechecks the actor before the final confirmation click',async()=>{
+  const manager='https://www.linkedin.com/mynetwork/invitation-manager/sent/';
+  const html='<main><h1>Sent invitations</h1><div role="listitem"><a href="/in/qa-test/">QA Test</a><p>Sent 35 days ago</p><button id="start" aria-label="Withdraw invitation sent to QA Test">Withdraw</button></div></main>';
+  const {adapter,document}=fixture(html,manager);let confirms=0;
+  document.getElementById('start').click=()=>{
+    document.querySelector('header a').setAttribute('href','/in/another-actor/');
+    const dialog=document.createElement('div');dialog.setAttribute('role','dialog');
+    const heading=document.createElement('h2');heading.textContent='Withdraw invitation';
+    const confirm=document.createElement('button');confirm.setAttribute('aria-label','Withdraw');confirm.textContent='Withdraw';
+    confirm.click=()=>confirms++;dialog.append(heading,confirm);document.body.append(dialog);
+  };
+  const result=await adapter.withdraw(DEFAULT_CONFIG,command);
+  assert.equal(result.status,'not_submitted');assert.equal(result.facts.diagnosticCode,'VIEWER_MISMATCH');
+  assert.equal(confirms,0);
 });
 test('young or ambiguous invitations never reach confirmation',async()=>{
   const manager='https://www.linkedin.com/mynetwork/invitation-manager/sent/';

@@ -13,6 +13,7 @@ test('new backend process reconciles an authorized lost-ACK action without redel
   const db=openDatabase(),control=new ControlPlane(db);
   const operatorId=`v2restart_${randomUUID().slice(0,8)}`;
   const profileKey=`qa-backend-restart-${randomUUID().slice(0,8)}`;
+  const actorKey=`qa-actor-${randomUUID().slice(0,8)}`;
   const port=20000+Math.floor(Math.random()*10000);
   const origin=`http://127.0.0.1:${port}`;
   let server=null;
@@ -38,7 +39,7 @@ test('new backend process reconciles an authorized lost-ACK action without redel
   };
   try{
     await control.seed();await control.createOperator(operatorId,'dev',1);
-    const issued=await control.createInstallation(operatorId,'2.5.0','b4e9668a');
+    const issued=await control.createInstallation(operatorId,'2.5.1','b4e9668a',`https://www.linkedin.com/in/${actorKey}/`);
     const installation=await control.installation(issued.token);
     const configVersion=Number((await db.query("SELECT active_config_version FROM callum_v2.release_channels WHERE channel='dev'")).rows[0].active_config_version);
     const leadId=randomUUID();
@@ -47,10 +48,11 @@ test('new backend process reconciles an authorized lost-ACK action without redel
     const lead={id:leadId,profile_key:profileKey,linkedin_url:`https://www.linkedin.com/in/${profileKey}/`};
     await db.query('INSERT INTO callum_v2.run_leads(run_id,lead_id,profile_key,linkedin_url) VALUES ($1,$2,$3,$4)',
       [run.id,leadId,profileKey,lead.linkedin_url]);
-    await db.tx(q=>control.enqueue(q,{id:run.id,operator_id:operatorId,config_version:configVersion},lead,'INSPECT_PROFILE',`restart:${run.id}`));
+    await db.tx(q=>control.enqueue(q,{id:run.id,operator_id:operatorId,config_version:configVersion},lead,
+      'INSPECT_PROFILE',`restart:${run.id}`,null,{actorProfileKey:actorKey}));
     const initial=await control.claim(installation);
     await control.acknowledge(installation,{commandId:initial.command.id,status:'observed',facts:{profileMatched:true,
-      profileKey,pageReady:true,connectAvailable:true,diagnosticCode:'OK'}});
+      profileKey,pageReady:true,viewerMatched:true,connectAvailable:true,diagnosticCode:'OK'}});
     const firstPid=await start();
     const action=(await call(issued.token,'/api/commands/claim',{})).command;
     assert.equal(action.type,'EXECUTE_CONNECT');
@@ -62,7 +64,7 @@ test('new backend process reconciles an authorized lost-ACK action without redel
     assert.equal(reconcile.type,'INSPECT_PROFILE');assert.equal(reconcile.payload.reconcile,true);
     assert.equal((await db.query("SELECT count(*)::INT4 n FROM callum_v2.commands WHERE run_id=$1 AND type='EXECUTE_CONNECT'",[run.id])).rows[0].n,1);
     const result=await call(issued.token,`/api/commands/${reconcile.id}/ack`,{commandId:reconcile.id,status:'observed',facts:{
-      profileMatched:true,profileKey,pageReady:true,pendingVisible:true,diagnosticCode:'ALREADY_PENDING'}});
+      profileMatched:true,profileKey,pageReady:true,viewerMatched:true,pendingVisible:true,diagnosticCode:'ALREADY_PENDING'}});
     assert.equal(result.stage,'completed');
     assert.equal((await db.query('SELECT state FROM callum_v2.action_intents WHERE run_id=$1',[run.id])).rows[0].state,'confirmed');
     assert.equal((await call(issued.token,'/api/commands/claim',{})).command,null);

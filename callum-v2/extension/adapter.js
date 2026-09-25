@@ -41,8 +41,9 @@ globalThis.CallumAdapter = (() => {
   }
   async function observe(config, command) {
     const ctx = context(config, command);
-    if (!ctx.matched) return { profileMatched: false, profileKey: ctx.currentKey, relationship: 'unknown', connectAvailable: false, pendingVisible: false, connectedVisible: false, pageReady: !!ctx.heading, diagnosticCode: 'PROFILE_MISMATCH' };
-    if (!ctx.scope) return { profileMatched: true, profileKey: ctx.currentKey, relationship: 'unknown', connectAvailable: false, pendingVisible: false, connectedVisible: false, pageReady: false, diagnosticCode: 'PAGE_HYDRATING' };
+    if (!ctx.matched) return { profileMatched: false, profileKey: ctx.currentKey, viewerMatched: false, relationship: 'unknown', connectAvailable: false, pendingVisible: false, connectedVisible: false, pageReady: !!ctx.heading, diagnosticCode: 'PROFILE_MISMATCH' };
+    const viewerMatched=await signedInViewer(config,norm(command.payload?.actorProfileKey));
+    if (!ctx.scope) return { profileMatched: true, profileKey: ctx.currentKey, viewerMatched, relationship: 'unknown', connectAvailable: false, pendingVisible: false, connectedVisible: false, pageReady: false, diagnosticCode: 'PAGE_HYDRATING' };
     let state = actions(ctx.scope, config);
     if (!state.connect && !state.pending && !state.connected && state.more) {
       state.more.click();
@@ -54,12 +55,12 @@ globalThis.CallumAdapter = (() => {
     const relationshipState = relationship(ctx.scope, config);
     const connectedVisible = !!state.connected && relationshipState === 'first';
     const connectAvailable = !!state.connect && !pendingVisible && !connectedVisible;
-    return { profileMatched: true, profileKey: ctx.currentKey, relationship: relationshipState, connectAvailable,
-      pendingVisible, connectedVisible, pageReady: true, diagnosticCode: pendingVisible ? 'ALREADY_PENDING' : connectedVisible ? 'ALREADY_CONNECTED' : connectAvailable ? 'OK' : 'ACTION_UNAVAILABLE' };
+    return { profileMatched: true, profileKey: ctx.currentKey, viewerMatched, relationship: relationshipState, connectAvailable,
+      pendingVisible, connectedVisible, pageReady: true, diagnosticCode: !viewerMatched ? 'VIEWER_MISMATCH' : pendingVisible ? 'ALREADY_PENDING' : connectedVisible ? 'ALREADY_CONNECTED' : connectAvailable ? 'OK' : 'ACTION_UNAVAILABLE' };
   }
   async function connect(config, command) {
     const before = await observe(config, command);
-    if (!before.profileMatched || !before.pageReady || before.pendingVisible || before.connectedVisible || !before.connectAvailable) return { status: 'not_submitted', facts: before };
+    if (!before.profileMatched || !before.pageReady || !before.viewerMatched || before.pendingVisible || before.connectedVisible || !before.connectAvailable) return { status: 'not_submitted', facts: before };
     const ctx = context(config, command);
     let action = actions(ctx.scope, config).connect;
     if (!action) {
@@ -73,6 +74,7 @@ globalThis.CallumAdapter = (() => {
     if (dialog) {
       const send = labelled(dialog, config.labels.send);
       if (!send) return { status: 'not_submitted', facts: { ...before, diagnosticCode: 'ACTION_UNAVAILABLE' } };
+      if (!await signedInViewer(config,norm(command.payload?.actorProfileKey))) return { status: 'not_submitted', facts: { ...before, viewerMatched: false, diagnosticCode: 'VIEWER_MISMATCH' } };
       send.click();
     }
     const end = Date.now() + config.waitMs;
@@ -315,15 +317,16 @@ globalThis.CallumAdapter = (() => {
     const marker=main && config.invitationPage.flatMap(selector=>{try{return [...main.querySelectorAll(selector)].filter(visible)}catch{return []}})
       .some(node=>config.labels.invitationPage.some(label=>norm(node.textContent)===norm(label)||norm(node.textContent).startsWith(`${norm(label)} `)));
     if(!marker)return {profileMatched:false,profileKey:null,pageReady:false,diagnosticCode:'PAGE_HYDRATING'};
+    const viewerMatched=await signedInViewer(config,norm(command.payload?.actorProfileKey));
     const matches=matchingInvitationCards(config,command,main);
-    if(matches.length!==1)return {profileMatched:false,profileKey:null,pageReady:true,invitationFound:false,invitationNameMatched:false,
+    if(matches.length!==1)return {profileMatched:false,profileKey:null,pageReady:true,viewerMatched,invitationFound:false,invitationNameMatched:false,
       diagnosticCode:matches.length?'UNEXPECTED_BROWSER_STATE':'INVITATION_NOT_FOUND'};
     const card=matches[0];
     const ageDays=invitationAgeDays(card,config);
     const withdraw=first(card,config.invitationWithdraw)||labelled(card,config.labels.invitationWithdraw);
-    return {profileMatched:true,profileKey:norm(command.targetProfileKey),pageReady:true,invitationFound:true,invitationNameMatched:true,
+    return {profileMatched:true,profileKey:norm(command.targetProfileKey),pageReady:true,viewerMatched,invitationFound:true,invitationNameMatched:true,
       invitationAgeDays:ageDays,invitationWithdrawAvailable:!!withdraw,
-      diagnosticCode:ageDays===null?'INVITATION_AGE_UNKNOWN':ageDays<30?'INVITATION_TOO_RECENT':withdraw?'OK':'ACTION_UNAVAILABLE'};
+      diagnosticCode:!viewerMatched?'VIEWER_MISMATCH':ageDays===null?'INVITATION_AGE_UNKNOWN':ageDays<30?'INVITATION_TOO_RECENT':withdraw?'OK':'ACTION_UNAVAILABLE'};
   }
   function visibleWithdrawDialogs(config) {
     return [...new Set(config.withdrawDialog.flatMap(selector=>{try{return [...document.querySelectorAll(selector)].filter(visible)}catch{return []}}))];
@@ -336,7 +339,7 @@ globalThis.CallumAdapter = (() => {
   }
   async function withdraw(config,command) {
     const before=await inspectPendingInvitation(config,command);
-    const safe=before.profileMatched && before.pageReady && before.invitationFound && before.invitationNameMatched &&
+    const safe=before.profileMatched && before.pageReady && before.viewerMatched && before.invitationFound && before.invitationNameMatched &&
       before.invitationWithdrawAvailable && before.invitationAgeDays>=30;
     if(!safe)return {status:'not_submitted',facts:{...before,withdrawalTargetVerified:false}};
     if(visibleWithdrawDialogs(config).length)return {status:'uncertain',facts:{...before,withdrawalTargetVerified:true,diagnosticCode:'WITHDRAW_DIALOG_UNKNOWN'}};
@@ -350,11 +353,12 @@ globalThis.CallumAdapter = (() => {
     if(!dialog)return {status:'uncertain',facts:{...before,withdrawalTargetVerified:true,diagnosticCode:'WITHDRAW_DIALOG_UNKNOWN'}};
     const confirm=first(dialog,config.withdrawConfirm)||labelled(dialog,config.labels.withdrawConfirm);
     if(!confirm)return {status:'uncertain',facts:{...before,withdrawalTargetVerified:true,withdrawalConfirmationOpened:true,diagnosticCode:'ACTION_UNAVAILABLE'}};
+    if(!await signedInViewer(config,norm(command.payload?.actorProfileKey)))return {status:'not_submitted',facts:{...before,viewerMatched:false,withdrawalTargetVerified:true,withdrawalConfirmationOpened:true,diagnosticCode:'VIEWER_MISMATCH'}};
     confirm.click();
     const end=Date.now()+config.waitMs;
     while(Date.now()<end){
       const after=await inspectPendingInvitation(config,command);
-      if(after.pageReady && !after.invitationFound && !matchingWithdrawDialog(config))return {status:'confirmed',facts:{...before,invitationFound:false,
+      if(after.pageReady && after.viewerMatched && !after.invitationFound && !matchingWithdrawDialog(config))return {status:'confirmed',facts:{...before,invitationFound:false,
         invitationWithdrawAvailable:false,withdrawalTargetVerified:true,withdrawalConfirmationOpened:true,withdrawalPostcondition:true,diagnosticCode:'OK'}};
       await new Promise(r=>setTimeout(r,250));
     }

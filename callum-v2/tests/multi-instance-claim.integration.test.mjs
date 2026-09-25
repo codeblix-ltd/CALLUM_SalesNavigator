@@ -10,11 +10,12 @@ test('separate control-plane instances lease and authorize one action once', {sk
   const firstDb=openDatabase(),secondDb=openDatabase();
   const first=new ControlPlane(firstDb),second=new ControlPlane(secondDb);
   const operatorId=`v2claim_${randomUUID().slice(0,8)}`;
+  const actorKey=`qa-actor-${randomUUID().slice(0,8)}`;
   const previousQa=process.env.V2_QA_PROFILE_KEY;
   try{
     await first.seed();
     await first.createOperator(operatorId,'dev',1);
-    const issued=await first.createInstallation(operatorId,'2.5.0','e439fb3');
+    const issued=await first.createInstallation(operatorId,'2.5.1','e439fb3',`https://www.linkedin.com/in/${actorKey}/`);
     const installation=await first.installation(issued.token);
     const configVersion=Number((await firstDb.query("SELECT active_config_version FROM callum_v2.release_channels WHERE channel='dev'")).rows[0].active_config_version);
     const leadId=randomUUID(),profileKey=`qa-multi-claim-${leadId.slice(0,8)}`;
@@ -24,14 +25,15 @@ test('separate control-plane instances lease and authorize one action once', {sk
       [operatorId,installation.id,configVersion])).rows[0];
     await firstDb.query('INSERT INTO callum_v2.run_leads(run_id,lead_id,profile_key,linkedin_url) VALUES ($1,$2,$3,$4)',
       [run.id,leadId,profileKey,lead.linkedin_url]);
-    await firstDb.tx(q=>first.enqueue(q,{id:run.id,operator_id:operatorId,config_version:configVersion},lead,'INSPECT_PROFILE',`multi-claim:${run.id}`));
+    await firstDb.tx(q=>first.enqueue(q,{id:run.id,operator_id:operatorId,config_version:configVersion},lead,
+      'INSPECT_PROFILE',`multi-claim:${run.id}`,null,{actorProfileKey:actorKey}));
 
     const firstClaims=await Promise.all([first.claim(installation),second.claim(installation)]);
     const inspections=firstClaims.map(x=>x.command).filter(Boolean);
     assert.equal(inspections.length,1,'one instance leases the inspection');
     assert.equal(inspections[0].type,'INSPECT_PROFILE');
     await first.acknowledge(installation,{commandId:inspections[0].id,status:'observed',facts:{
-      profileMatched:true,profileKey,pageReady:true,connectAvailable:true,diagnosticCode:'OK'}});
+      profileMatched:true,profileKey,pageReady:true,viewerMatched:true,connectAvailable:true,diagnosticCode:'OK'}});
 
     const actionClaims=await Promise.all([first.claim(installation),second.claim(installation)]);
     const actions=actionClaims.map(x=>x.command).filter(Boolean);

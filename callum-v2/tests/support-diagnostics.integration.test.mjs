@@ -9,9 +9,10 @@ const enabled=process.env.V2_TEST_DB==='1'&&!!process.env.COCKROACH_DATABASE_URL
 test('support can trace failures and reconciliation without receiving a contact email', {skip:!enabled},async()=>{
   const db=openDatabase(),control=new ControlPlane(db),operatorId=`v2support_${randomUUID().slice(0,8)}`;
   const previousQa=process.env.V2_QA_PROFILE_KEY,profileKey=`qa-support-${randomUUID().slice(0,8)}`;
+  const actorKey=`qa-actor-${randomUUID().slice(0,8)}`;
   try{
     await control.seed();await control.createOperator(operatorId,'dev',1);
-    const issued=await control.createInstallation(operatorId,'2.5.0','0cb9a83');
+    const issued=await control.createInstallation(operatorId,'2.5.1','0cb9a83',`https://www.linkedin.com/in/${actorKey}/`);
     const installation=await control.installation(issued.token);
     process.env.V2_QA_PROFILE_KEY=profileKey;
     const version=Number((await db.query("SELECT active_config_version FROM callum_v2.release_channels WHERE channel='dev'")).rows[0].active_config_version);
@@ -41,14 +42,16 @@ test('support can trace failures and reconciliation without receiving a contact 
       'privacy_probe','OK'));
 
     const actionFixture=await fixture();
-    const intent=(await db.query("INSERT INTO callum_v2.action_intents(run_id,operator_id,lead_id,action_type,target_key,state) VALUES ($1,$2,$3,'connect',$4,'reserved') RETURNING id",
-      [actionFixture.run.id,operatorId,actionFixture.lead.id,profileKey])).rows[0];
     await db.tx(q=>control.enqueue(q,{id:actionFixture.run.id,operator_id:operatorId,config_version:version},actionFixture.lead,
-      'EXECUTE_CONNECT',`support-action:${actionFixture.run.id}`,intent.id,{expectedName:'QA Fixture'}));
+      'INSPECT_PROFILE',`support-action:${actionFixture.run.id}`,null,{expectedName:'QA Fixture',actorProfileKey:actorKey}));
+    const preflight=(await control.claim(installation)).command;
+    await control.acknowledge(installation,{commandId:preflight.id,status:'observed',facts:{
+      profileMatched:true,profileKey,pageReady:true,viewerMatched:true,connectAvailable:true,diagnosticCode:'OK'}});
     const action=(await control.claim(installation)).command;
+    const intent={id:action.actionIntentId};
     assert.equal((await control.authorizeAction(installation,action.id)).authorized,true);
     assert.equal((await control.acknowledge(installation,{commandId:action.id,status:'uncertain',facts:{
-      profileMatched:true,profileKey,pageReady:true,diagnosticCode:'POSTCONDITION_UNKNOWN'}})).stage,'reconcile_required');
+      profileMatched:true,profileKey,pageReady:true,viewerMatched:true,diagnosticCode:'POSTCONDITION_UNKNOWN'}})).stage,'reconcile_required');
 
     const diagnostics=(await control.overview()).diagnostics;
     const failure=diagnostics.find(row=>row.command_id===profile.id && row.stage==='observation');
@@ -58,7 +61,7 @@ test('support can trace failures and reconciliation without receiving a contact 
     assert.equal(failure.lead_id,observed.lead.id);
     assert.equal(failure.trace_id,profile.traceId);
     assert.equal(failure.installation_id,installation.id);
-    assert.equal(failure.extension_version,'2.5.0');
+    assert.equal(failure.extension_version,'2.5.1');
     assert.equal(failure.build_sha,'0cb9a83');
     assert.equal(Number(failure.config_version),version);
     assert.equal(failure.command_type,'INSPECT_PROFILE');

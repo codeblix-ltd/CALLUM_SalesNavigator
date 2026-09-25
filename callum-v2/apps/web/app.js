@@ -47,10 +47,10 @@ function bindForm(id, path, convert, onResult) {
 $('connect').addEventListener('click',async()=>{token=$('adminToken').value;try{await refresh();$('adminToken').value='';$('login').hidden=true;$('workspace').hidden=false;}catch(error){token='';$('loginMessage').textContent=error.message;}});
 $('refresh').addEventListener('click',()=>refresh().catch(e=>$('notice').textContent=e.message));
 for(const button of document.querySelectorAll('nav button'))button.addEventListener('click',()=>{for(const b of document.querySelectorAll('nav button'))b.classList.toggle('active',b===button);for(const v of document.querySelectorAll('.view'))v.hidden=v.id!==button.dataset.view;});
-const actorField=document.createElement('input');actorField.name='actorProfileUrl';actorField.placeholder='signed-in actor profile URL (comments)';actorField.type='url';
+const actorField=document.createElement('input');actorField.name='actorProfileUrl';actorField.placeholder='signed-in LinkedIn profile URL';actorField.type='url';
 $('installationForm').insertBefore(actorField,$('installationForm').querySelector('button'));
-$('installationForm').elements.extensionVersion.value='2.5.0';
-$('configForm').elements.minVersion.value='2.5.0';
+$('installationForm').elements.extensionVersion.value='2.5.1';
+$('configForm').elements.minVersion.value='2.5.1';
 const payEvent=document.createElement('select');payEvent.name='eventType';payEvent.innerHTML='<option value="connection_confirmed">Confirmed connection</option><option value="comment_confirmed">Confirmed comment</option>';
 $('payForm').insertBefore(payEvent,$('payForm').querySelector('button'));
 bindForm('operatorForm','/api/admin/operators',f=>({id:f.get('id'),cohort:f.get('cohort'),dailyLimit:Number(f.get('dailyLimit'))}));

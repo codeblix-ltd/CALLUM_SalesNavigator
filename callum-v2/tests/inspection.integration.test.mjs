@@ -9,13 +9,14 @@ const enabled=process.env.V2_TEST_DB==='1' && !!process.env.COCKROACH_DATABASE_U
 test('read-only inspections preserve lead stage and scope contact email', {skip:!enabled}, async()=>{
   const db=openDatabase(),control=new ControlPlane(db);
   const operatorId=`v2inspect_${randomUUID().slice(0,8)}`;
+  const actorKey=`qa-actor-${randomUUID().slice(0,8)}`;
   const previousQa=process.env.V2_QA_PROFILE_KEY;
   let previousConfig=null;
   try {
     await control.seed();
     previousConfig=Number((await db.query("SELECT active_config_version FROM callum_v2.release_channels WHERE channel='dev'")).rows[0].active_config_version);
     await control.createOperator(operatorId,'dev',0);
-    const issued=await control.createInstallation(operatorId,'2.3.0','b820d227');
+    const issued=await control.createInstallation(operatorId,'2.5.1','b820d227',`https://www.linkedin.com/in/${actorKey}/`);
     const installation=await control.installation(issued.token);
     const draft=await control.createConfig(DEFAULT_CONFIG,'2.3.0');
     const version=Number(draft.version);
@@ -69,7 +70,7 @@ test('read-only inspections preserve lead stage and scope contact email', {skip:
     assert.equal(invitationClaim.command.targetProfileKey,invitation.key);
     assert.equal(invitationClaim.command.type,'INSPECT_PENDING_INVITATION');
     const invitationResult=await control.acknowledge(installation,{commandId:invitationClaim.command.id,status:'observed',facts:{
-      profileMatched:true,profileKey:invitation.key,pageReady:true,invitationFound:true,invitationNameMatched:true,
+      profileMatched:true,profileKey:invitation.key,pageReady:true,viewerMatched:true,invitationFound:true,invitationNameMatched:true,
       invitationWithdrawAvailable:true,invitationAgeDays:35,diagnosticCode:'OK'}});
     assert.equal(invitationResult.stage,'awaiting_observation');
     const invitationFacts=(await db.query('SELECT facts FROM callum_v2.observations WHERE command_id=$1',[invitationClaim.command.id])).rows[0].facts;

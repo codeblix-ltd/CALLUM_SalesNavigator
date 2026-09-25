@@ -10,9 +10,10 @@ test('Cockroach V2 command lease, lost ACK, reconciliation, and duplicate pay in
   const operatorId=`v2test_${randomUUID().slice(0,8)}`;
   const ruleVersion=Number(String(Date.now()).slice(-12));
   const previousQa=process.env.V2_QA_PROFILE_KEY;
+  const actorKey=`qa-actor-${randomUUID().slice(0,8)}`;
   try {
     await s.seed();await s.createOperator(operatorId,'dev',5);
-    const issued=await s.createInstallation(operatorId,'2.5.0','68f5971a');
+    const issued=await s.createInstallation(operatorId,'2.5.1','68f5971a',`https://www.linkedin.com/in/${actorKey}/`);
     const install=await s.installation(issued.token);
     // A zero-amount rule verifies attribution without defining compensation.
     await db.query(`INSERT INTO callum_v2.pay_rules(version,event_type,amount_minor,currency,enabled)
@@ -24,13 +25,15 @@ test('Cockroach V2 command lease, lost ACK, reconciliation, and duplicate pay in
         VALUES ($1,$2,'live_canary',1) RETURNING *`,[operatorId,install.id])).rows[0];
       const lead={id:leadId,profile_key:target,linkedin_url:`https://www.linkedin.com/in/${target}/`};
       await db.query(`INSERT INTO callum_v2.run_leads(run_id,lead_id,profile_key,linkedin_url) VALUES ($1,$2,$3,$4)`,[run.id,leadId,target,lead.linkedin_url]);
-      await db.tx(q=>s.enqueue(q,run,lead,'INSPECT_PROFILE',`fixture:${run.id}:${leadId}`));
+      await db.tx(q=>s.enqueue(q,run,lead,'INSPECT_PROFILE',`fixture:${run.id}:${leadId}`,null,
+        {actorProfileKey:actorKey}));
       return {run,lead};
     }
     const first=await setup('lost-ack');
     const initial=await s.claim(install);
     assert.equal(initial.command.type,'INSPECT_PROFILE');
-    const observed={profileMatched:true,profileKey:first.lead.profile_key,pageReady:true,connectAvailable:true,diagnosticCode:'OK'};
+    const observed={profileMatched:true,profileKey:first.lead.profile_key,pageReady:true,viewerMatched:true,
+      connectAvailable:true,diagnosticCode:'OK'};
     assert.equal((await s.acknowledge(install,{commandId:initial.command.id,status:'observed',facts:observed})).stage,'awaiting_action');
     const action=await s.claim(install);assert.equal(action.command.type,'EXECUTE_CONNECT');
     assert.equal((await s.claim(install)).command,null,'leased action is not redelivered');

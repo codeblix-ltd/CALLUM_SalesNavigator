@@ -23,8 +23,14 @@ test('V2 refuses a live canary run and action for a lead already assigned in V1'
     await control.seed();
     const operatorId = `v2overlap_${randomUUID().slice(0,8)}`;
     await control.createOperator(operatorId, 'dev', 1);
-    const issued = await control.createInstallation(operatorId, '2.5.0', '8b04b5c7');
+    const issued = await control.createInstallation(operatorId, '2.5.1', '8b04b5c7',
+      `https://www.linkedin.com/in/qa-actor-${randomUUID().slice(0,8)}/`);
     const installation = await control.installation(issued.token);
+    const missingActor = await control.createInstallation(operatorId, '2.5.1', '8b04b5c7');
+    await assert.rejects(
+      () => control.createRun({ operatorId, mode: 'live_canary', count: 1, leadId: lead.id, installationId: missingActor.id }),
+      /CANARY_ACTOR_REQUIRED/
+    );
     await assert.rejects(
       () => control.createRun({ operatorId, mode: 'live_canary', count: 1, leadId: lead.id }),
       /CANARY_INSTALLATION_REQUIRED/

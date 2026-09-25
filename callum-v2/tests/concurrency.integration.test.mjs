@@ -8,9 +8,10 @@ import {DEFAULT_CONFIG} from '../packages/linkedin-config/index.mjs';
 const enabled=process.env.V2_TEST_DB==='1'&&!!process.env.COCKROACH_DATABASE_URL;
 test('simultaneous lead ACKs cannot exceed one daily connection reservation', {skip:!enabled},async()=>{
   const db=openDatabase(),control=new ControlPlane(db),operatorId=`v2race_${randomUUID().slice(0,8)}`;
+  const actorKey=`qa-actor-${randomUUID().slice(0,8)}`;
   try{
     await control.seed();await control.createOperator(operatorId,'dev',1);
-    const issued=await control.createInstallation(operatorId,'2.5.0','a142581d');
+    const issued=await control.createInstallation(operatorId,'2.5.1','a142581d',`https://www.linkedin.com/in/${actorKey}/`);
     const installation=await control.installation(issued.token);
     const configVersion=Number((await db.query("SELECT active_config_version FROM callum_v2.release_channels WHERE channel='dev'")).rows[0].active_config_version);
     const commands=[];
@@ -21,7 +22,8 @@ test('simultaneous lead ACKs cannot exceed one daily connection reservation', {s
       const lead={id:leadId,profile_key:profileKey,linkedin_url:`https://www.linkedin.com/in/${profileKey}/`};
       await db.query('INSERT INTO callum_v2.run_leads(run_id,lead_id,profile_key,linkedin_url) VALUES ($1,$2,$3,$4)',
         [run.id,leadId,profileKey,lead.linkedin_url]);
-      await db.tx(q=>control.enqueue(q,{id:run.id,operator_id:operatorId,config_version:configVersion},lead,'INSPECT_PROFILE',`race:${run.id}`));
+      await db.tx(q=>control.enqueue(q,{id:run.id,operator_id:operatorId,config_version:configVersion},lead,
+        'INSPECT_PROFILE',`race:${run.id}`,null,{actorProfileKey:actorKey}));
       commands.push({runId:run.id,profileKey});
     }
     const first=(await control.claim(installation)).command;
@@ -29,7 +31,8 @@ test('simultaneous lead ACKs cannot exceed one daily connection reservation', {s
     assert.notEqual(first.id,second.id);
     const profileByRun=new Map(commands.map(x=>[x.runId,x.profileKey]));
     const ack=command=>control.acknowledge(installation,{commandId:command.id,status:'observed',facts:{
-      profileMatched:true,profileKey:profileByRun.get(command.runId),pageReady:true,connectAvailable:true,diagnosticCode:'OK'}});
+      profileMatched:true,profileKey:profileByRun.get(command.runId),pageReady:true,viewerMatched:true,
+      connectAvailable:true,diagnosticCode:'OK'}});
     const outcomes=await Promise.all([ack(first),ack(second)]);
     assert.deepEqual(outcomes.map(x=>x.stage).sort(),['awaiting_action','paused']);
     const result=(await db.query(`SELECT
@@ -57,7 +60,7 @@ test('simultaneous Connect observation and comment approval leave one active int
   let previousConfig=null;
   try{
     await control.seed();await control.createOperator(operatorId,'dev',1);
-    const issued=await control.createInstallation(operatorId,'2.5.0','a142581d',`https://www.linkedin.com/in/${actorKey}/`);
+    const issued=await control.createInstallation(operatorId,'2.5.1','a142581d',`https://www.linkedin.com/in/${actorKey}/`);
     const installation=await control.installation(issued.token);
     previousConfig=Number((await db.query("SELECT active_config_version FROM callum_v2.release_channels WHERE channel='dev'")).rows[0].active_config_version);
     const configVersion=Number((await control.createConfig(DEFAULT_CONFIG,'2.5.0')).version);
@@ -73,7 +76,7 @@ test('simultaneous Connect observation and comment approval leave one active int
         [run.id,leadId,qaKey,lead.linkedin_url]);
     }
     await db.tx(q=>control.enqueue(q,{id:runIds[0],operator_id:operatorId,config_version:configVersion},lead,
-      'INSPECT_PROFILE',`cross-connect:${runIds[0]}`));
+      'INSPECT_PROFILE',`cross-connect:${runIds[0]}`,null,{actorProfileKey:actorKey}));
     const commentRequest=await control.queueInspection({runId:runIds[1],leadId,type:'INSPECT_COMMENT_STATE',postUrl});
     const connectCommand=(await control.claim(installation)).command;
     const commentCommand=(await control.claim(installation)).command;
@@ -84,7 +87,7 @@ test('simultaneous Connect observation and comment approval leave one active int
     const draft=await control.createCommentDraft({runId:runIds[1],leadId,inspectionCommandId:commentCommand.id,body:'Approved QA race comment.'});
     const outcomes=await Promise.allSettled([
       control.acknowledge(installation,{commandId:connectCommand.id,status:'observed',facts:{profileMatched:true,
-        profileKey:qaKey,pageReady:true,connectAvailable:true,diagnosticCode:'OK'}}),
+        profileKey:qaKey,pageReady:true,viewerMatched:true,connectAvailable:true,diagnosticCode:'OK'}}),
       control.reviewCommentDraft({draftId:draft.id,decision:'approve',reviewer:'qa_reviewer'})
     ]);
     assert.equal(outcomes.filter(x=>x.status==='rejected'&&!/ACTION_CONFLICT/.test(x.reason?.message||'')).length,0,
@@ -104,6 +107,7 @@ test('simultaneous Connect observation and comment approval leave one active int
 test('different V2 operators cannot reserve Connect for one profile under different lead IDs', {skip:!enabled},async()=>{
   const db=openDatabase(),control=new ControlPlane(db),fixtureId=randomUUID();
   const profileKey=`qa-global-target-${fixtureId.slice(0,8)}`;
+  const actorKey=`qa-actor-${fixtureId.slice(0,8)}`;
   try{
     await control.seed();
     const configVersion=Number((await db.query("SELECT active_config_version FROM callum_v2.release_channels WHERE channel='dev'")).rows[0].active_config_version);
@@ -111,7 +115,7 @@ test('different V2 operators cannot reserve Connect for one profile under differ
     for(let i=0;i<2;i++){
       const operatorId=`v2global_${i}_${fixtureId.slice(0,8)}`;
       await control.createOperator(operatorId,'dev',1);
-      const issued=await control.createInstallation(operatorId,'2.5.0','a142581d');
+      const issued=await control.createInstallation(operatorId,'2.5.1','a142581d',`https://www.linkedin.com/in/${actorKey}/`);
       const installation=await control.installation(issued.token);
       const leadId=randomUUID();
       const run=(await db.query("INSERT INTO callum_v2.runs(operator_id,installation_id,mode,config_version) VALUES ($1,$2,'live_canary',$3) RETURNING id",
@@ -120,11 +124,11 @@ test('different V2 operators cannot reserve Connect for one profile under differ
       await db.query('INSERT INTO callum_v2.run_leads(run_id,lead_id,profile_key,linkedin_url) VALUES ($1,$2,$3,$4)',
         [run.id,leadId,profileKey,lead.linkedin_url]);
       await db.tx(q=>control.enqueue(q,{id:run.id,operator_id:operatorId,config_version:configVersion},lead,
-        'INSPECT_PROFILE',`global:${run.id}`));
+        'INSPECT_PROFILE',`global:${run.id}`,null,{actorProfileKey:actorKey}));
       claims.push({installation,command:(await control.claim(installation)).command});
     }
     const results=await Promise.all(claims.map(({installation,command})=>control.acknowledge(installation,{
-      commandId:command.id,status:'observed',facts:{profileMatched:true,profileKey,pageReady:true,
+      commandId:command.id,status:'observed',facts:{profileMatched:true,profileKey,pageReady:true,viewerMatched:true,
         connectAvailable:true,diagnosticCode:'OK'}})));
     assert.deepEqual(results.map(x=>x.stage).sort(),['awaiting_action','paused']);
     const counts=(await db.query(`SELECT
