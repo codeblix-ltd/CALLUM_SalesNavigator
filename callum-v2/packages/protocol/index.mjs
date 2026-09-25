@@ -33,7 +33,8 @@ export function assertCommand(value, now = Date.now()) {
 export function isLinkedInProfileUrl(raw) {
   try {
     const url = new URL(raw);
-    return url.protocol === 'https:' && ['www.linkedin.com', 'linkedin.com'].includes(url.hostname) && /^\/in\/[a-z0-9_%.-]+\/?$/i.test(url.pathname);
+    if (url.protocol !== 'https:' || !['www.linkedin.com', 'linkedin.com'].includes(url.hostname) || !/^\/in\/[a-z0-9_%.-]+\/?$/i.test(url.pathname)) return false;
+    return profile.test(decodeURIComponent(url.pathname.split('/')[2]));
   } catch { return false; }
 }
 

@@ -30,6 +30,11 @@ test('profile key normalization excludes unrelated hosts and paths',()=>{
   assert.equal(profileKeyFromUrl('https://www.linkedin.com/in/QA-Test/?trk=foo'),'qa-test');
   assert.equal(profileKeyFromUrl('https://evil.example/in/QA-Test/'),null);
   assert.equal(profileKeyFromUrl('https://www.linkedin.com/company/example/'),null);
+  assert.equal(profileKeyFromUrl('https://www.linkedin.com/in/%/'),null);
+  assert.equal(profileKeyFromUrl('https://www.linkedin.com/in/qa%2Ftest/'),null);
+  assert.equal(profileKeyFromUrl('https://www.linkedin.com/in/qa%20test/'),null);
+  assert.equal(profileKeyFromUrl('https://www.linkedin.com/in/QA%2DTest/'),'qa-test');
+  assert.throws(()=>assertCommand({...command(),targetUrl:'https://www.linkedin.com/in/%/'}),/COMMAND_TARGET_INVALID/);
 });
 test('result strips unneeded page content and unknown diagnostics',()=>{
   const x=sanitizeResult({commandId:randomUUID(),status:'observed',facts:{profileMatched:true,profileKey:'QA-Test',pageReady:true,wholePage:'private',diagnosticCode:'PASSWORD_DUMP'}});
