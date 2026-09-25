@@ -164,6 +164,9 @@ export class ControlPlane {
   async queueWithdrawal({ runId, leadId, inspectionCommandId }) {
     if (![runId,leadId,inspectionCommandId].every(x=>uuid.test(x||''))) throw new Error('WITHDRAWAL_INVALID');
     return this.db.tx(async q=>{
+      const existing=(await q.query(`SELECT id FROM callum_v2.action_intents WHERE run_id=$1 AND lead_id=$2
+        AND action_type='withdraw' LIMIT 1`,[runId,leadId])).rows[0];
+      if(existing)throw new Error('WITHDRAWAL_ALREADY_RESERVED');
       const run=(await q.query(`SELECT r.*,l.profile_key,l.linkedin_url,l.full_name,o.cohort FROM callum_v2.runs r
         JOIN callum_v2.run_leads l ON l.run_id=r.id AND l.lead_id=$2
         JOIN callum_v2.operators o ON o.id=r.operator_id AND o.enabled=true
@@ -304,6 +307,18 @@ export class ControlPlane {
     }
   }
 
+  async finishCompletedRun(q, operatorId, runId) {
+    const { rows } = await q.query(`UPDATE callum_v2.runs r SET status='completed',updated_at=now()
+      WHERE r.id=$1 AND r.operator_id=$2 AND r.status='running'
+        AND EXISTS (SELECT 1 FROM callum_v2.run_leads l WHERE l.run_id=r.id)
+        AND NOT EXISTS (SELECT 1 FROM callum_v2.run_leads l WHERE l.run_id=r.id AND l.stage<>'completed')
+        AND NOT EXISTS (SELECT 1 FROM callum_v2.commands c WHERE c.run_id=r.id AND c.status IN ('pending','leased','uncertain'))
+        AND NOT EXISTS (SELECT 1 FROM callum_v2.action_intents i WHERE i.run_id=r.id AND i.state IN ('reserved','submitted','reconcile_required'))
+      RETURNING r.id,r.config_version`,[runId,operatorId]);
+    for(const run of rows)await this.event(q,{event_key:`run:${run.id}:completed`,event_type:'run_completed',
+      operator_id:operatorId,run_id:run.id,config_version:run.config_version===null?null:Number(run.config_version)});
+  }
+
   async claim(installation) {
     return this.db.tx(async q => {
       const enabled=(await q.query(`SELECT i.disabled,o.enabled FROM callum_v2.installations i
@@ -411,8 +426,12 @@ export class ControlPlane {
         JOIN callum_v2.runs r ON r.id=c.run_id JOIN callum_v2.run_leads l ON l.run_id=c.run_id AND l.lead_id=c.lead_id
         WHERE c.id=$1 AND c.operator_id=$2 FOR UPDATE OF c`, [result.commandId, installation.operator_id]);
       const c = rows[0];
+      const finish=async outcome=>{
+        await this.finishCompletedRun(q,installation.operator_id,c.run_id);
+        return outcome;
+      };
       if (!c || c.installation_id !== installation.id) throw new Error('COMMAND_NOT_OWNED');
-      if (c.status === 'completed') return { duplicate: true, state: c.status };
+      if (c.status === 'completed') return finish({ duplicate: true, state: c.status });
       if (!['leased', 'uncertain'].includes(c.status)) throw new Error('COMMAND_NOT_ACTIVE');
       const facts = result.facts;
       if (facts.profileKey !== c.target_profile_key.toLowerCase()) facts.profileMatched = false;
@@ -452,9 +471,9 @@ export class ControlPlane {
         installation_id: installation.id, run_id: c.run_id, lead_id: c.lead_id, command_id: c.id, action_intent_id: c.action_intent_id,
         extension_version: installation.extension_version, build_sha: installation.build_sha, protocol_version: PROTOCOL_VERSION,
         config_version: Number(c.config_version), diagnostic_code: facts.diagnosticCode });
-      if (c.type === 'EXECUTE_CONNECT') return this.finishAction(q, installation, c, result);
-      if (c.type === 'EXECUTE_WITHDRAW') return this.finishWithdraw(q, installation, c, result);
-      if (c.type === 'EXECUTE_COMMENT') return this.finishComment(q, installation, c, result);
+      if (c.type === 'EXECUTE_CONNECT') return finish(await this.finishAction(q, installation, c, result));
+      if (c.type === 'EXECUTE_WITHDRAW') return finish(await this.finishWithdraw(q, installation, c, result));
+      if (c.type === 'EXECUTE_COMMENT') return finish(await this.finishComment(q, installation, c, result));
       if (c.type === 'INSPECT_COMMENT_STATE' || c.type === 'EXTRACT_CONTACT_INFO' || c.type === 'INSPECT_PENDING_INVITATION') {
         await this.event(q,{event_key:`command:${c.id}:inspection`,event_type:c.type === 'INSPECT_COMMENT_STATE' ? 'comment_state_observed' : c.type === 'INSPECT_PENDING_INVITATION' ? 'pending_invitation_observed' : facts.contactEmail ? 'contact_info_confirmed' : 'contact_info_observed',
           operator_id:c.operator_id,installation_id:installation.id,run_id:c.run_id,lead_id:c.lead_id,command_id:c.id,
@@ -463,7 +482,7 @@ export class ControlPlane {
         if (!facts.profileMatched || !facts.pageReady) await this.diagnostic(q,installation,c,'inspection',facts.diagnosticCode);
         if(c.type==='INSPECT_COMMENT_STATE' && c.payload?.reconcile===true && c.action_intent_id){
           const intent=(await q.query('SELECT state FROM callum_v2.action_intents WHERE id=$1',[c.action_intent_id])).rows[0];
-          if(intent?.state==='confirmed'||intent?.state==='cancelled')return {duplicate:false,stage:c.stage};
+          if(intent?.state==='confirmed'||intent?.state==='cancelled')return finish({duplicate:false,stage:c.stage});
           const authorized=(await q.query("SELECT id FROM callum_v2.events WHERE action_intent_id=$1 AND event_type='comment_authorized' LIMIT 1",[c.action_intent_id])).rows[0];
           const confirmed=!!authorized&&facts.ownCommentPresent&&facts.targetPostAuthoredByLead&&facts.viewerMatched;
           const stage=confirmed?'completed':'paused';
@@ -473,23 +492,23 @@ export class ControlPlane {
             operator_id:c.operator_id,installation_id:installation.id,run_id:c.run_id,lead_id:c.lead_id,command_id:c.id,
             action_intent_id:c.action_intent_id,config_version:Number(c.config_version),diagnostic_code:facts.diagnosticCode});
           if(confirmed)await this.applyPay(q,c,eventId,'comment_confirmed');
-          return {duplicate:false,stage};
+          return finish({duplicate:false,stage});
         }
         if (c.type==='INSPECT_PENDING_INVITATION' && c.payload?.reconcile===true && c.action_intent_id) {
           const intent=(await q.query('SELECT state FROM callum_v2.action_intents WHERE id=$1',[c.action_intent_id])).rows[0];
-          if (intent?.state==='confirmed' || intent?.state==='cancelled') return {duplicate:false,stage:c.stage};
+          if (intent?.state==='confirmed' || intent?.state==='cancelled') return finish({duplicate:false,stage:c.stage});
           await q.query("UPDATE callum_v2.run_leads SET stage='paused',updated_at=now() WHERE run_id=$1 AND lead_id=$2",[c.run_id,c.lead_id]);
           await this.event(q,{event_key:`intent:${c.action_intent_id}:reconciled_observation`,event_type:'withdrawal_reconciliation_observed',
             operator_id:c.operator_id,installation_id:installation.id,run_id:c.run_id,lead_id:c.lead_id,command_id:c.id,
             action_intent_id:c.action_intent_id,config_version:Number(c.config_version),diagnostic_code:facts.diagnosticCode,
             details:{invitationFound:facts.invitationFound}});
-          return {duplicate:false,stage:'paused'};
+          return finish({duplicate:false,stage:'paused'});
         }
-        return { duplicate:false,stage:c.stage };
+        return finish({ duplicate:false,stage:c.stage });
       }
       if (c.payload?.reconcile === true && c.action_intent_id) {
         const intent = (await q.query('SELECT state FROM callum_v2.action_intents WHERE id=$1', [c.action_intent_id])).rows[0];
-        if (intent?.state === 'confirmed' || intent?.state === 'cancelled') return { duplicate: false, stage: c.stage };
+        if (intent?.state === 'confirmed' || intent?.state === 'cancelled') return finish({ duplicate: false, stage: c.stage });
       }
       let choice = decideObservation(c.mode, facts, c.payload?.reconcile === true);
       if (choice.stage === 'awaiting_action') choice = await this.reserveConnect(q, c);
@@ -509,7 +528,7 @@ export class ControlPlane {
         await this.applyPay(q, c, confirmedEventId, 'connection_confirmed');
       }
       if (choice.stage === 'paused') await this.diagnostic(q, installation, c, 'observation', choice.diagnosticCode || facts.diagnosticCode);
-      return { duplicate: false, stage: choice.stage };
+      return finish({ duplicate: false, stage: choice.stage });
     });
   }
 
