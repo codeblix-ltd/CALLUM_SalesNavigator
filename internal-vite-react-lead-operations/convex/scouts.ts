@@ -2562,6 +2562,43 @@ export const recordEngagementSkip = action({
   },
 });
 
+export const recordConnectionInspectionFailure = action({
+  args: {
+    leadId: v.string(),
+    extensionVersion: v.string(),
+    connectionState: v.string(),
+    diagnostics: v.union(v.null(), v.object({
+      mainPresent: v.boolean(),
+      targetHeadingVisible: v.boolean(),
+      visibleActionCount: v.number(),
+      invitationLinkPresent: v.boolean(),
+      moreActionPresent: v.boolean(),
+      pendingActionPresent: v.boolean(),
+      uiLanguage: v.string(),
+    })),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const scout = await ctx.runQuery(internal.scoutIdentity.requireScout, {});
+    const details = {
+      connectionState: String(args.connectionState).slice(0, 40),
+      diagnostics: args.diagnostics && {
+        ...args.diagnostics,
+        visibleActionCount: Math.max(0, Math.min(999, Math.trunc(args.diagnostics.visibleActionCount))),
+        uiLanguage: args.diagnostics.uiLanguage.slice(0, 20),
+      },
+      extensionVersion: args.extensionVersion.slice(0, 20),
+    };
+    await getPool().query(
+      `INSERT INTO lead_assignment_events (lead_id, operator_id, event_type, details)
+       SELECT lead_id, operator_id, 'connection_inspection_failed', $3::JSONB
+       FROM lead_assignments WHERE lead_id = $1::UUID AND operator_id = $2`,
+      [args.leadId, scout.operatorId, JSON.stringify(details)],
+    );
+    return null;
+  },
+});
+
 export const reportError = action({
   args: { leadId: v.union(v.string(), v.null()), message: v.string(), source: v.optional(v.literal("accepted_contact")) },
   returns: v.null(),

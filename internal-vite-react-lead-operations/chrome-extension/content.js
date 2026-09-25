@@ -1057,6 +1057,7 @@
         checked: true,
         connectAvailable: false,
         connectionState: "unavailable",
+        diagnostics: connectionActionDiagnostics(options.expectedProfileName),
       };
     }
 
@@ -1139,6 +1140,38 @@
       checked: true,
       connectAvailable: false,
       connectionState,
+      diagnostics: connectionActionDiagnostics(targetProfileName),
+    };
+  }
+
+  // Record only coarse, non-content signals. These distinguish an unfinished
+  // page, an unfamiliar action layout, and a different LinkedIn UI language
+  // without storing profile text or the scout's private page content.
+  function connectionActionDiagnostics(targetProfileName = "") {
+    const main = document.querySelector("main");
+    const heading = Array.from(main?.querySelectorAll("h1, h2, h3") || [])
+      .find((element) =>
+        isElementVisible(element) &&
+        personNamesMatch(element.textContent, targetProfileName),
+      );
+    const actionScope = heading?.closest("section") || main;
+    const actions = Array.from(
+      actionScope?.querySelectorAll("button, a[role='button'], [role='button'], a[href*='/preload/custom-invite/']") || [],
+    ).filter((element) => isElementVisible(element) && !element.closest("aside"));
+    const labels = actions.flatMap((element) => [
+      element.getAttribute("aria-label"),
+      element.textContent,
+    ]).map((label) => String(label || "").replace(/\s+/g, " ").trim().slice(0, 100));
+    return {
+      mainPresent: Boolean(main),
+      targetHeadingVisible: Boolean(heading),
+      visibleActionCount: Math.min(actions.length, 999),
+      invitationLinkPresent: actions.some((element) =>
+        /\/preload\/custom-invite\//i.test(element.getAttribute("href") || ""),
+      ),
+      moreActionPresent: labels.some((label) => /^(?:More|More actions|More options)$/i.test(label)),
+      pendingActionPresent: labels.some((label) => /^(?:Pending|Sent|Invitation sent|Request sent)$/i.test(label)),
+      uiLanguage: String(document.documentElement?.lang || "").slice(0, 20),
     };
   }
 
@@ -2346,7 +2379,7 @@
     const text = button.textContent?.trim() || "";
     const hasOverflowIcon = Boolean(
       button.querySelector(
-        "svg[data-test-icon*='overflow'], svg[data-test-icon*='ellipsis'], use[href*='overflow'], use[href*='ellipsis']",
+        "svg[data-test-icon*='overflow'], svg[data-test-icon*='ellipsis'], svg[id*='overflow'], svg[id*='ellipsis'], use[href*='overflow'], use[href*='ellipsis']",
       ),
     );
     return (
@@ -2749,15 +2782,18 @@
     if (!targetHeading) return "unavailable";
     // Stop at the first profile action container. Never interpret a recommendation,
     // post, or About paragraph elsewhere in main as this person's relationship.
-    let scope = targetHeading.parentElement;
+    const profileSection = targetHeading.closest?.("section");
+    let scope = profileSection && (!main.contains || main.contains(profileSection))
+      ? profileSection
+      : targetHeading.parentElement;
     let actions = [];
     let degree = "";
     while (scope && scope !== main) {
-      const badges = Array.from(scope.querySelectorAll(".dist-value, .distance-badge, .distance-badge span, [class*='distance-badge'], span"));
-      const badge = badges.find(el => isElementVisible(el) && /^(?:1st|2nd|3rd\+?)$/.test(el.textContent?.trim() || ""));
-      if (!degree && badge) degree = badge.textContent.trim();
+      const badges = Array.from(scope.querySelectorAll(".dist-value, .distance-badge, .distance-badge span, [class*='distance-badge'], span, p"));
+      const badge = badges.find(el => isElementVisible(el) && /^(?:·\s*)?(?:1st|2nd|3rd\+?)$/.test(el.textContent?.trim() || ""));
+      if (!degree && badge) degree = badge.textContent.trim().replace(/^·\s*/, "");
       actions = Array.from(scope.querySelectorAll("button, a[role='button'], [role='button']")).filter(el => isElementVisible(el) && !el.closest("aside"));
-      if (actions.length) break;
+      if (actions.length || scope === profileSection) break;
       scope = scope.parentElement;
     }
     if (!scope || scope === main) return "unavailable";

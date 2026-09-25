@@ -67,7 +67,7 @@ const { CodexAppServer, classifyLanguageLocally } = await import(
   pathToFileURL(gatewayClientPath).href
 );
 
-assert.equal(manifest.version, "0.10.44");
+assert.equal(manifest.version, "0.10.45");
 assert.match(scoutSource,/\["english", "non_english"\]\.includes\(\s*String\(lead\.profile_language_status/,'an uncertain profile read must not be cached for 90 days');
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",
@@ -501,6 +501,20 @@ assert.equal(
   false,
   "A recommendation card for another person must not match the current profile.",
 );
+assert.match(contentSource, /svg\[id\*='overflow'\]/, "Recognize LinkedIn's current overflow icon even when More is translated.");
+const moreIconContext = {};
+vm.runInNewContext(
+  contentSource.slice(
+    contentSource.indexOf("function isProfileMoreButton"),
+    contentSource.indexOf("function toolbarReferencesCurrentProfile"),
+  ),
+  moreIconContext,
+);
+assert.equal(moreIconContext.isProfileMoreButton({
+  getAttribute: () => "Más",
+  textContent: "",
+  querySelector: selector => selector.includes("svg[id*='overflow']") ? {} : null,
+}), true, "Current overflow icon identifies the target More control without relying on English text.");
 let directConnectClicks = 0;
 const directConnectRetryContext = {
   addLog() {},

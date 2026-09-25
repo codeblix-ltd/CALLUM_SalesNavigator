@@ -497,6 +497,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
   ]);
   let resumeExistingLead = runContext.resume;
   let consecutiveUnreadableLeads = 0;
+  let consecutiveConnectionStateFailures = 0;
   if (specificLeadId && pendingConnectionLeadIds.has(specificLeadId)) {
     progress.processedLeads = Math.max(progress.processedLeads, 1);
   }
@@ -557,6 +558,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
         progress.requestsSent += 1;
       }
       consecutiveUnreadableLeads = 0;
+      consecutiveConnectionStateFailures = 0;
     } catch (error) {
       if (isWorkflowControlError(error)) throw error;
       const deferUnreadableLead = canDeferUnreadableLead(error);
@@ -571,6 +573,7 @@ async function runDailyWorkflow(specificLeadId, runContext) {
       }
       const message = cleanError(error);
       if (deferUnreadableLead || error?.requestOutcomeUncertain === true) {
+        consecutiveConnectionStateFailures = 0;
         // Keep the assignment and confirmed comment receipts. A known-safe
         // page failure can be retried later; an unconfirmed invitation is
         // held from *all* automatic retries until Pending is reviewed.
@@ -582,6 +585,9 @@ async function runDailyWorkflow(specificLeadId, runContext) {
         if (!deferUnreadableLead) consecutiveUnreadableLeads = 0;
       } else {
         consecutiveUnreadableLeads = 0;
+        consecutiveConnectionStateFailures = error?.code === "CONNECTION_STATE_UNCONFIRMED"
+          ? consecutiveConnectionStateFailures + 1
+          : 0;
         // Stop a service/quota failure here instead of burning through every lead.
         if (!error?.requestSubmitted && isRecoverableServiceError(error)) throw error;
         const requestSent = error?.requestSubmitted === true;
@@ -675,6 +681,11 @@ async function runDailyWorkflow(specificLeadId, runContext) {
       });
       interruption.message = "LinkedIn did not load on two leads in a row. Both were saved for later. Check that LinkedIn opens normally, then press Resume.";
       throw interruption;
+    }
+    if (consecutiveConnectionStateFailures >= 2) {
+      throw new LinkedInAccessInterruptionError("connection_actions_unavailable", {
+        stage: "Connection actions unavailable on two profiles",
+      });
     }
     dashboard = await ScoutApi.authenticatedAction("scouts:getDashboard");
     if (specificLeadId) break;
@@ -836,6 +847,8 @@ class LinkedInAccessInterruptionError extends Error {
     super(
       kind === "page_unavailable"
         ? "The LinkedIn page could not be read. This lead was kept safe; check that LinkedIn opens normally."
+        : kind === "connection_actions_unavailable"
+        ? "LinkedIn did not show usable connection actions on two profiles. Scout paused to avoid checking more leads. Check whether Connect is visible on LinkedIn, then report the issue with a screenshot of the profile actions."
         : kind === "profile_link"
         ? "LinkedIn did not provide a verified profile link. Scout paused without skipping this lead. Please use Report Bug so support can check the link."
         : kind === "checkpoint"
@@ -2504,9 +2517,19 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
         );
       }
       if (connectionInspection.result.connectionState !== "connected") {
-        throw new Error(
+        const issue = new Error(
           "The connection state could not be confirmed. Nothing was sent for this lead.",
         );
+        issue.code = "CONNECTION_STATE_UNCONFIRMED";
+        await ScoutApi.authenticatedAction("scouts:recordConnectionInspectionFailure", {
+          leadId: lead.id,
+          extensionVersion: chrome.runtime.getManifest().version,
+          connectionState: connectionInspection.result.connectionState || "unavailable",
+          diagnostics: connectionInspection.result.diagnostics || null,
+        }).catch((diagnosticError) => {
+          console.warn("Could not record connection inspection diagnostics:", cleanError(diagnosticError));
+        });
+        throw issue;
       }
       const fallback = await collectKnownConnectionContact(
         lead,
@@ -2819,6 +2842,7 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
       ).catch(() => {});
     }
     const workflowError = new Error(message);
+    workflowError.code = error?.code || null;
     workflowError.requestSubmitted = requestSubmitted;
     workflowError.persistencePending = connectionPersistencePending;
     workflowError.profileUrl = resolvedProfileUrl;

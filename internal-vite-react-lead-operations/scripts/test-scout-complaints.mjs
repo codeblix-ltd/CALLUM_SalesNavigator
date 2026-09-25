@@ -14,11 +14,45 @@ function detect({ degree = "3rd", label = "Message", unrelated = "1st Connected"
   return sandbox.findVisibleConnectionState("Chieh Wang");
 }
 assert.equal(detect(), "not_connected", "3rd degree must not inherit a recommendation's 1st-degree status");
+assert.equal(detect({ degree: "· 3rd" }), "not_connected", "LinkedIn's paragraph badge with a bullet must be recognized");
+assert.equal(detect({ degree: "· 1st" }), "connected", "a live-style first-degree paragraph must not be misread as unknown");
 assert.equal(detect({ degree: "2nd", label: "Connected" }), "not_connected");
 assert.equal(detect({ degree: "1st" }), "connected");
 assert.equal(detect({ degree: "", unrelated: "Connected with teams since 1st January" }), "unavailable", "biography text is not connection evidence");
 assert.equal(detect({ label: "Pending" }), "pending");
 assert.equal(detect({ target: "Someone else" }), "unavailable", "require the intended profile heading");
+const affiliationAction = { getAttribute: () => "GIC", textContent: "GIC", closest: () => null };
+const pendingAction = { getAttribute: () => "Pending", textContent: "Pending", closest: () => null };
+const nestedScope = { querySelectorAll: selector => selector.includes("span") ? [] : [affiliationAction] };
+const introSection = { querySelectorAll: selector => selector.includes("span") ? [{ textContent: "· 2nd" }] : [affiliationAction, pendingAction] };
+const nestedHeading = { textContent: "Karen Er", parentElement: nestedScope, closest: () => introSection };
+const nestedMain = { querySelectorAll: () => [nestedHeading], contains: () => true };
+nestedScope.parentElement = introSection;
+introSection.parentElement = nestedMain;
+const nestedEnv = { document: { querySelector: () => nestedMain }, isElementVisible: () => true, personNamesMatch: (a, b) => a === b };
+vm.runInNewContext(fn, nestedEnv);
+assert.equal(nestedEnv.findVisibleConnectionState("Karen Er"), "pending", "affiliation controls before the action row must not hide Pending");
+
+const diagnosticsSource = source.slice(
+  source.indexOf("function connectionActionDiagnostics"),
+  source.indexOf("async function runConnectionNoteProfileExtraction"),
+);
+const profileHeading = { textContent: "Karen Er", closest: () => diagnosticMain };
+const connectLink = { textContent: "Connect", getAttribute: name => name === "aria-label" ? "Invite Karen Er to connect" : name === "href" ? "/preload/custom-invite/?vanityName=karen-er-3121782" : null, closest: () => null };
+const moreButton = { textContent: "", getAttribute: name => name === "aria-label" ? "More" : null, closest: () => null };
+const diagnosticMain = { querySelectorAll: selector => selector.includes("h1") ? [profileHeading] : [connectLink, moreButton] };
+const diagnosticEnv = { document: { querySelector: () => diagnosticMain, documentElement: { lang: "en" } }, isElementVisible: () => true, personNamesMatch: (a, b) => a === b };
+vm.runInNewContext(diagnosticsSource, diagnosticEnv);
+const actionSnapshot = diagnosticEnv.connectionActionDiagnostics("Karen Er");
+assert.equal(actionSnapshot.targetHeadingVisible, true);
+assert.equal(actionSnapshot.invitationLinkPresent, true);
+assert.equal(actionSnapshot.moreActionPresent, true);
+assert.equal(actionSnapshot.uiLanguage, "en");
+assert.equal(actionSnapshot.visibleActionCount, 2);
+diagnosticEnv.document.querySelector = () => null;
+const missingActions = diagnosticEnv.connectionActionDiagnostics("Karen Er");
+assert.equal(missingActions.mainPresent, false);
+assert.equal(missingActions.visibleActionCount, 0);
 
 const client = readFileSync(new URL("../chrome-extension/convex-client.js", import.meta.url), "utf8");
 let now = 0, submissions = 0;

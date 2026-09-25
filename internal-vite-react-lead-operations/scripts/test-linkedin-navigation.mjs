@@ -276,7 +276,7 @@ assert.match(background,/collectAcceptedContact\(lead, runContext\)\.catch[\s\S]
 // A one-off unreadable lead is saved for the Retry failed leads flow and the
 // next lead proceeds. Repeated unreadable pages indicate a wider outage and
 // pause after two leads instead of exhausting the whole queue.
-function leadRecoveryHarness(failingIds,uncertainRequest=false) {
+function leadRecoveryHarness(failingIds,uncertainRequest=false,failureMode='page') {
   const leads=[{id:'first',fullName:'First Lead',linkedinUrl:opaque},{id:'second',fullName:'Second Lead',linkedinUrl:canonical},{id:'third',fullName:'Third Lead',linkedinUrl:opaque}];
   const calls=[],states=[],checkpoints=[];
   const progress={autoWithdrawComplete:true,reviewComplete:true,review:{},targetRequests:1,requestsSent:0,processedLeads:0,timedLeads:0,results:[],failedLeads:[]};
@@ -300,7 +300,9 @@ function leadRecoveryHarness(failingIds,uncertainRequest=false) {
   vm.runInNewContext(errorSource+daily+'\nthis.makePageError=(details)=>new LinkedInAccessInterruptionError("page_unavailable",details);',env);
   env.runLeadWorkflow=async lead=>{
     if(failingIds.includes(lead.id)){
-      const error=env.makePageError({stage:`${lead.fullName} recent activity`,pageUrl:`${lead.linkedinUrl}/recent-activity/all/`});
+      const error=failureMode==='connection_state'
+        ? Object.assign(new Error('The connection state could not be confirmed. Nothing was sent for this lead.'),{code:'CONNECTION_STATE_UNCONFIRMED'})
+        : env.makePageError({stage:`${lead.fullName} recent activity`,pageUrl:`${lead.linkedinUrl}/recent-activity/all/`});
       error.requestOutcomeUncertain=uncertainRequest;
       throw error;
     }
@@ -322,6 +324,10 @@ await assert.rejects(wideFailure.env.runDailyWorkflow(null,{resume:false,progres
 assert.equal(wideFailure.progress.failedLeads.length,2);
 assert.equal(wideFailure.progress.processedLeads,2);
 assert.equal(wideFailure.claimed,2,'do not consume a third lead when LinkedIn may be broadly unavailable');
+const missingConnectionActions=leadRecoveryHarness(['first','second','third'],false,'connection_state');
+await assert.rejects(missingConnectionActions.env.runDailyWorkflow(null,{resume:false,progress:missingConnectionActions.progress}),/two profiles/i);
+assert.equal(missingConnectionActions.progress.processedLeads,2);
+assert.equal(missingConnectionActions.claimed,2,'do not burn a third lead when profile actions fail across the account');
 const uncertainRequest=leadRecoveryHarness(['first'],true);
 await uncertainRequest.env.runDailyWorkflow(null,{resume:false,progress:uncertainRequest.progress});
 assert.equal(uncertainRequest.calls.filter(call=>call.path==='scouts:updateLeadStatus').length,1);
@@ -360,6 +366,20 @@ const leadEnv={...fallbackEnv,Math,cleanError:e=>e.message,encodeURIComponent,
 vm.runInNewContext(errorSource+between(background,'async function runLeadWorkflow','function uniqueLeads'),leadEnv);
 await assert.rejects(leadEnv.runLeadWorkflow(lead,{includeNote:true,linkedinPremium:true},{}, {},progress),error=>error===fallbackEnv.interruption);
 assert.deepEqual(leadCalls,['scouts:recordProfileVisit','scouts:reportError'],'outer note catch must not continue to send a request');
+const inspectionCalls=[];
+const inspectionEnv={...leadEnv,
+  chrome:{storage:{local:{get:async()=>({})}},runtime:{getManifest:()=>({version:'0.10.45'})},tabs:{remove:async()=>{}}},
+  getRequestedWorkflowControl:()=>null,sendAutomationMessageToTab:async()=>({ok:true}),
+  ScoutApi:{getAuth:async()=>({username:'rymaelie'}),authenticatedAction:async(path,args)=>{inspectionCalls.push({path,args});}},
+  inspectConnectionStatus:async()=>({ok:true,result:{checked:true,connectAvailable:false,connectionState:'unavailable',diagnostics:{mainPresent:true,targetHeadingVisible:true,visibleActionCount:0,invitationLinkPresent:false,moreActionPresent:false,pendingActionPresent:false,uiLanguage:'en'}}}),
+};
+vm.runInNewContext(errorSource+between(background,'async function runLeadWorkflow','function uniqueLeads'),inspectionEnv);
+await assert.rejects(inspectionEnv.runLeadWorkflow({...lead,status:'engaged'},{includeNote:false,linkedinPremium:false},{engagementRemaining:0},{},progress),error=>{
+  assert.equal(error.code,'CONNECTION_STATE_UNCONFIRMED','workflow error wrapping must keep the circuit-breaker code');
+  return true;
+});
+assert(inspectionCalls.some(call=>call.path==='scouts:recordConnectionInspectionFailure'&&call.args.diagnostics.visibleActionCount===0));
+assert(!inspectionCalls.some(call=>call.path==='scouts:reserveConnectionRequest'),'no invitation may be attempted without confirmed Connect');
 const attemptedActions=[];
 const attemptedEnv={...leadEnv,
   UNCERTAIN_INVITATION_ERROR:uncertainInvitationMessage,
