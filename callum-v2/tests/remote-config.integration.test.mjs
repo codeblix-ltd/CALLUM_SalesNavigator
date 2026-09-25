@@ -11,7 +11,7 @@ test('server hotfix, rollback and operator kill apply to pending commands', {ski
   let version=null;
   try {
     await s.seed();await s.createOperator(op,'dev',1);
-    const issued=await s.createInstallation(op,'2.0.0','68f5971a'),installation=await s.installation(issued.token);
+    const issued=await s.createInstallation(op,'2.1.0','68f5971a'),installation=await s.installation(issued.token);
     const before=await s.createRun({operatorId:op,mode:'shadow',count:1});
     const draft=await s.createConfig({...DEFAULT_CONFIG,connect:['button[data-callum-hotfix="connect"]']});version=Number(draft.version);
     await s.activateConfig(version,'dev');

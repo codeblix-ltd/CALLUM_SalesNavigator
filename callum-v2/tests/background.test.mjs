@@ -8,7 +8,7 @@ const files={};for(const name of ['build-info.js','config.js','background.js'])f
 function worker({storage,fetchImpl,tabQuery=async()=>[]}){
   let listener,fetchCount=0,tabCount=0;
   const sandbox={setTimeout,clearTimeout,URL,Date,fetch:async(...args)=>{fetchCount++;return fetchImpl(...args)},
-    chrome:{storage:{local:{get:storage}},alarms:{create(){},onAlarm:{addListener(){}}},runtime:{id:'test',getManifest:()=>({version:'2.0.0'}),
+    chrome:{storage:{local:{get:storage}},alarms:{create(){},onAlarm:{addListener(){}}},runtime:{id:'test',getManifest:()=>({version:'2.1.0'}),
       onInstalled:{addListener(){}},onStartup:{addListener(){}},onMessage:{addListener(fn){listener=fn}}},tabs:{query:async()=>{tabCount++;return tabQuery()},create:async()=>{tabCount++;return {id:1}},onUpdated:{addListener(){},removeListener(){}},onRemoved:{addListener(){},removeListener(){}}}}};
   sandbox.globalThis=sandbox;vm.createContext(sandbox);
   sandbox.importScripts=(...names)=>{for(const name of names)vm.runInContext(files[name],sandbox)};

@@ -22,7 +22,7 @@ async function api(endpoint, token, path, payload = null) {
   return data;
 }
 function assertCommand(c, configVersion) {
-  if (!c || !['INSPECT_PROFILE', 'EXECUTE_CONNECT'].includes(c.type) || c.protocolVersion !== CALLUM_V2_BUILD.protocol || c.configVersion !== configVersion) throw new Error('CONFIG_INCOMPATIBLE');
+  if (!c || !['INSPECT_PROFILE', 'EXECUTE_CONNECT', 'INSPECT_COMMENT_STATE', 'EXTRACT_CONTACT_INFO'].includes(c.type) || c.protocolVersion !== CALLUM_V2_BUILD.protocol || c.configVersion !== configVersion) throw new Error('CONFIG_INCOMPATIBLE');
   const url = new URL(c.targetUrl);
   if (url.protocol !== 'https:' || !['linkedin.com','www.linkedin.com'].includes(url.hostname) || !/^\/in\/[a-z0-9_%.-]+\/?$/i.test(url.pathname)) throw new Error('PROFILE_MISMATCH');
   if (Date.parse(c.expiresAt) <= Date.now() || !c.id || !c.actionIntentId && c.type === 'EXECUTE_CONNECT') throw new Error('COMMAND_EXPIRED');

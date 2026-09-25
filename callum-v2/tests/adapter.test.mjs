@@ -77,3 +77,41 @@ test('opening an invite dialog without a Send button is not a submission',async(
   assert.equal(result.status,'not_submitted');
   assert.equal(result.facts.diagnosticCode,'ACTION_UNAVAILABLE');
 });
+test('recent post observation returns bounded URLs without post text',async()=>{
+  const url='https://www.linkedin.com/feed/update/urn:li:activity:123456789';
+  const html=`<main><section class="pv-top-card"><h1>QA Test</h1></section>
+    <section data-urn="urn:li:activity:123456789"><a href="${url}?tracking=1">Post</a><button aria-label="Comment">Comment</button><p>Private post content must not leave the page</p></section></main>`;
+  const {adapter}=fixture(html);
+  const facts=await adapter.inspectCommentState(DEFAULT_CONFIG,{...command,payload:{...command.payload,postUrl:url}});
+  assert.equal(facts.profileMatched,true);
+  assert.equal(facts.targetPostPresent,true);
+  assert.equal(facts.commentBoxAvailable,true);
+  assert.deepEqual(Array.from(facts.postUrls),[url]);
+  assert.equal(JSON.stringify(facts).includes('Private post content'),false);
+  const none=fixture('<main><section class="pv-top-card"><h1>QA Test</h1></section></main>');
+  assert.equal((await none.adapter.inspectCommentState(DEFAULT_CONFIG,command)).diagnosticCode,'NO_RECENT_POSTS');
+  const cards=Array.from({length:6},(_,i)=>`<section data-urn="urn:li:activity:${100+i}"><a href="https://www.linkedin.com/feed/update/urn:li:activity:${100+i}">Post</a>${i<5?'<button aria-label="Comment">Comment</button>':''}</section>`).join('');
+  const sixth=fixture(`<main><section class="pv-top-card"><h1>QA Test</h1></section>${cards}</main>`);
+  const late=await sixth.adapter.inspectCommentState(DEFAULT_CONFIG,{...command,payload:{...command.payload,postUrl:'https://www.linkedin.com/feed/update/urn:li:activity:105'}});
+  assert.equal(late.targetPostPresent,true);
+  assert.equal(late.commentBoxAvailable,false);
+  assert.equal(late.postUrls.length,5);
+  assert.equal(late.postUrls.includes('https://www.linkedin.com/feed/update/urn:li:activity:105'),true);
+});
+test('contact info is identity and first-degree scoped to the target dialog',async()=>{
+  const html='<main><section class="pv-top-card"><h1>QA Test</h1><span>· 1st</span><a id="contact" href="/in/qa-test/overlay/contact-info/">Contact info</a></section></main>';
+  const {adapter,document}=fixture(html);
+  document.getElementById('contact').click=()=>{
+    const dialog=document.createElement('div');dialog.setAttribute('role','dialog');
+    dialog.innerHTML='<h2>Contact info</h2><a href="mailto:qa@example.com?subject=x">Email</a>';
+    document.body.append(dialog);
+  };
+  const facts=await adapter.extractContactInfo(DEFAULT_CONFIG,command);
+  assert.equal(facts.profileMatched,true);
+  assert.equal(facts.contactEmail,'qa@example.com');
+  assert.equal(facts.contactInfoOpened,true);
+  const second=fixture(html.replace('· 1st','· 2nd'));
+  assert.equal((await second.adapter.extractContactInfo(DEFAULT_CONFIG,command)).diagnosticCode,'ACTION_UNAVAILABLE');
+  const wrong=fixture(html.replace('/in/qa-test/overlay/','/in/another/overlay/'));
+  assert.equal((await wrong.adapter.extractContactInfo(DEFAULT_CONFIG,command)).diagnosticCode,'PROFILE_MISMATCH');
+});

@@ -1,9 +1,10 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { assertCommand, profileKeyFromUrl, PROTOCOL_VERSION, sanitizeResult } from '../../packages/protocol/index.mjs';
+import { assertCommand, linkedInPostUrl, profileKeyFromUrl, PROTOCOL_VERSION, sanitizeResult } from '../../packages/protocol/index.mjs';
 import { decideObservation, commandAfterLeaseExpiry, isPayable } from '../../packages/domain/state.mjs';
 import { DEFAULT_CONFIG, validateConfig } from '../../packages/linkedin-config/index.mjs';
 
 const hash = x => createHash('sha256').update(x).digest('hex');
+const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const versionAtLeast = (actual, minimum) => {
   const a = String(actual).split('.').map(Number), b = String(minimum).split('.').map(Number);
   for (let i=0;i<3;i++) {
@@ -93,7 +94,8 @@ export class ControlPlane {
         AND l.linkedin_url LIKE 'https://%linkedin.com/in/%' ORDER BY l.id LIMIT $3`, [leadId, niche, count]);
       if (catalog.rows.length === 0) throw new Error('LEADS_NOT_FOUND');
       if (mode === 'live_canary' && profileKeyFromUrl(catalog.rows[0].linkedin_url) !== process.env.V2_QA_PROFILE_KEY.toLowerCase()) throw new Error('QA_RECIPIENT_REQUIRED');
-      const config = await this.activeConfig(q, { cohort: op.cohort, extension_version: '2.0.0' });
+      if (mode === 'live_canary' && !catalog.rows[0].full_name?.trim()) throw new Error('QA_RECIPIENT_NAME_REQUIRED');
+      const config = await this.activeConfig(q, { cohort: op.cohort, extension_version: '2.1.0' });
       const run = (await q.query(`INSERT INTO callum_v2.runs(operator_id,installation_id,mode,config_version)
         VALUES ($1,$2,$3,$4) RETURNING id,operator_id,mode,status,config_version`, [operatorId, installationId, mode, config.version])).rows[0];
       let selected = 0;
@@ -109,6 +111,32 @@ export class ControlPlane {
       }
       await this.event(q, { event_key: `run:${run.id}:started`, event_type: 'run_started', operator_id: operatorId, run_id: run.id, config_version: Number(config.version), details: { mode } });
       return { ...run, selected };
+    });
+  }
+
+  async queueInspection({ runId, leadId, type, postUrl = null }) {
+    if (!uuid.test(runId || '') || !uuid.test(leadId || '') || !['INSPECT_COMMENT_STATE', 'EXTRACT_CONTACT_INFO'].includes(type)) throw new Error('INSPECTION_INVALID');
+    if (postUrl !== null && typeof postUrl !== 'string') throw new Error('INSPECTION_TARGET_INVALID');
+    const targetPost = postUrl === null ? null : linkedInPostUrl(postUrl);
+    if (postUrl !== null && !targetPost) throw new Error('INSPECTION_TARGET_INVALID');
+    return this.db.tx(async q => {
+      const { rows } = await q.query(`SELECT r.*,l.profile_key,l.linkedin_url,l.full_name,o.cohort
+        FROM callum_v2.runs r JOIN callum_v2.run_leads l ON l.run_id=r.id AND l.lead_id=$2
+        JOIN callum_v2.operators o ON o.id=r.operator_id AND o.enabled=true
+        WHERE r.id=$1 AND r.status='running' FOR UPDATE OF r`, [runId,leadId]);
+      const run=rows[0];
+      if (!run) throw new Error('RUN_NOT_FOUND');
+      if (type === 'EXTRACT_CONTACT_INFO' && (run.mode !== 'live_canary' || !process.env.V2_QA_PROFILE_KEY || run.profile_key !== process.env.V2_QA_PROFILE_KEY.toLowerCase())) throw new Error('QA_RECIPIENT_REQUIRED');
+      const config=await this.activeConfig(q,{cohort:run.cohort,extension_version:'2.1.0'});
+      const required=type === 'EXTRACT_CONTACT_INFO' ? ['contactLink','contactDialog','contactEmail'] : ['postScope','postLink','commentButton'];
+      if (required.some(key=>!config.config[key]?.length) || (type === 'EXTRACT_CONTACT_INFO' && !config.config.labels.contactInfo?.length)) throw new Error('CONFIG_INCOMPATIBLE');
+      const lead={id:leadId,profile_key:run.profile_key,linkedin_url:run.linkedin_url};
+      const payload={expectedName:run.full_name,postUrl:targetPost};
+      const command=await this.enqueue(q,{...run,config_version:config.version},lead,type,
+        `inspect:${type}:${runId}:${leadId}:${config.version}:${hash(targetPost||'').slice(0,12)}`,null,payload);
+      await this.event(q,{event_key:`command:${command.id}:requested`,event_type:'observation_requested',
+        operator_id:run.operator_id,run_id:runId,lead_id:leadId,command_id:command.id,config_version:Number(config.version)});
+      return { id:command.id,type,status:command.status,configVersion:Number(config.version) };
     });
   }
 
@@ -220,6 +248,16 @@ export class ControlPlane {
       if (!['leased', 'uncertain'].includes(c.status)) throw new Error('COMMAND_NOT_ACTIVE');
       const facts = result.facts;
       if (facts.profileKey !== c.target_profile_key.toLowerCase()) facts.profileMatched = false;
+      if (c.type !== 'EXTRACT_CONTACT_INFO' || c.mode !== 'live_canary' || result.status !== 'observed' ||
+        !process.env.V2_QA_PROFILE_KEY || c.target_profile_key !== process.env.V2_QA_PROFILE_KEY.toLowerCase() ||
+        !facts.profileMatched || !facts.pageReady || !facts.contactInfoOpened) facts.contactEmail = null;
+      if (c.type !== 'INSPECT_COMMENT_STATE' || result.status !== 'observed' || !facts.profileMatched || !facts.pageReady) {
+        facts.postUrls=[];facts.targetPostPresent=false;facts.commentBoxAvailable=false;
+      } else {
+        const targetPost=linkedInPostUrl(c.payload?.postUrl);
+        facts.targetPostPresent=!!targetPost && facts.postUrls.includes(targetPost);
+        if (!facts.postUrls.length || (targetPost && !facts.targetPostPresent)) facts.commentBoxAvailable=false;
+      }
       await q.query('INSERT INTO callum_v2.observations(command_id,run_id,lead_id,facts,diagnostic_code) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (command_id) DO NOTHING', [c.id,c.run_id,c.lead_id,facts,facts.diagnosticCode]);
       await q.query("UPDATE callum_v2.command_attempts SET finished_at=now(),outcome=$2 WHERE command_id=$1 AND finished_at IS NULL", [c.id,result.status]);
       await q.query("UPDATE callum_v2.commands SET status='completed',result=$2,updated_at=now() WHERE id=$1", [c.id,result]);
@@ -228,6 +266,14 @@ export class ControlPlane {
         extension_version: installation.extension_version, build_sha: installation.build_sha, protocol_version: PROTOCOL_VERSION,
         config_version: Number(c.config_version), diagnostic_code: facts.diagnosticCode });
       if (c.type === 'EXECUTE_CONNECT') return this.finishAction(q, installation, c, result);
+      if (c.type === 'INSPECT_COMMENT_STATE' || c.type === 'EXTRACT_CONTACT_INFO') {
+        await this.event(q,{event_key:`command:${c.id}:inspection`,event_type:c.type === 'INSPECT_COMMENT_STATE' ? 'comment_state_observed' : facts.contactEmail ? 'contact_info_confirmed' : 'contact_info_observed',
+          operator_id:c.operator_id,installation_id:installation.id,run_id:c.run_id,lead_id:c.lead_id,command_id:c.id,
+          extension_version:installation.extension_version,build_sha:installation.build_sha,protocol_version:PROTOCOL_VERSION,
+          config_version:Number(c.config_version),diagnostic_code:facts.diagnosticCode});
+        if (!facts.profileMatched || !facts.pageReady) await this.diagnostic(q,installation,c,'inspection',facts.diagnosticCode);
+        return { duplicate:false,stage:c.stage };
+      }
       if (c.payload?.reconcile === true && c.action_intent_id) {
         const intent = (await q.query('SELECT state FROM callum_v2.action_intents WHERE id=$1', [c.action_intent_id])).rows[0];
         if (intent?.state === 'confirmed' || intent?.state === 'cancelled') return { duplicate: false, stage: c.stage };
@@ -341,7 +387,7 @@ export class ControlPlane {
       ON CONFLICT (flag_key) DO UPDATE SET disabled=excluded.disabled,updated_at=now()`, [flagKey, disabled === true]);
   }
 
-  async createConfig(config, minVersion = '2.0.0') {
+  async createConfig(config, minVersion = '2.1.0') {
     const clean = validateConfig(config);
     if (!/^2\.\d+\.\d+$/.test(minVersion)) throw new Error('CONFIG_INVALID');
     const { rows } = await this.db.query(`INSERT INTO callum_v2.remote_configs(version,status,min_extension_version,rollout_percent,config,checksum)
@@ -375,6 +421,12 @@ export class ControlPlane {
       intents: 'SELECT id,run_id,operator_id,lead_id,action_type,state,updated_at FROM callum_v2.action_intents ORDER BY updated_at DESC LIMIT 100',
       events: 'SELECT id,event_type,operator_id,run_id,lead_id,command_id,action_intent_id,config_version,diagnostic_code,created_at FROM callum_v2.events ORDER BY created_at DESC LIMIT 100',
       diagnostics: 'SELECT operator_id,installation_id,run_id,lead_id,command_id,action_intent_id,stage,code,created_at FROM callum_v2.support_diagnostics ORDER BY created_at DESC LIMIT 100',
+      observations: `SELECT o.run_id,o.lead_id,o.command_id,c.type,o.diagnostic_code,
+        o.facts->>'profileMatched' AS profile_matched,
+        o.facts->>'contactInfoOpened' AS contact_info_opened,
+        (o.facts->>'contactEmail') IS NOT NULL AS contact_email_present,
+        o.created_at FROM callum_v2.observations o JOIN callum_v2.commands c ON c.id=o.command_id
+        ORDER BY o.created_at DESC LIMIT 100`,
       configs: 'SELECT version,status,min_extension_version,rollout_percent,checksum,created_at FROM callum_v2.remote_configs ORDER BY version DESC LIMIT 30',
       flags: 'SELECT flag_key,disabled,updated_at FROM callum_v2.feature_flags ORDER BY flag_key',
       pay: 'SELECT operator_id,run_id,lead_id,source_event_id,pay_rule_version,amount_minor,currency,status,created_at FROM callum_v2.pay_ledger ORDER BY created_at DESC LIMIT 100'

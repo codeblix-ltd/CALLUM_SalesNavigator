@@ -5,7 +5,8 @@ export const DIAGNOSTIC_CODES = new Set([
   'OK', 'PROFILE_MISMATCH', 'PAGE_HYDRATING', 'ACTION_UNAVAILABLE', 'ALREADY_PENDING',
   'ALREADY_CONNECTED', 'BACKEND_UNAVAILABLE', 'TAB_CLOSED', 'NAVIGATION_FAILED',
   'CONFIG_INVALID', 'CONFIG_INCOMPATIBLE', 'STORAGE_UNAVAILABLE', 'POSTCONDITION_UNKNOWN',
-  'COMMAND_EXPIRED', 'KILL_SWITCH', 'UNEXPECTED_BROWSER_STATE'
+  'COMMAND_EXPIRED', 'KILL_SWITCH', 'UNEXPECTED_BROWSER_STATE', 'NO_RECENT_POSTS',
+  'CONTACT_INFO_EMPTY'
 ]);
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -34,8 +35,19 @@ export function profileKeyFromUrl(raw) {
   return decodeURIComponent(new URL(raw).pathname.split('/')[2]).toLowerCase();
 }
 
+export function linkedInPostUrl(raw) {
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'https:' || !['www.linkedin.com', 'linkedin.com'].includes(url.hostname)) return null;
+    if (!/^\/(?:feed\/update\/urn:li:activity:\d+|posts\/[a-z0-9_%.-]+)\/?$/i.test(url.pathname)) return null;
+    return `https://www.linkedin.com${url.pathname.replace(/\/$/, '')}`;
+  } catch { return null; }
+}
+
 export function sanitizeFacts(raw) {
   const x = raw && typeof raw === 'object' ? raw : {};
+  const postUrls = Array.isArray(x.postUrls) ? [...new Set(x.postUrls.map(linkedInPostUrl).filter(Boolean))].slice(0, 5) : [];
+  const contactEmail = typeof x.contactEmail === 'string' && x.contactEmail.length <= 254 && /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(x.contactEmail) ? x.contactEmail.toLowerCase() : null;
   return {
     profileMatched: x.profileMatched === true,
     profileKey: profile.test(x.profileKey || '') ? x.profileKey.toLowerCase() : null,
@@ -44,6 +56,11 @@ export function sanitizeFacts(raw) {
     pendingVisible: x.pendingVisible === true,
     connectedVisible: x.connectedVisible === true,
     pageReady: x.pageReady === true,
+    postUrls,
+    targetPostPresent: x.targetPostPresent === true,
+    commentBoxAvailable: x.commentBoxAvailable === true,
+    contactInfoOpened: x.contactInfoOpened === true,
+    contactEmail,
     diagnosticCode: DIAGNOSTIC_CODES.has(x.diagnosticCode) ? x.diagnosticCode : 'UNEXPECTED_BROWSER_STATE'
   };
 }

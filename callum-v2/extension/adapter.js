@@ -83,5 +83,69 @@ globalThis.CallumAdapter = (() => {
     }
     return { status: 'uncertain', facts: { ...before, connectAvailable: false, diagnosticCode: 'POSTCONDITION_UNKNOWN' } };
   }
-  return { observe, connect, key };
+  const postUrl = raw => {
+    try {
+      const url=new URL(raw,location.href);
+      if(url.protocol!=='https:' || !['linkedin.com','www.linkedin.com'].includes(url.hostname))return null;
+      if(!/^\/(?:feed\/update\/urn:li:activity:\d+|posts\/[a-z0-9_%.-]+)\/?$/i.test(url.pathname))return null;
+      return `https://www.linkedin.com${url.pathname.replace(/\/$/,'')}`;
+    }catch{return null;}
+  };
+  async function inspectCommentState(config, command) {
+    const ctx=context(config,command);
+    if(!ctx.matched)return {profileMatched:false,profileKey:ctx.currentKey,pageReady:!!ctx.heading,diagnosticCode:'PROFILE_MISMATCH'};
+    if(!ctx.scope || !config.postScope || !config.postLink || !config.commentButton)return {profileMatched:true,profileKey:ctx.currentKey,pageReady:false,diagnosticCode:'PAGE_HYDRATING'};
+    const nodes=[...new Set(config.postScope.flatMap(selector=>{try{return [...document.querySelectorAll(selector)].filter(visible)}catch{return []}}))].slice(0,20);
+    const postUrls=[];let commentBoxAvailable=false;
+    const target=postUrl(command.payload?.postUrl||'');let targetPostPresent=false;
+    for(const node of nodes){
+      const anchor=first(node,config.postLink);
+      const urn=node.getAttribute('data-urn')||node.querySelector('[data-urn*="urn:li:activity:"]')?.getAttribute('data-urn');
+      const url=postUrl(anchor?.getAttribute('href')||'') || (/(?:^|\b)urn:li:activity:\d+/.test(urn||'') ? postUrl(`/feed/update/${(urn||'').match(/urn:li:activity:\d+/)[0]}`) : null);
+      if(!url || postUrls.includes(url))continue;
+      if(url===target)targetPostPresent=true;
+      if(postUrls.length<5)postUrls.push(url);
+      else if(url===target)postUrls[4]=url;
+      const available=!!first(node,config.commentButton);
+      if(target){if(url===target)commentBoxAvailable=available;}
+      else commentBoxAvailable ||= available;
+    }
+    return {profileMatched:true,profileKey:ctx.currentKey,pageReady:true,postUrls,
+      targetPostPresent,commentBoxAvailable,
+      diagnosticCode:postUrls.length?'OK':'NO_RECENT_POSTS'};
+  }
+  async function extractContactInfo(config, command) {
+    const ctx=context(config,command);
+    if(!ctx.matched)return {profileMatched:false,profileKey:ctx.currentKey,pageReady:!!ctx.heading,diagnosticCode:'PROFILE_MISMATCH'};
+    if(!ctx.scope || !config.contactLink || !config.contactDialog || !config.contactEmail || !config.labels.contactInfo)return {profileMatched:true,profileKey:ctx.currentKey,pageReady:false,diagnosticCode:'PAGE_HYDRATING'};
+    if(relationship(ctx.scope,config)!=='first')return {profileMatched:true,profileKey:ctx.currentKey,pageReady:true,diagnosticCode:'ACTION_UNAVAILABLE'};
+    const link=first(ctx.scope,config.contactLink)||labelled(ctx.scope,config.labels.contactInfo);
+    if(!link)return {profileMatched:true,profileKey:ctx.currentKey,pageReady:true,diagnosticCode:'ACTION_UNAVAILABLE'};
+    const href=link.getAttribute('href');
+    if(href){
+      try{
+        const target=new URL(href,location.href);
+        if(!['linkedin.com','www.linkedin.com'].includes(target.hostname) || !target.pathname.toLowerCase().startsWith(`/in/${ctx.currentKey}/`))return {profileMatched:true,profileKey:ctx.currentKey,pageReady:true,diagnosticCode:'PROFILE_MISMATCH'};
+      }catch{return {profileMatched:true,profileKey:ctx.currentKey,pageReady:true,diagnosticCode:'PROFILE_MISMATCH'};}
+    }
+    link.click();
+    const end=Date.now()+config.waitMs;let dialog=null;
+    while(Date.now()<end){
+      const candidates=config.contactDialog.flatMap(selector=>{try{return [...document.querySelectorAll(selector)].filter(visible)}catch{return []}});
+      dialog=candidates.find(node=>{
+        const heading=node.querySelector('h1,h2,[role="heading"]');
+        return heading && config.labels.contactInfo.some(label=>norm(heading.textContent)===norm(label));
+      })||null;
+      if(dialog)break;
+      await new Promise(r=>setTimeout(r,250));
+    }
+    if(!dialog)return {profileMatched:true,profileKey:ctx.currentKey,pageReady:false,diagnosticCode:'PAGE_HYDRATING'};
+    const mailto=first(dialog,config.contactEmail)?.getAttribute('href')||'';
+    let contactEmail=null;
+    try{contactEmail=decodeURIComponent(mailto.replace(/^mailto:/i,'').split('?')[0]).trim().toLowerCase()}catch{}
+    if(!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(contactEmail||'')||contactEmail.length>254)contactEmail=null;
+    return {profileMatched:true,profileKey:ctx.currentKey,pageReady:true,contactInfoOpened:true,contactEmail,
+      diagnosticCode:contactEmail?'OK':'CONTACT_INFO_EMPTY'};
+  }
+  return { observe, connect, inspectCommentState, extractContactInfo, key };
 })();

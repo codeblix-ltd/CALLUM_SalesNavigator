@@ -29,6 +29,7 @@ async function refresh() {
   table('assignments',x.assignments,['run_id','lead_id','full_name','niche','stage']);
   table('intents',x.intents,['id','operator_id','lead_id','action_type','state','updated_at']);
   table('diagnostics',x.diagnostics,['operator_id','stage','code','command_id','action_intent_id','created_at']);
+  table('observations',x.observations,['run_id','lead_id','command_id','type','diagnostic_code','profile_matched','contact_info_opened','contact_email_present','created_at']);
   table('events',x.events,['event_type','operator_id','run_id','lead_id','command_id','action_intent_id','config_version','diagnostic_code','created_at']);
   table('configs',x.configs,['version','status','min_extension_version','rollout_percent','checksum','created_at']);
   table('flags',x.flags,['flag_key','disabled','updated_at']);
@@ -44,6 +45,7 @@ for(const button of document.querySelectorAll('nav button'))button.addEventListe
 bindForm('operatorForm','/api/admin/operators',f=>({id:f.get('id'),cohort:f.get('cohort'),dailyLimit:Number(f.get('dailyLimit'))}));
 bindForm('installationForm','/api/admin/installations',f=>({operatorId:f.get('operatorId'),extensionVersion:f.get('extensionVersion'),buildSha:f.get('buildSha')}),r=>{$('issuedToken').hidden=false;$('issuedToken').textContent=`Installation ${r.id}\nToken (copy now; shown only once): ${r.token}`;});
 bindForm('runForm','/api/admin/runs',f=>({operatorId:f.get('operatorId'),mode:f.get('mode'),count:Number(f.get('count')),niche:f.get('niche')||null,leadId:f.get('leadId')||null}));
+bindForm('inspectionForm','/api/admin/inspections',f=>({runId:f.get('runId'),leadId:f.get('leadId'),type:f.get('type'),postUrl:f.get('postUrl')||null}));
 bindForm('flagForm','/api/admin/flags',f=>({flagKey:f.get('flagKey'),disabled:f.get('disabled')==='true'}));
 bindForm('configForm','/api/admin/configs',f=>({config:JSON.parse(f.get('config')),minVersion:f.get('minVersion')}));
 bindForm('activateForm','/api/admin/configs/activate',f=>({version:Number(f.get('version')),channel:f.get('channel'),rolloutPercent:Number(f.get('rolloutPercent'))}));

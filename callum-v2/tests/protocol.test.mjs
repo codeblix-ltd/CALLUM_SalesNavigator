@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { assertCommand, profileKeyFromUrl, sanitizeResult, PROTOCOL_VERSION } from '../packages/protocol/index.mjs';
+import { assertCommand, linkedInPostUrl, profileKeyFromUrl, sanitizeResult, PROTOCOL_VERSION } from '../packages/protocol/index.mjs';
 
 const command=()=>({id:randomUUID(),runId:randomUUID(),leadId:randomUUID(),traceId:randomUUID(),operatorId:'antish',
   type:'INSPECT_PROFILE',targetProfileKey:'qa-test',targetUrl:'https://www.linkedin.com/in/qa-test/',configVersion:1,
@@ -22,4 +22,13 @@ test('result strips unneeded page content and unknown diagnostics',()=>{
   const x=sanitizeResult({commandId:randomUUID(),status:'observed',facts:{profileMatched:true,profileKey:'QA-Test',pageReady:true,wholePage:'private',diagnosticCode:'PASSWORD_DUMP'}});
   assert.equal(x.facts.profileKey,'qa-test');assert.equal(x.facts.diagnosticCode,'UNEXPECTED_BROWSER_STATE');
   assert.equal('wholePage' in x.facts,false);
+});
+test('post and contact facts are bounded to explicit LinkedIn evidence',()=>{
+  const good='https://www.linkedin.com/feed/update/urn:li:activity:123456789';
+  assert.equal(linkedInPostUrl(`${good}?tracking=1`),good);
+  assert.equal(linkedInPostUrl('https://evil.example/posts/abc'),null);
+  const result=sanitizeResult({commandId:randomUUID(),status:'observed',facts:{postUrls:[good,good,'https://evil.example/posts/abc'],contactEmail:'QA@Example.com',wholePage:'private'}});
+  assert.deepEqual(result.facts.postUrls,[good]);
+  assert.equal(result.facts.contactEmail,'qa@example.com');
+  assert.equal('wholePage' in result.facts,false);
 });

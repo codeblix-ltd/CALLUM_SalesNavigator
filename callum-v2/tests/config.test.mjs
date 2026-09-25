@@ -8,6 +8,7 @@ test('declarative config is bounded and rejects executable-like fields',()=>{
   assert.throws(()=>validateConfig({...DEFAULT_CONFIG,connect:['div:has(script)']}),/CONFIG_INVALID/);
   assert.throws(()=>validateConfig({...DEFAULT_CONFIG,waitMs:1000000}),/CONFIG_INVALID/);
   assert.throws(()=>validateConfig({...DEFAULT_CONFIG,labels:{...DEFAULT_CONFIG.labels,send:['<script>']}}),/CONFIG_INVALID/);
+  assert.throws(()=>validateConfig({...DEFAULT_CONFIG,contactEmail:['iframe[src]']}),/CONFIG_INVALID/);
 });
 test('selector hotfix is data and can replace candidates without code change',()=>{
   const newer=validateConfig({...DEFAULT_CONFIG,connect:['button[data-control-name="connect"]']});
