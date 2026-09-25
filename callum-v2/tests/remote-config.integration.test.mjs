@@ -8,10 +8,11 @@ import { DEFAULT_CONFIG } from '../packages/linkedin-config/index.mjs';
 const enabled=process.env.V2_TEST_DB==='1' && !!process.env.COCKROACH_DATABASE_URL;
 test('server hotfix, rollback and operator kill apply to pending commands', {skip:!enabled}, async()=>{
   const db=openDatabase(),s=new ControlPlane(db),op=`v2cfg_${randomUUID().slice(0,8)}`;
-  let version=null;
+  let version=null,previousConfig=null;
   try {
     await s.seed();await s.createOperator(op,'dev',1);
-    const issued=await s.createInstallation(op,'2.3.0','68f5971a'),installation=await s.installation(issued.token);
+    previousConfig=Number((await db.query("SELECT active_config_version FROM callum_v2.release_channels WHERE channel='dev'")).rows[0].active_config_version);
+    const issued=await s.createInstallation(op,'2.4.0','68f5971a'),installation=await s.installation(issued.token);
     const before=await s.createRun({operatorId:op,mode:'shadow',count:1});
     const draft=await s.createConfig({...DEFAULT_CONFIG,connect:['button[data-callum-hotfix="connect"]']});version=Number(draft.version);
     await s.activateConfig(version,'dev');
@@ -32,7 +33,7 @@ test('server hotfix, rollback and operator kill apply to pending commands', {ski
     assert.equal(resumed.command?.runId,after.id);
   } finally {
     await s.setFlag(`operator:${op}`,false).catch(()=>{});
-    await s.activateConfig(1,'dev').catch(()=>{});
+    if(previousConfig!==null)await s.activateConfig(previousConfig,'dev').catch(()=>{});
     await db.close();
   }
 });

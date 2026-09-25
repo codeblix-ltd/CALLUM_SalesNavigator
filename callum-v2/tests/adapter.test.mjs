@@ -10,7 +10,7 @@ const adapterCode=await readFile(new URL('../extension/adapter.js',import.meta.u
 function fixture(body, url='https://www.linkedin.com/in/qa-test/') {
   const { window }=parseHTML(`<html><body>${body}</body></html>`);
   window.HTMLElement.prototype.getClientRects=function(){return [1]};
-  const sandbox={document:window.document,location:{href:url},URL,Date,setTimeout,getComputedStyle:()=>({visibility:'visible'})};
+  const sandbox={document:window.document,location:{href:url},URL,Date,setTimeout,Event:window.Event,getComputedStyle:()=>({visibility:'visible'})};
   sandbox.globalThis=sandbox;
   vm.createContext(sandbox);vm.runInContext(configCode,sandbox);vm.runInContext(adapterCode,sandbox);
   return {adapter:sandbox.CallumAdapter,document:window.document};
@@ -97,6 +97,48 @@ test('recent post observation returns bounded URLs without post text',async()=>{
   assert.equal(late.commentBoxAvailable,false);
   assert.equal(late.postUrls.length,5);
   assert.equal(late.postUrls.includes('https://www.linkedin.com/feed/update/urn:li:activity:105'),true);
+});
+test('approved comment targets one authored post and confirms only the signed-in actor',async()=>{
+  const post='https://www.linkedin.com/feed/update/urn:li:activity:123456789';
+  const html=`<header><a href="/in/qa-actor/">Me</a></header><main><section class="pv-top-card"><h1>QA Test</h1></section>
+    <section data-urn="urn:li:activity:123456789"><a class="update-components-actor__meta-link" href="/in/qa-test/">QA Test</a><a href="${post}">Post</a>
+    <button id="open" aria-label="Comment">Comment</button><div id="comments"></div></section></main>`;
+  const {adapter,document}=fixture(html);
+  const target=document.querySelector('[data-urn]');let submits=0;
+  document.getElementById('open').click=()=>{
+    if(target.querySelector('[contenteditable]'))return;
+    const editor=document.createElement('div');editor.setAttribute('contenteditable','true');editor.setAttribute('role','textbox');
+    const button=document.createElement('button');button.className='comments-comment-box__submit-button';button.textContent='Post';
+    button.click=()=>{submits++;const item=document.createElement('div');item.className='comments-comment-item';
+      item.innerHTML=`<a href="/in/qa-actor/">Actor</a><div class="comments-comment-item__main-content">${editor.textContent}</div>`;
+      document.getElementById('comments').append(item);};
+    target.append(editor,button);
+  };
+  const command={targetProfileKey:'qa-test',payload:{expectedName:'QA Test',postUrl:post,actorProfileKey:'qa-actor',approvedText:'Thanks for sharing this update.'}};
+  const before=await adapter.inspectCommentState(DEFAULT_CONFIG,command);
+  assert.equal(before.targetPostAuthoredByLead,true);assert.equal(before.viewerMatched,true);
+  const otherComment=document.createElement('div');otherComment.className='comments-comment-item';
+  otherComment.innerHTML='<a href="/in/someone-else/">Other</a><div class="comments-comment-item__main-content">Thanks for sharing this update.</div>';
+  document.getElementById('comments').append(otherComment);
+  assert.equal((await adapter.inspectCommentState(DEFAULT_CONFIG,command)).ownCommentPresent,false);
+  const result=await adapter.comment(DEFAULT_CONFIG,command);
+  assert.equal(result.status,'confirmed');assert.equal(result.facts.commentPostcondition,true);assert.equal(submits,1);
+  const again=await adapter.comment(DEFAULT_CONFIG,command);
+  assert.equal(again.status,'not_submitted');assert.equal(again.facts.ownCommentPresent,true);assert.equal(submits,1);
+  const differentActor=fixture(html.replace('/in/qa-actor/','/in/another-actor/'));
+  assert.equal((await differentActor.adapter.comment(DEFAULT_CONFIG,command)).status,'not_submitted');
+  const differentAuthor=fixture(html.replace('class="update-components-actor__meta-link" href="/in/qa-test/"','class="update-components-actor__meta-link" href="/in/another-person/"'));
+  assert.equal((await differentAuthor.adapter.comment(DEFAULT_CONFIG,command)).status,'not_submitted');
+});
+test('a comment submit with missing postcondition becomes uncertain and never clicks twice',async()=>{
+  const post='https://www.linkedin.com/feed/update/urn:li:activity:555';
+  const html=`<header><a href="/in/qa-actor/">Me</a></header><main><section class="pv-top-card"><h1>QA Test</h1></section>
+    <section data-urn="urn:li:activity:555"><a class="update-components-actor__meta-link" href="/in/qa-test/">QA Test</a><a href="${post}">Post</a>
+    <button aria-label="Comment">Comment</button><div contenteditable="true" role="textbox"></div><button class="comments-comment-box__submit-button">Post</button></section></main>`;
+  const {adapter,document}=fixture(html);let submits=0;document.querySelector('.comments-comment-box__submit-button').click=()=>submits++;
+  const command={targetProfileKey:'qa-test',payload:{expectedName:'QA Test',postUrl:post,actorProfileKey:'qa-actor',approvedText:'Approved comment.'}};
+  const result=await adapter.comment({...DEFAULT_CONFIG,waitMs:250},command);
+  assert.equal(result.status,'uncertain');assert.equal(submits,1);
 });
 test('contact info is identity and first-degree scoped to the target dialog',async()=>{
   const html='<main><section class="pv-top-card"><h1>QA Test</h1><span>· 1st</span><a id="contact" href="/in/qa-test/overlay/contact-info/">Contact info</a></section></main>';

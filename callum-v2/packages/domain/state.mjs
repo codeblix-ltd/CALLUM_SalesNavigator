@@ -9,7 +9,7 @@ export function decideObservation(mode, facts, isReconcile = false) {
 }
 
 export function commandAfterLeaseExpiry(commandType) {
-  return ['EXECUTE_CONNECT','EXECUTE_WITHDRAW'].includes(commandType) ? 'reconcile_required' : 'retry_observation';
+  return ['EXECUTE_CONNECT','EXECUTE_WITHDRAW','EXECUTE_COMMENT'].includes(commandType) ? 'reconcile_required' : 'retry_observation';
 }
 
 export function isPayable(intentState, eventType, rule) {

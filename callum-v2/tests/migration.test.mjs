@@ -26,3 +26,10 @@ test('withdrawal migration only expands the V2 command constraint',async()=>{
   assert.match(sql,/EXECUTE_WITHDRAW/);
   assert.doesNotMatch(sql,/\b(?:ALTER|DROP|TRUNCATE|UPDATE|DELETE)\s+(?:TABLE\s+)?public\./i);
 });
+test('comment migration creates only V2 review state and expands the command constraint',async()=>{
+  const sql=await readFile(new URL('../database/migrations/004_comment_action.sql',import.meta.url),'utf8');
+  assert.match(sql,/ALTER TABLE callum_v2\.installations ADD COLUMN IF NOT EXISTS actor_profile_key/);
+  assert.match(sql,/CREATE TABLE IF NOT EXISTS callum_v2\.comment_drafts/);
+  assert.match(sql,/EXECUTE_COMMENT/);
+  assert.doesNotMatch(sql,/\b(?:ALTER|DROP|TRUNCATE|UPDATE|DELETE)\s+(?:TABLE\s+)?public\./i);
+});

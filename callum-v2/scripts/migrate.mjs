@@ -4,7 +4,7 @@ import { openDatabase } from '../apps/control-plane/db.mjs';
 
 const db = openDatabase();
 try {
-  for (const version of ['001_init','002_invitation_inspection','003_withdraw_action']) {
+  for (const version of ['001_init','002_invitation_inspection','003_withdraw_action','004_comment_action']) {
     if (version !== '001_init' && (await db.query('SELECT 1 FROM callum_v2.schema_migrations WHERE version=$1',[version])).rows.length) continue;
     const file = fileURLToPath(new URL(`../database/migrations/${version}.sql`, import.meta.url));
     const sql = await readFile(file, 'utf8');

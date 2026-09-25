@@ -1,13 +1,13 @@
 export const PROTOCOL_VERSION = 1;
-export const COMMAND_TYPES = new Set(['INSPECT_PROFILE', 'EXECUTE_CONNECT', 'INSPECT_COMMENT_STATE', 'EXTRACT_CONTACT_INFO', 'INSPECT_PENDING_INVITATION', 'EXECUTE_WITHDRAW']);
-export const ACTION_TYPES = new Set(['EXECUTE_CONNECT', 'EXECUTE_WITHDRAW']);
+export const COMMAND_TYPES = new Set(['INSPECT_PROFILE', 'EXECUTE_CONNECT', 'INSPECT_COMMENT_STATE', 'EXTRACT_CONTACT_INFO', 'INSPECT_PENDING_INVITATION', 'EXECUTE_WITHDRAW','EXECUTE_COMMENT']);
+export const ACTION_TYPES = new Set(['EXECUTE_CONNECT', 'EXECUTE_WITHDRAW','EXECUTE_COMMENT']);
 export const DIAGNOSTIC_CODES = new Set([
   'OK', 'PROFILE_MISMATCH', 'PAGE_HYDRATING', 'ACTION_UNAVAILABLE', 'ALREADY_PENDING',
   'ALREADY_CONNECTED', 'BACKEND_UNAVAILABLE', 'TAB_CLOSED', 'NAVIGATION_FAILED',
   'CONFIG_INVALID', 'CONFIG_INCOMPATIBLE', 'STORAGE_UNAVAILABLE', 'POSTCONDITION_UNKNOWN',
   'COMMAND_EXPIRED', 'KILL_SWITCH', 'UNEXPECTED_BROWSER_STATE', 'NO_RECENT_POSTS',
   'CONTACT_INFO_EMPTY', 'INVITATION_NOT_FOUND', 'INVITATION_AGE_UNKNOWN', 'INVITATION_TOO_RECENT',
-  'WITHDRAW_DIALOG_UNKNOWN'
+  'WITHDRAW_DIALOG_UNKNOWN','POST_AUTHOR_MISMATCH','COMMENT_ALREADY_PRESENT','COMMENT_EDITOR_UNAVAILABLE'
 ]);
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -68,6 +68,12 @@ export function sanitizeFacts(raw) {
     postUrls,
     targetPostPresent: x.targetPostPresent === true,
     commentBoxAvailable: x.commentBoxAvailable === true,
+    targetPostAuthoredByLead: x.targetPostAuthoredByLead === true,
+    viewerMatched: x.viewerMatched === true,
+    ownCommentPresent: x.ownCommentPresent === true,
+    commentTargetVerified: x.commentTargetVerified === true,
+    commentEditorVerified: x.commentEditorVerified === true,
+    commentPostcondition: x.commentPostcondition === true,
     contactInfoOpened: x.contactInfoOpened === true,
     contactEmail,
     invitationFound: x.invitationFound === true,

@@ -1,7 +1,7 @@
 globalThis.CallumConfig = Object.freeze({
   validate(x) {
     const keys = ['profileHeading','actionScope','connect','more','pending','connected'];
-    const optional = ['postScope','postLink','commentButton','contactLink','contactDialog','contactEmail','invitationPage','invitationCard','invitationProfile','invitationAge','invitationWithdraw','withdrawDialog','withdrawConfirm'];
+    const optional = ['postScope','postLink','commentButton','postAuthor','viewerProfile','commentItem','commentAuthor','commentText','commentEditor','commentSubmit','contactLink','contactDialog','contactEmail','invitationPage','invitationCard','invitationProfile','invitationAge','invitationWithdraw','withdrawDialog','withdrawConfirm'];
     if (!x || typeof x !== 'object' || Array.isArray(x) || Object.keys(x).some(k => ![...keys,...optional,'labels','degree','waitMs'].includes(k))) throw new Error('CONFIG_INVALID');
     for (const key of keys) {
       if (!Array.isArray(x[key]) || x[key].length < 1 || x[key].length > 12 || x[key].some(s => typeof s !== 'string' || !s.length || s.length > 180 || /[{};\\]|:has\(|:contains\(|script|iframe|input\[type=.password/i.test(s))) throw new Error('CONFIG_INVALID');

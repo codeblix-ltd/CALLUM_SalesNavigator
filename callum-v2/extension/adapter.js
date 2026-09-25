@@ -96,23 +96,83 @@ globalThis.CallumAdapter = (() => {
     if(!ctx.matched)return {profileMatched:false,profileKey:ctx.currentKey,pageReady:!!ctx.heading,diagnosticCode:'PROFILE_MISMATCH'};
     if(!ctx.scope || !config.postScope || !config.postLink || !config.commentButton)return {profileMatched:true,profileKey:ctx.currentKey,pageReady:false,diagnosticCode:'PAGE_HYDRATING'};
     const nodes=[...new Set(config.postScope.flatMap(selector=>{try{return [...document.querySelectorAll(selector)].filter(visible)}catch{return []}}))].slice(0,20);
-    const postUrls=[];let commentBoxAvailable=false;
+    const postUrls=[];let commentBoxAvailable=false;const targets=[];
     const target=postUrl(command.payload?.postUrl||'');let targetPostPresent=false;
     for(const node of nodes){
       const anchor=first(node,config.postLink);
       const urn=node.getAttribute('data-urn')||node.querySelector('[data-urn*="urn:li:activity:"]')?.getAttribute('data-urn');
       const url=postUrl(anchor?.getAttribute('href')||'') || (/(?:^|\b)urn:li:activity:\d+/.test(urn||'') ? postUrl(`/feed/update/${(urn||'').match(/urn:li:activity:\d+/)[0]}`) : null);
       if(!url || postUrls.includes(url))continue;
-      if(url===target)targetPostPresent=true;
+      if(url===target){targetPostPresent=true;targets.push(node);}
       if(postUrls.length<5)postUrls.push(url);
       else if(url===target)postUrls[4]=url;
       const available=!!first(node,config.commentButton);
       if(target){if(url===target)commentBoxAvailable=available;}
       else commentBoxAvailable ||= available;
     }
+    const targetNode=targets[0]||null;
+    const authors=targetNode && config.postAuthor ? config.postAuthor.flatMap(selector=>{try{return [...targetNode.querySelectorAll(selector)].filter(visible).map(a=>key(new URL(a.getAttribute('href'),location.href).href)).filter(Boolean)}catch{return []}}) : [];
+    const targetPostAuthoredByLead=authors.length>0 && [...new Set(authors)].length===1 && authors[0]===ctx.currentKey;
+    const actorKey=norm(command.payload?.actorProfileKey);
+    const viewers=config.viewerProfile ? config.viewerProfile.flatMap(selector=>{try{return [...document.querySelectorAll(selector)].filter(visible).map(a=>key(new URL(a.getAttribute('href'),location.href).href)).filter(Boolean)}catch{return []}}) : [];
+    const viewerMatched=!!actorKey && viewers.length>0 && [...new Set(viewers)].length===1 && viewers[0]===actorKey;
+    const ownCommentPresent=!!targetNode && !!actorKey && typeof command.payload?.approvedText==='string' && matchingOwnComment(targetNode,config,actorKey,command.payload.approvedText);
     return {profileMatched:true,profileKey:ctx.currentKey,pageReady:true,postUrls,
-      targetPostPresent,commentBoxAvailable,
-      diagnosticCode:postUrls.length?'OK':'NO_RECENT_POSTS'};
+      targetPostPresent,commentBoxAvailable,targetPostAuthoredByLead,viewerMatched,ownCommentPresent,
+      diagnosticCode:!postUrls.length?'NO_RECENT_POSTS':targetPostPresent&&!targetPostAuthoredByLead?'POST_AUTHOR_MISMATCH':'OK'};
+  }
+  const exactText=x=>String(x||'').trim().replace(/\s+/g,' ');
+  function matchingOwnComment(post,config,actorKey,text){
+    if(!config.commentItem || !config.commentAuthor || !config.commentText)return false;
+    const items=[...new Set(config.commentItem.flatMap(selector=>{try{return [...post.querySelectorAll(selector)].filter(visible)}catch{return []}}))];
+    return items.some(item=>{
+      const author=first(item,config.commentAuthor);
+      const content=first(item,config.commentText);
+      if(!author||!content)return false;
+      let actual=null;try{actual=key(new URL(author.getAttribute('href'),location.href).href)}catch{}
+      return actual===actorKey && exactText(content.textContent)===exactText(text);
+    });
+  }
+  async function comment(config,command){
+    const payload=command.payload||{};
+    const actorKey=norm(payload.actorProfileKey),text=payload.approvedText;
+    if(!postUrl(payload.postUrl)||!actorKey||typeof text!=='string'||!text.trim()||text.length>1250)
+      return {status:'not_submitted',facts:{diagnosticCode:'ACTION_UNAVAILABLE'}};
+    let before=await inspectCommentState(config,command);
+    const safe=before.profileMatched&&before.pageReady&&before.targetPostPresent&&before.targetPostAuthoredByLead&&before.viewerMatched&&before.commentBoxAvailable;
+    if(!safe||before.ownCommentPresent)return {status:'not_submitted',facts:{...before,diagnosticCode:before.ownCommentPresent?'COMMENT_ALREADY_PRESENT':before.diagnosticCode}};
+    const nodes=[...new Set(config.postScope.flatMap(selector=>{try{return [...document.querySelectorAll(selector)].filter(visible)}catch{return []}}))];
+    const matches=nodes.filter(node=>{
+      const anchor=first(node,config.postLink),urn=node.getAttribute('data-urn')||'';
+      return postUrl(anchor?.getAttribute('href')||'')===payload.postUrl || postUrl(`/feed/update/${urn}`)===payload.postUrl;
+    });
+    if(matches.length!==1)return {status:'not_submitted',facts:{...before,diagnosticCode:'UNEXPECTED_BROWSER_STATE'}};
+    const node=matches[0],open=first(node,config.commentButton);
+    if(!open)return {status:'not_submitted',facts:{...before,diagnosticCode:'ACTION_UNAVAILABLE'}};
+    open.click();
+    const deadline=Date.now()+config.waitMs;let editor=null;
+    while(Date.now()<deadline){editor=first(node,config.commentEditor);if(editor)break;await new Promise(r=>setTimeout(r,250));}
+    if(!editor)return {status:'not_submitted',facts:{...before,diagnosticCode:'COMMENT_EDITOR_UNAVAILABLE'}};
+    before=await inspectCommentState(config,command);
+    if(!before.profileMatched||!before.targetPostAuthoredByLead||!before.viewerMatched||before.ownCommentPresent)
+      return {status:'not_submitted',facts:{...before,diagnosticCode:before.ownCommentPresent?'COMMENT_ALREADY_PRESENT':'PROFILE_MISMATCH'}};
+    editor.focus();
+    if(document.execCommand)document.execCommand('selectAll',false,null);
+    let inserted=false;
+    if(document.execCommand)inserted=document.execCommand('insertText',false,text);
+    if(!inserted){editor.textContent=text;editor.dispatchEvent(new Event('input',{bubbles:true}));}
+    const exact=exactText(editor.innerText||editor.textContent)===exactText(text);
+    const submit=first(node,config.commentSubmit);
+    if(!exact||!submit||submit.disabled)return {status:'not_submitted',facts:{...before,diagnosticCode:'COMMENT_EDITOR_UNAVAILABLE'}};
+    submit.click();
+    const end=Date.now()+config.waitMs;
+    while(Date.now()<end){
+      const after=await inspectCommentState(config,command);
+      if(after.profileMatched&&after.targetPostAuthoredByLead&&after.viewerMatched&&after.ownCommentPresent)
+        return {status:'confirmed',facts:{...after,commentTargetVerified:true,commentEditorVerified:true,commentPostcondition:true,diagnosticCode:'OK'}};
+      await new Promise(r=>setTimeout(r,250));
+    }
+    return {status:'uncertain',facts:{...before,commentTargetVerified:true,commentEditorVerified:true,diagnosticCode:'POSTCONDITION_UNKNOWN'}};
   }
   async function extractContactInfo(config, command) {
     const ctx=context(config,command);
@@ -230,5 +290,5 @@ globalThis.CallumAdapter = (() => {
     }
     return {status:'uncertain',facts:{...before,withdrawalTargetVerified:true,withdrawalConfirmationOpened:true,diagnosticCode:'POSTCONDITION_UNKNOWN'}};
   }
-  return { observe, connect, inspectCommentState, extractContactInfo, inspectPendingInvitation, withdraw, key };
+  return { observe, connect, inspectCommentState, comment, extractContactInfo, inspectPendingInvitation, withdraw, key };
 })();

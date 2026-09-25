@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Callum Scout V2",
   "description": "Canary browser adapter for the isolated Callum V2 control plane.",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "action": { "default_title": "Callum Scout V2", "default_popup": "popup.html" },
   "background": { "service_worker": "background.js" },
   "permissions": ["alarms", "storage", "tabs"],

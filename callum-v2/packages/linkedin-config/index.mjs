@@ -1,4 +1,4 @@
-const optionalSelectorKeys = ['postScope', 'postLink', 'commentButton', 'contactLink', 'contactDialog', 'contactEmail', 'invitationPage', 'invitationCard', 'invitationProfile', 'invitationAge', 'invitationWithdraw', 'withdrawDialog', 'withdrawConfirm'];
+const optionalSelectorKeys = ['postScope', 'postLink', 'commentButton', 'postAuthor', 'viewerProfile', 'commentItem', 'commentAuthor', 'commentText', 'commentEditor', 'commentSubmit', 'contactLink', 'contactDialog', 'contactEmail', 'invitationPage', 'invitationCard', 'invitationProfile', 'invitationAge', 'invitationWithdraw', 'withdrawDialog', 'withdrawConfirm'];
 const allowedKeys = new Set(['profileHeading', 'actionScope', 'connect', 'more', 'pending', 'connected', ...optionalSelectorKeys, 'labels', 'degree', 'waitMs']);
 const allowedSelectorKeys = new Set(['profileHeading', 'actionScope', 'connect', 'more', 'pending', 'connected']);
 const unsafeSelector = /[{};\\]|:has\(|:contains\(|script|iframe|input\[type=.password/i;
@@ -38,6 +38,13 @@ export const DEFAULT_CONFIG = Object.freeze({
   postScope: ['main [data-urn*="urn:li:activity:"]', 'main .feed-shared-update-v2', 'main .profile-creator-shared-feed-update__container'],
   postLink: ['a[href*="/feed/update/urn:li:activity:"]', 'a[href*="/posts/"]'],
   commentButton: ['button[aria-label="Comment"]', 'button.comment-button'],
+  postAuthor: ['.update-components-actor__meta-link[href*="/in/"]', '.feed-shared-actor__container-link[href*="/in/"]', 'a[data-control-name="actor"]'],
+  viewerProfile: ['header a[href*="/in/"]', 'nav a[href*="/in/"]'],
+  commentItem: ['.comments-comment-item', '[data-id^="urn:li:comment:"]'],
+  commentAuthor: ['.comments-post-meta__profile-link[href*="/in/"]', 'a[href*="/in/"]'],
+  commentText: ['.comments-comment-item__main-content', '.comments-comment-item-content-body'],
+  commentEditor: ['[contenteditable="true"][role="textbox"]', '.comments-comment-box__form [contenteditable="true"]'],
+  commentSubmit: ['button.comments-comment-box__submit-button', 'button[aria-label="Post comment"]'],
   contactLink: ['a[href*="/overlay/contact-info/"]', 'a[href*="/contact-info/"]'],
   contactDialog: ['[role="dialog"]', '.artdeco-modal'],
   contactEmail: ['a[href^="mailto:"]'],

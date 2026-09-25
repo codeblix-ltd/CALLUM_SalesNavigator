@@ -69,11 +69,13 @@ const server = http.createServer(async (req, res) => {
       if (path === '/api/admin/overview' && req.method === 'GET') return json(res, 200, await control.overview());
       if (path === '/api/admin/operators' && req.method === 'POST') return json(res, 200, await control.createOperator(data.id, data.cohort, data.dailyLimit));
       if (path === '/api/admin/operators/disable' && req.method === 'POST') { await control.disableOperator(data.id, data.disabled); return json(res, 200, { ok:true }); }
-      if (path === '/api/admin/installations' && req.method === 'POST') return json(res, 200, await control.createInstallation(data.operatorId, data.extensionVersion, data.buildSha));
+      if (path === '/api/admin/installations' && req.method === 'POST') return json(res, 200, await control.createInstallation(data.operatorId, data.extensionVersion, data.buildSha,data.actorProfileUrl||null));
       if (path === '/api/admin/installations/revoke' && req.method === 'POST') { await control.revokeInstallation(data.id); return json(res, 200, { ok:true }); }
       if (path === '/api/admin/runs' && req.method === 'POST') return json(res, 200, await control.createRun(data));
       if (path === '/api/admin/inspections' && req.method === 'POST') return json(res, 200, await control.queueInspection(data));
       if (path === '/api/admin/withdrawals' && req.method === 'POST') return json(res, 200, await control.queueWithdrawal(data));
+      if (path === '/api/admin/comment-drafts' && req.method === 'POST') return json(res, 200, await control.createCommentDraft(data));
+      if (path === '/api/admin/comment-drafts/review' && req.method === 'POST') return json(res, 200, await control.reviewCommentDraft(data));
       if (/^\/api\/admin\/runs\/[0-9a-f-]+\/(pause|resume)$/.test(path) && req.method === 'POST') {
         const [, , , , id, operation] = path.split('/');
         if (operation === 'pause') await control.pauseRun(id); else await control.resumeRun(id);
@@ -83,7 +85,7 @@ const server = http.createServer(async (req, res) => {
       if (path === '/api/admin/configs' && req.method === 'POST') return json(res, 200, await control.createConfig(data.config, data.minVersion));
       if (path === '/api/admin/configs/activate' && req.method === 'POST') return json(res, 200, await control.activateConfig(data.version, data.channel, data.rolloutPercent ?? 100));
       if (path === '/api/admin/pay-rules' && req.method === 'POST') {
-        if (!Number.isInteger(data.version) || !Number.isInteger(data.amountMinor) || data.amountMinor < 0 || !/^[A-Z]{3}$/.test(data.currency || '') || data.eventType !== 'connection_confirmed') throw new Error('PAY_RULE_INVALID');
+        if (!Number.isInteger(data.version) || !Number.isInteger(data.amountMinor) || data.amountMinor < 0 || !/^[A-Z]{3}$/.test(data.currency || '') || !['connection_confirmed','comment_confirmed'].includes(data.eventType)) throw new Error('PAY_RULE_INVALID');
         await db.query(`INSERT INTO callum_v2.pay_rules(version,event_type,amount_minor,currency,enabled) VALUES ($1,$2,$3,$4,$5)`,
           [data.version,data.eventType,data.amountMinor,data.currency,data.enabled === true]);
         return json(res, 200, { ok: true });
