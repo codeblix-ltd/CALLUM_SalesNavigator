@@ -1,0 +1,16 @@
+# Failure injection
+
+Environment: Node 24 fixtures, Cockroach V2 test rows, isolated Chrome. Baseline SHA: `68f5971a5e4b91d0814cd0f2b32dd18dbd64237b`.
+
+| Scenario | Evidence / result | Limit |
+| --- | --- | --- |
+| Duplicate result and command claim | Cockroach integration: duplicate ACK idempotent; leased action not redelivered | Not a multi-host race test |
+| Worker/network lost after authorization and click, ACK lost | Forced action lease expiry yielded only `INSPECT_PROFILE` reconciliation; Pending confirmed one intent | Browser click itself was simulated |
+| Reconciliation and pay | Zero-amount fixture rule yielded one ledger row with version after confirmed result; rule disabled after test | No business rate approved |
+| Wrong profile, hydration, Pending, Connected, InMail ambiguity, no action | Adapter fixtures and authenticated page structure review | Not broad real-profile coverage |
+| Storage unavailable/full, backend unavailable | Background VM tests pause before tab/action | Chrome quota fault not injected in live browser |
+| Navigation fails before content primitive | Background VM reports `not_submitted`; Cockroach test cancels a non-submitted intent without pay or reconciliation | Live Chrome tab-close race still pending |
+| Config rollback, stale pending command, operator kill | Cockroach config integration passed | Global kill under concurrent live click not tested |
+| Chrome restart/resume, tab closure, DB retry/transaction conflict, network loss before action, comment/withdraw uncertainty | Pending dedicated injection | Safety cannot be claimed from unit tests alone |
+
+`pnpm test` is the local suite. `V2_TEST_DB=1 node --env-file=<local server env> --test tests/db.integration.test.mjs tests/remote-config.integration.test.mjs` is the Cockroach suite, run sequentially because configuration tests change the dev release pointer.
