@@ -12,12 +12,13 @@ const enabled=process.env.V2_TEST_DB==='1'&&!!process.env.COCKROACH_DATABASE_URL
 test('new backend process reconciles an authorized lost-ACK action without redelivery', {skip:!enabled},async()=>{
   const db=openDatabase(),control=new ControlPlane(db);
   const operatorId=`v2restart_${randomUUID().slice(0,8)}`;
+  const profileKey='qa-backend-restart';
   const port=20000+Math.floor(Math.random()*10000);
   const origin=`http://127.0.0.1:${port}`;
   let server=null;
   async function start(){
     server=spawn(process.execPath,['apps/control-plane/server.mjs'],{cwd:fileURLToPath(new URL('../',import.meta.url)),
-      env:{...process.env,V2_PORT:String(port),V2_BIND_HOST:'127.0.0.1',V2_WEB_ORIGIN:origin,V2_ADMIN_TOKEN:randomBytes(32).toString('hex')},
+      env:{...process.env,V2_PORT:String(port),V2_BIND_HOST:'127.0.0.1',V2_WEB_ORIGIN:origin,V2_ADMIN_TOKEN:randomBytes(32).toString('hex'),V2_QA_PROFILE_KEY:profileKey},
       stdio:'ignore',windowsHide:true});
     for(let i=0;i<80;i++){
       if(server.exitCode!==null)throw new Error('BACKEND_START_FAILED');
@@ -40,7 +41,7 @@ test('new backend process reconciles an authorized lost-ACK action without redel
     const issued=await control.createInstallation(operatorId,'2.5.0','b4e9668a');
     const installation=await control.installation(issued.token);
     const configVersion=Number((await db.query("SELECT active_config_version FROM callum_v2.release_channels WHERE channel='dev'")).rows[0].active_config_version);
-    const leadId=randomUUID(),profileKey='qa-backend-restart';
+    const leadId=randomUUID();
     const run=(await db.query("INSERT INTO callum_v2.runs(operator_id,installation_id,mode,config_version) VALUES ($1,$2,'live_canary',$3) RETURNING id",
       [operatorId,installation.id,configVersion])).rows[0];
     const lead={id:leadId,profile_key:profileKey,linkedin_url:`https://www.linkedin.com/in/${profileKey}/`};

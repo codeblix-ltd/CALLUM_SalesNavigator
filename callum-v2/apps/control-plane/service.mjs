@@ -395,10 +395,10 @@ export class ControlPlane {
       if (!c || c.installation_disabled || !c.operator_enabled || !['EXECUTE_CONNECT','EXECUTE_WITHDRAW','EXECUTE_COMMENT'].includes(c.type) || c.intent_type !== (withdraw?'withdraw':comment?'comment':'connect') ||
           c.installation_id !== installation.id || c.status !== 'leased' || c.intent_state !== 'reserved' ||
           c.run_status !== 'running' || c.expires_at <= new Date() || c.lease_expires_at <= new Date()) throw new Error('ACTION_NOT_AUTHORIZED');
+      if (c.run_mode!=='live_canary' || c.run_installation_id!==installation.id || !process.env.V2_QA_PROFILE_KEY ||
+          c.target_profile_key!==process.env.V2_QA_PROFILE_KEY.toLowerCase()) throw new Error('ACTION_NOT_AUTHORIZED');
       await this.assertNoV1Assignment(q, c.lead_id, 'ACTION_NOT_AUTHORIZED');
       if (withdraw) {
-        if (c.run_mode!=='live_canary' || c.run_installation_id!==installation.id || !process.env.V2_QA_PROFILE_KEY ||
-            c.target_profile_key!==process.env.V2_QA_PROFILE_KEY.toLowerCase()) throw new Error('ACTION_NOT_AUTHORIZED');
         const source=(await q.query(`SELECT o.facts FROM callum_v2.observations o JOIN callum_v2.commands source ON source.id=o.command_id
           WHERE source.id=$1 AND source.run_id=$2 AND source.lead_id=$3 AND source.type='INSPECT_PENDING_INVITATION'
             AND source.status='completed' AND source.config_version=$4 AND o.created_at>now()-INTERVAL '5 minutes'`,
@@ -406,8 +406,7 @@ export class ControlPlane {
         if (source?.facts?.invitationEligible!==true) throw new Error('ACTION_NOT_AUTHORIZED');
       }
       if(comment){
-        if(c.run_mode!=='live_canary'||c.run_installation_id!==installation.id||!process.env.V2_QA_PROFILE_KEY||
-          c.target_profile_key!==process.env.V2_QA_PROFILE_KEY.toLowerCase()||!installation.actor_profile_key||
+        if(!installation.actor_profile_key||
           c.payload?.actorProfileKey!==installation.actor_profile_key)throw new Error('ACTION_NOT_AUTHORIZED');
         const draft=(await q.query(`SELECT status,body,body_sha256,post_url,inspection_command_id FROM callum_v2.comment_drafts
           WHERE id=$1 AND action_intent_id=$2`,[c.payload?.draftId,c.action_intent_id])).rows[0];

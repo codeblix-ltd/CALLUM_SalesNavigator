@@ -10,6 +10,7 @@ test('separate control-plane instances lease and authorize one action once', {sk
   const firstDb=openDatabase(),secondDb=openDatabase();
   const first=new ControlPlane(firstDb),second=new ControlPlane(secondDb);
   const operatorId=`v2claim_${randomUUID().slice(0,8)}`;
+  const previousQa=process.env.V2_QA_PROFILE_KEY;
   try{
     await first.seed();
     await first.createOperator(operatorId,'dev',1);
@@ -17,6 +18,7 @@ test('separate control-plane instances lease and authorize one action once', {sk
     const installation=await first.installation(issued.token);
     const configVersion=Number((await firstDb.query("SELECT active_config_version FROM callum_v2.release_channels WHERE channel='dev'")).rows[0].active_config_version);
     const leadId=randomUUID(),profileKey=`qa-multi-claim-${leadId.slice(0,8)}`;
+    process.env.V2_QA_PROFILE_KEY=profileKey;
     const lead={id:leadId,profile_key:profileKey,linkedin_url:`https://www.linkedin.com/in/${profileKey}/`};
     const run=(await firstDb.query("INSERT INTO callum_v2.runs(operator_id,installation_id,mode,config_version) VALUES ($1,$2,'live_canary',$3) RETURNING id",
       [operatorId,installation.id,configVersion])).rows[0];
@@ -52,6 +54,7 @@ test('separate control-plane instances lease and authorize one action once', {sk
     assert.equal((await firstDb.query("SELECT count(*)::INT4 n FROM callum_v2.commands WHERE run_id=$1 AND type='EXECUTE_CONNECT'",[run.id])).rows[0].n,1);
     assert.equal((await firstDb.query("SELECT count(*)::INT4 n FROM callum_v2.command_attempts WHERE command_id=$1",[action.id])).rows[0].n,1);
   }finally{
+    if(previousQa===undefined)delete process.env.V2_QA_PROFILE_KEY;else process.env.V2_QA_PROFILE_KEY=previousQa;
     await firstDb.close();
     await secondDb.close();
   }

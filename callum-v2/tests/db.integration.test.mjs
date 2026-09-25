@@ -9,6 +9,7 @@ test('Cockroach V2 command lease, lost ACK, reconciliation, and duplicate pay in
   const db=openDatabase();const s=new ControlPlane(db);
   const operatorId=`v2test_${randomUUID().slice(0,8)}`;
   const ruleVersion=Number(String(Date.now()).slice(-12));
+  const previousQa=process.env.V2_QA_PROFILE_KEY;
   try {
     await s.seed();await s.createOperator(operatorId,'dev',5);
     const issued=await s.createInstallation(operatorId,'2.5.0','68f5971a');
@@ -18,6 +19,7 @@ test('Cockroach V2 command lease, lost ACK, reconciliation, and duplicate pay in
       VALUES ($1,'connection_confirmed',0,'USD',true)`,[ruleVersion]);
     async function setup(suffix) {
       const leadId=randomUUID(),target=`callum-v2-fixture-${suffix}`;
+      process.env.V2_QA_PROFILE_KEY=target;
       const run=(await db.query(`INSERT INTO callum_v2.runs(operator_id,installation_id,mode,config_version)
         VALUES ($1,$2,'live_canary',1) RETURNING *`,[operatorId,install.id])).rows[0];
       const lead={id:leadId,profile_key:target,linkedin_url:`https://www.linkedin.com/in/${target}/`};
@@ -105,6 +107,7 @@ test('Cockroach V2 command lease, lost ACK, reconciliation, and duplicate pay in
     assert.equal(staleResult.stage,'completed','leased stale reconciliation cannot undo a confirmed intent');
     assert.equal((await db.query('SELECT stage FROM callum_v2.run_leads WHERE run_id=$1',[fifth.run.id])).rows[0].stage,'completed');
   } finally {
+    if(previousQa===undefined)delete process.env.V2_QA_PROFILE_KEY;else process.env.V2_QA_PROFILE_KEY=previousQa;
     await db.query('UPDATE callum_v2.pay_rules SET enabled=false WHERE version=$1',[ruleVersion]).catch(()=>{});
     await db.close();
   }
