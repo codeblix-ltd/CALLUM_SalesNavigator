@@ -37,8 +37,11 @@ test('withdrawal intent authorizes once and uncertainty only reconciles by obser
       return {runId:run.id,leadId,inspectionCommandId:inspected.id};
     }
     const first=await fixture(35);
+    await db.query("UPDATE callum_v2.run_leads SET stage='completed' WHERE run_id=$1",[first.runId]);
+    await db.query("UPDATE callum_v2.runs SET status='completed' WHERE id=$1",[first.runId]);
     const queued=await control.queueWithdrawal(first);
     assert.equal(queued.type,'EXECUTE_WITHDRAW');
+    assert.equal((await db.query('SELECT status FROM callum_v2.runs WHERE id=$1',[first.runId])).rows[0].status,'running');
     await control.setFlag('withdrawal',true);
     assert.equal((await control.claim(installation)).command,null);
     await control.setFlag('withdrawal',false);

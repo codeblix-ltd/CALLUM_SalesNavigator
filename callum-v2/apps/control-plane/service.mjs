@@ -143,7 +143,7 @@ export class ControlPlane {
         FROM callum_v2.runs r JOIN callum_v2.run_leads l ON l.run_id=r.id AND l.lead_id=$2
         JOIN callum_v2.operators o ON o.id=r.operator_id AND o.enabled=true
         LEFT JOIN callum_v2.installations i ON i.id=r.installation_id
-        WHERE r.id=$1 AND r.status='running' FOR UPDATE OF r`, [runId,leadId]);
+        WHERE r.id=$1 AND r.status IN ('running','completed') FOR UPDATE OF r`, [runId,leadId]);
       const run=rows[0];
       if (!run) throw new Error('RUN_NOT_FOUND');
       if (type === 'EXTRACT_CONTACT_INFO' && (run.mode !== 'live_canary' || !process.env.V2_QA_PROFILE_KEY || run.profile_key !== process.env.V2_QA_PROFILE_KEY.toLowerCase())) throw new Error('QA_RECIPIENT_REQUIRED');
@@ -154,7 +154,8 @@ export class ControlPlane {
       const lead={id:leadId,profile_key:run.profile_key,linkedin_url:type === 'INSPECT_PENDING_INVITATION' ? SENT_INVITATIONS_URL : run.linkedin_url};
       const payload={expectedName:run.full_name,postUrl:targetPost,actorProfileKey:type==='INSPECT_COMMENT_STATE'?run.actor_profile_key:null};
       const command=await this.enqueue(q,{...run,config_version:config.version},lead,type,
-        `inspect:${type}:${runId}:${leadId}:${config.version}:${hash(targetPost||'').slice(0,12)}`,null,payload);
+        `inspect:${type}:${runId}:${leadId}:${randomUUID()}`,null,payload);
+      await this.reopenRun(q,run,command);
       await this.event(q,{event_key:`command:${command.id}:requested`,event_type:'observation_requested',
         operator_id:run.operator_id,run_id:runId,lead_id:leadId,command_id:command.id,config_version:Number(config.version)});
       return { id:command.id,type,status:command.status,configVersion:Number(config.version) };
@@ -170,7 +171,7 @@ export class ControlPlane {
       const run=(await q.query(`SELECT r.*,l.profile_key,l.linkedin_url,l.full_name,o.cohort FROM callum_v2.runs r
         JOIN callum_v2.run_leads l ON l.run_id=r.id AND l.lead_id=$2
         JOIN callum_v2.operators o ON o.id=r.operator_id AND o.enabled=true
-        WHERE r.id=$1 AND r.status='running' FOR UPDATE OF r`,[runId,leadId])).rows[0];
+        WHERE r.id=$1 AND r.status IN ('running','completed') FOR UPDATE OF r`,[runId,leadId])).rows[0];
       if (!run || !run.installation_id || run.mode !== 'live_canary' || !process.env.V2_QA_PROFILE_KEY ||
           run.profile_key !== process.env.V2_QA_PROFILE_KEY.toLowerCase() || !run.full_name?.trim()) throw new Error('QA_RECIPIENT_REQUIRED');
       const config=await this.activeConfig(q,{cohort:run.cohort,extension_version:CURRENT_EXTENSION_VERSION});
@@ -195,6 +196,7 @@ export class ControlPlane {
       const lead={id:leadId,profile_key:run.profile_key,linkedin_url:SENT_INVITATIONS_URL};
       const command=await this.enqueue(q,{...run,config_version:config.version},lead,'EXECUTE_WITHDRAW',
         `withdraw:${intent.id}`,intent.id,{expectedName:run.full_name,sourceInspectionId:inspectionCommandId});
+      await this.reopenRun(q,run,command);
       await q.query("UPDATE callum_v2.run_leads SET stage='awaiting_action',updated_at=now() WHERE run_id=$1 AND lead_id=$2",[runId,leadId]);
       await this.event(q,{event_key:`intent:${intent.id}:reserved`,event_type:'withdrawal_reserved',
         operator_id:run.operator_id,run_id:runId,lead_id:leadId,command_id:command.id,action_intent_id:intent.id,
@@ -226,14 +228,14 @@ export class ControlPlane {
         JOIN callum_v2.run_leads l ON l.run_id=d.run_id AND l.lead_id=d.lead_id
         JOIN callum_v2.operators o ON o.id=r.operator_id AND o.enabled=true
         LEFT JOIN callum_v2.installations i ON i.id=r.installation_id
-        WHERE d.id=$1 FOR UPDATE OF d`,[draftId])).rows[0];
+        WHERE d.id=$1 FOR UPDATE OF d,r`,[draftId])).rows[0];
       if(!draft||draft.status!=='draft')throw new Error('COMMENT_DRAFT_NOT_OPEN');
       if(decision==='reject'){
         await q.query("UPDATE callum_v2.comment_drafts SET status='rejected',reviewer=$2,reviewed_at=now() WHERE id=$1",[draftId,reviewer]);
         await this.event(q,{event_key:`draft:${draftId}:rejected`,event_type:'comment_draft_rejected',operator_id:draft.operator_id,run_id:draft.run_id,lead_id:draft.lead_id});
         return {id:draftId,status:'rejected'};
       }
-      if(draft.run_status!=='running'||draft.mode!=='live_canary'||!draft.installation_id||!draft.actor_profile_key||
+      if(!['running','completed'].includes(draft.run_status)||draft.mode!=='live_canary'||!draft.installation_id||!draft.actor_profile_key||
         !process.env.V2_QA_PROFILE_KEY||draft.profile_key!==process.env.V2_QA_PROFILE_KEY.toLowerCase()||!draft.full_name?.trim())throw new Error('QA_RECIPIENT_REQUIRED');
       const config=await this.activeConfig(q,{cohort:draft.cohort,extension_version:CURRENT_EXTENSION_VERSION});
       if(['postScope','postDetailScope','postLink','postAuthor','viewerProfile','viewerMenuTrigger','viewerMenu','viewerMenuProfile',
@@ -256,6 +258,7 @@ export class ControlPlane {
       const command=await this.enqueue(q,{...draft,id:draft.run_id,config_version:config.version},{id:draft.lead_id,profile_key:draft.profile_key,linkedin_url:draft.linkedin_url},
         'EXECUTE_COMMENT',`comment:${intent.id}`,intent.id,{postUrl:draft.post_url,approvedText:draft.body,bodySha256:draft.body_sha256,
           draftId,actorProfileKey:draft.actor_profile_key,sourceInspectionId:draft.inspection_command_id,expectedName:draft.full_name});
+      await this.reopenRun(q,{id:draft.run_id,operator_id:draft.operator_id,status:draft.run_status},command);
       await q.query("UPDATE callum_v2.comment_drafts SET status='approved',reviewer=$2,reviewed_at=now(),action_intent_id=$3 WHERE id=$1",[draftId,reviewer,intent.id]);
       await q.query("UPDATE callum_v2.run_leads SET stage='awaiting_action',updated_at=now() WHERE run_id=$1 AND lead_id=$2",[draft.run_id,draft.lead_id]);
       await this.event(q,{event_key:`intent:${intent.id}:reserved`,event_type:'comment_reserved',operator_id:draft.operator_id,run_id:draft.run_id,
@@ -315,8 +318,19 @@ export class ControlPlane {
         AND NOT EXISTS (SELECT 1 FROM callum_v2.commands c WHERE c.run_id=r.id AND c.status IN ('pending','leased','uncertain'))
         AND NOT EXISTS (SELECT 1 FROM callum_v2.action_intents i WHERE i.run_id=r.id AND i.state IN ('reserved','submitted','reconcile_required'))
       RETURNING r.id,r.config_version`,[runId,operatorId]);
-    for(const run of rows)await this.event(q,{event_key:`run:${run.id}:completed`,event_type:'run_completed',
-      operator_id:operatorId,run_id:run.id,config_version:run.config_version===null?null:Number(run.config_version)});
+    for(const run of rows){
+      const previous=(await q.query("SELECT count(*)::INT4 AS n FROM callum_v2.events WHERE run_id=$1 AND event_type='run_completed'",[run.id])).rows[0].n;
+      await this.event(q,{event_key:`run:${run.id}:completed:${previous+1}`,event_type:'run_completed',
+        operator_id:operatorId,run_id:run.id,config_version:run.config_version===null?null:Number(run.config_version)});
+    }
+  }
+
+  async reopenRun(q,run,command){
+    await q.query(`UPDATE callum_v2.runs SET status='running',config_version=$2,updated_at=now()
+      WHERE id=$1 AND status IN ('running','completed') AND (status='completed' OR config_version IS DISTINCT FROM $2)`,
+      [run.id,command.config_version]);
+    if(run.status==='completed')await this.event(q,{event_key:`run:${run.id}:reopened:${command.id}`,event_type:'run_reopened',
+      operator_id:run.operator_id,run_id:run.id,command_id:command.id,config_version:Number(command.config_version)});
   }
 
   async claim(installation) {

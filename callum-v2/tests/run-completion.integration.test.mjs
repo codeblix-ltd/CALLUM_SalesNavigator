@@ -42,5 +42,16 @@ test('shadow run completes with the final ACK after all leads and queued command
     assert.equal((await control.claim(installation)).command,null);
     assert.equal((await db.query("SELECT count(*)::INT4 n FROM callum_v2.events WHERE run_id=$1 AND event_type='run_completed'",[run.id])).rows[0].n,1);
     assert.equal((await db.query('SELECT count(*)::INT4 n FROM callum_v2.action_intents WHERE run_id=$1',[run.id])).rows[0].n,0);
+    for(let cycle=2;cycle<=3;cycle++){
+      const requested=await control.queueInspection({runId:run.id,leadId:leads[0].id,type:'INSPECT_PENDING_INVITATION'});
+      assert.equal((await db.query('SELECT status FROM callum_v2.runs WHERE id=$1',[run.id])).rows[0].status,'running');
+      const followup=(await control.claim(installation)).command;
+      assert.equal(followup.id,requested.id);
+      await control.acknowledge(installation,{commandId:followup.id,status:'observed',facts:{
+        profileMatched:true,profileKey:leads[0].profile_key,pageReady:true,diagnosticCode:'INVITATION_NOT_FOUND'}});
+      assert.equal((await db.query('SELECT status FROM callum_v2.runs WHERE id=$1',[run.id])).rows[0].status,'completed');
+      assert.equal((await db.query("SELECT count(*)::INT4 n FROM callum_v2.events WHERE run_id=$1 AND event_type='run_completed'",[run.id])).rows[0].n,cycle);
+      assert.equal((await db.query("SELECT count(*)::INT4 n FROM callum_v2.events WHERE run_id=$1 AND event_type='run_reopened'",[run.id])).rows[0].n,cycle-1);
+    }
   }finally{await db.close();}
 });

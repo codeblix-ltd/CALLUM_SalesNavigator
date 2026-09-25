@@ -15,3 +15,5 @@ Environment: source review and local tests. Baseline SHA: `68f5971a5e4b91d0814cd
 Web UI inserts server data through `textContent`, not HTML. Admin token remains in page memory. CSP and exact staging origin controls are present. This is a source-level review, not penetration testing.
 
 The 2.5 extension build scan found no DB URL, admin token, private key marker, `eval`, or `new Function` in packaged JS. The reviewed action target is an exact normalized LinkedIn post URL equal to its command payload; profile and post author identity are checked again in the content primitive. Read-only browser research returned selector counts and profile keys only, with no page content stored in V2 facts. No authenticated submit behavior or managed admin access has been validated.
+
+`pnpm audit --prod --audit-level high` returned "No known vulnerabilities found" on 2026-09-26 for the locked production dependencies. This registry check does not establish that the application or deployed infrastructure is free of vulnerabilities.

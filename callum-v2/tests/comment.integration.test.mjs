@@ -36,8 +36,11 @@ test('reviewed QA comment authorizes once, then reconciles uncertain submission 
       targetPostAuthoredByLead:true,viewerMatched:true,commentBoxAvailable:true,diagnosticCode:'OK'}});
     const draft=await control.createCommentDraft({...scoped,inspectionCommandId:requested.id,body:'Approved QA comment.'});
     assert.equal(draft.status,'draft');
+    await db.query("UPDATE callum_v2.run_leads SET stage='completed' WHERE run_id=$1",[run.id]);
+    await db.query("UPDATE callum_v2.runs SET status='completed' WHERE id=$1",[run.id]);
     const approved=await control.reviewCommentDraft({draftId:draft.id,decision:'approve',reviewer:'qa_reviewer'});
     assert.equal(approved.status,'approved');
+    assert.equal((await db.query('SELECT status FROM callum_v2.runs WHERE id=$1',[run.id])).rows[0].status,'running');
     await assert.rejects(()=>control.reviewCommentDraft({draftId:draft.id,decision:'approve',reviewer:'qa_reviewer'}),/COMMENT_DRAFT_NOT_OPEN/);
     await control.setFlag('comment',true);
     assert.equal((await control.claim(installation)).command,null);
