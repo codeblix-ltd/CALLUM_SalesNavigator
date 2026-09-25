@@ -1,7 +1,7 @@
 # Callum support inbox triage, 25 September 2026
 
-The live Convex `bugReports` table contained 30 reports at review: 13 active and
-17 resolved. Every active report already had a support response except the new
+The live Convex `bugReports` table contained 32 reports at review: 14 active and
+18 resolved. Every active report already had a support response except the new
 Apple and Rymaelie follow-ups. Those two replies were posted through the
 authenticated admin API, read back, and left Investigating with updated private
 notes. The email notification is a pointer to the private report; its original
