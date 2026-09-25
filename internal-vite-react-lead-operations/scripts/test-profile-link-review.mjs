@@ -32,6 +32,9 @@ function harness(rows) {
    assert.equal(args[1],'erin');return {rows:rows.filter(r=>r.id===args[0])};
   }
   assert.equal(args[0],'erin','queue query must be bound to authenticated scout');
+  if (text.includes('FROM lead_assignment_events') && text.includes('ORDER BY created_at DESC')) {
+   return {rows:[]}; // No global connection-action outage in these queue fixtures.
+  }
   if (text.includes('AS lead_needs_review'))return {rows:rows.filter(r=>r.id===args[1]).map(r=>({...r,lead_needs_review:held(r)}))};
   assert(text.includes(rules.leadNeedsReviewSql()),'every automatic selection uses the same guard');
   assert(text.includes('VEBlEN_GUARD'),'existing exclusions must stay in place');

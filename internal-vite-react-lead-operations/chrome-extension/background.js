@@ -2632,6 +2632,17 @@ async function runLeadWorkflow(lead, settings, usage, runContext, progress) {
           },
         };
       }
+      if (!engagementResponse?.ok &&
+          engagementResponse?.errorCode === "COMMENT_RECEIPT_STORAGE_FAILED" &&
+          engagementResponse?.storageDiagnostics) {
+        await ScoutApi.authenticatedAction("scouts:recordCommentStorageFailure", {
+          leadId: lead.id,
+          extensionVersion: chrome.runtime.getManifest().version,
+          diagnostics: engagementResponse.storageDiagnostics,
+        }).catch((diagnosticError) => {
+          console.warn("Could not record comment storage diagnostics:", cleanError(diagnosticError));
+        });
+      }
       if (!engagementResponse?.ok && isRecoverableServiceError(engagementResponse?.error)) {
         throw new Error(engagementResponse.error);
       }

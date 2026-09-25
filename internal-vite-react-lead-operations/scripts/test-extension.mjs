@@ -67,7 +67,7 @@ const { CodexAppServer, classifyLanguageLocally } = await import(
   pathToFileURL(gatewayClientPath).href
 );
 
-assert.equal(manifest.version, "0.10.45");
+assert.equal(manifest.version, "0.10.47");
 assert.match(scoutSource,/\["english", "non_english"\]\.includes\(\s*String\(lead\.profile_language_status/,'an uncertain profile read must not be cached for 90 days');
 assert.deepEqual(manifest.content_scripts[0].matches, [
   "https://*.linkedin.com/*",

@@ -368,7 +368,7 @@ await assert.rejects(leadEnv.runLeadWorkflow(lead,{includeNote:true,linkedinPrem
 assert.deepEqual(leadCalls,['scouts:recordProfileVisit','scouts:reportError'],'outer note catch must not continue to send a request');
 const inspectionCalls=[];
 const inspectionEnv={...leadEnv,
-  chrome:{storage:{local:{get:async()=>({})}},runtime:{getManifest:()=>({version:'0.10.45'})},tabs:{remove:async()=>{}}},
+  chrome:{storage:{local:{get:async()=>({})}},runtime:{getManifest:()=>({version:'0.10.47'})},tabs:{remove:async()=>{}}},
   getRequestedWorkflowControl:()=>null,sendAutomationMessageToTab:async()=>({ok:true}),
   ScoutApi:{getAuth:async()=>({username:'rymaelie'}),authenticatedAction:async(path,args)=>{inspectionCalls.push({path,args});}},
   inspectConnectionStatus:async()=>({ok:true,result:{checked:true,connectAvailable:false,connectionState:'unavailable',diagnostics:{mainPresent:true,targetHeadingVisible:true,visibleActionCount:0,invitationLinkPresent:false,moreActionPresent:false,pendingActionPresent:false,uiLanguage:'en'}}}),

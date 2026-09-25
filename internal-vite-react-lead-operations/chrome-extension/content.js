@@ -327,6 +327,9 @@
           ok: false,
           error: message,
           errorCode: error?.code || null,
+          storageDiagnostics: error?.code === "COMMENT_RECEIPT_STORAGE_FAILED"
+            ? error.storageDiagnostics
+            : null,
           requestAttempted: error?.requestAttempted === true,
         });
       });
@@ -360,21 +363,62 @@
 
   async function saveCommentReceipts(receipts) {
     await assertCommentOwner(receipts.data.owner);
+    let stage = "read";
+    let receiptCount = null;
     try {
       const all = await chrome.storage.local.get(null);
       const keys = Object.keys(all).filter(key => key.startsWith(COMMENT_RECEIPT_PREFIX));
+      receiptCount = keys.length;
+      const isSafelySynced = key => all[key]?.complete && all[key]?.posts?.every(post => post.state === "synced");
+      const removed = new Set();
       if (!all[receipts.key] && keys.length >= MAX_COMMENT_RECEIPT_LEADS) {
         // Never discard an unconfirmed submission or an unsynced public comment.
-        const removable = keys.filter(key => all[key]?.owner === receipts.data.owner && all[key]?.complete && all[key]?.posts?.every(post => post.state === "synced"))
+        // The cap is extension-wide, so completed receipts from a previous
+        // scout login must also be eligible for safe cleanup. Never remove
+        // uncertain submissions or comments awaiting backend sync.
+        const removable = keys.filter(isSafelySynced)
           .sort((left, right) => (all[left].updatedAt || 0) - (all[right].updatedAt || 0));
         const count = keys.length - MAX_COMMENT_RECEIPT_LEADS + 1;
+        stage = "prune";
         if (removable.length < count) throw new Error("Receipt storage is full");
-        await chrome.storage.local.remove(removable.slice(0, count));
+        const toRemove = removable.slice(0, count);
+        await chrome.storage.local.remove(toRemove);
+        toRemove.forEach(key => removed.add(key));
       }
       receipts.data.updatedAt = Date.now();
-      await chrome.storage.local.set({ [receipts.key]: receipts.data });
-    } catch {
-      throw new Error("Comment progress could not be saved. Nothing else will be posted. Please ask your manager for help.");
+      stage = "write";
+      try {
+        await chrome.storage.local.set({ [receipts.key]: receipts.data });
+      } catch (writeError) {
+        if (!/quota|storage full|maximum.*storage/i.test(String(writeError?.message || writeError || ""))) {
+          throw writeError;
+        }
+        // Chrome can reach its byte quota before the 100-receipt count cap.
+        // Retry once after removing only completed receipts already synced to
+        // the backend; uncertain and pending comments must remain untouched.
+        const removable = keys.filter(key => key !== receipts.key && !removed.has(key) && isSafelySynced(key))
+          .sort((left, right) => (all[left].updatedAt || 0) - (all[right].updatedAt || 0));
+        if (!removable.length) throw writeError;
+        stage = "prune";
+        await chrome.storage.local.remove(removable.slice(0, 20));
+        stage = "write";
+        await chrome.storage.local.set({ [receipts.key]: receipts.data });
+      }
+    } catch (cause) {
+      const causeText = String(cause?.message || cause || "");
+      const reason = /Receipt storage is full/i.test(causeText)
+        ? "receipt_limit"
+        : /quota|storage full|maximum.*storage/i.test(causeText)
+        ? "quota"
+        : /extension context invalidated/i.test(causeText)
+        ? "extension_reloaded"
+        : "unknown";
+      const diagnostics = { stage, reason, receiptCount };
+      console.warn("Comment receipt storage failed", diagnostics);
+      const error = new Error("Comment progress could not be saved. Nothing else will be posted. Please ask your manager for help.");
+      error.code = "COMMENT_RECEIPT_STORAGE_FAILED";
+      error.storageDiagnostics = diagnostics;
+      throw error;
     }
   }
 
@@ -388,7 +432,12 @@
         post.state = "synced";
         await saveCommentReceipts(receipts);
       } catch (error) {
-        throw new Error(`A comment was posted but its progress could not be saved. Resume will save it without posting it again. ${cleanError(error)}`);
+        const pause = new Error(`A comment was posted but its progress could not be saved. Resume will save it without posting it again. ${cleanError(error)}`);
+        if (error?.code === "COMMENT_RECEIPT_STORAGE_FAILED") {
+          pause.code = error.code;
+          pause.storageDiagnostics = error.storageDiagnostics;
+        }
+        throw pause;
       }
     }
   }

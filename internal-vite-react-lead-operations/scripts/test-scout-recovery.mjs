@@ -7,7 +7,7 @@ const background = readFileSync(new URL("../chrome-extension/background.js", imp
 const recoverySource = content.slice(content.indexOf("const COMMENT_RECEIPT_PREFIX"), content.indexOf("async function runConnectionRequest"));
 const options = { leadId: "lead-one", expectedScout: "alice", profileUrl: "https://www.linkedin.com/in/example", profileLanguageStatus: "english", postEngagements: 2, postEngagementTarget: 2 };
 
-function harness({ failSave = 0, failDraft = 0, submitted = true } = {}) {
+function harness({ failSave = 0, failDraft = 0, submitted = true, maxReceiptKeys = Infinity } = {}) {
   const data = {}, publicPosts = [], drafts = [], saves = [];
   let owner = "alice", writeFailure = false;
   const posts = [1, 2, 3].map(id => ({ id, scrollIntoView() {} }));
@@ -17,7 +17,12 @@ function harness({ failSave = 0, failDraft = 0, submitted = true } = {}) {
     window: { location: { pathname: "/in/example/recent-activity/all/" } },
     chrome: { storage: { local: {
       get: async key => key === null ? structuredClone(data) : typeof key === "string" ? { [key]: structuredClone(data[key]) } : {},
-      set: async values => { if (writeFailure) throw new Error("Storage full"); Object.assign(data, structuredClone(values)); },
+      set: async values => {
+        const nextReceiptKeys = new Set([...Object.keys(data), ...Object.keys(values)]
+          .filter(key => key.startsWith("callumCommentReceipts:")));
+        if (writeFailure || nextReceiptKeys.size > maxReceiptKeys) throw new Error("QUOTA_BYTES quota exceeded");
+        Object.assign(data, structuredClone(values));
+      },
       remove: async keys => { for (const key of typeof keys === "string" ? [keys] : keys) delete data[key]; },
     } } },
     ScoutApi: {
@@ -96,7 +101,13 @@ assert.equal(account.saves.length, 1, "a second scout never syncs the first scou
 
 const full = harness();
 for (let i = 0; i < 100; i++) full.data[`callumCommentReceipts:alice:${i}`] = { owner: "alice", leadId: String(i), complete: false, posts: [{ state: "submitting", activity: { postUrl: `post-${i}` } }] };
-await assert.rejects(full.sandbox.runPostEngagement(options), /progress could not be saved/);
+await assert.rejects(full.sandbox.runPostEngagement(options), error => {
+  assert.match(error.message, /progress could not be saved/);
+  assert.equal(error.storageDiagnostics?.reason, "receipt_limit");
+  assert.equal(error.storageDiagnostics?.stage, "prune");
+  assert.equal(error.storageDiagnostics?.receiptCount, 100);
+  return true;
+});
 assert.equal(full.publicPosts.length, 0);
 assert.equal(Object.keys(full.data).length, 100);
 full.data["callumCommentReceipts:alice:0"].complete = true;
@@ -105,10 +116,96 @@ await full.sandbox.saveCommentReceipts(await full.sandbox.openCommentReceipts(op
 assert.equal(Object.keys(full.data).length, 100, "only completed synced history may make room");
 assert(full.data["callumCommentReceipts:alice:1"], "uncertain history is retained");
 
+const sharedProfile = harness();
+for (let i = 0; i < 100; i++) {
+  sharedProfile.data[`callumCommentReceipts:former-scout:${i}`] = {
+    owner: "former-scout", leadId: String(i), complete: true,
+    updatedAt: i, posts: [{ state: "synced", activity: { postUrl: `post-${i}` } }],
+  };
+}
+await sharedProfile.sandbox.saveCommentReceipts(
+  await sharedProfile.sandbox.openCommentReceipts(options),
+);
+assert.equal(Object.keys(sharedProfile.data).length, 100,
+  "completed, synced receipts from a previous login can safely make room");
+assert(sharedProfile.data["callumCommentReceipts:alice:lead-one"],
+  "the current scout can save progress despite another scout's completed history");
+assert(!sharedProfile.data["callumCommentReceipts:former-scout:0"],
+  "only the oldest fully synced receipt is pruned");
+
+const quotaRecovery = harness({ maxReceiptKeys: 50 });
+for (let i = 0; i < 50; i++) {
+  quotaRecovery.data[`callumCommentReceipts:former-scout:${i}`] = {
+    owner: "former-scout", leadId: String(i), complete: true,
+    updatedAt: i, posts: [{ state: "synced", activity: { postUrl: `post-${i}` } }],
+  };
+}
+quotaRecovery.data["callumCommentReceipts:former-scout:49"].complete = false;
+quotaRecovery.data["callumCommentReceipts:former-scout:49"].posts[0].state = "uncertain";
+await quotaRecovery.sandbox.saveCommentReceipts(
+  await quotaRecovery.sandbox.openCommentReceipts(options),
+);
+assert(quotaRecovery.data["callumCommentReceipts:alice:lead-one"],
+  "a quota rejection below the receipt-count cap should safely recover");
+assert(quotaRecovery.data["callumCommentReceipts:former-scout:49"],
+  "quota recovery must preserve uncertain comment history");
+assert.equal(quotaRecovery.publicPosts.length, 0,
+  "storage recovery itself must never submit a comment");
+
 const storageFailure = harness();
 storageFailure.failWrites();
-await assert.rejects(storageFailure.sandbox.runPostEngagement(options), /progress could not be saved/);
+await assert.rejects(storageFailure.sandbox.runPostEngagement(options), error => {
+  assert.match(error.message, /progress could not be saved/);
+  assert.equal(error.code, "COMMENT_RECEIPT_STORAGE_FAILED");
+  assert.equal(error.storageDiagnostics?.stage, "write");
+  assert.equal(error.storageDiagnostics?.reason, "quota");
+  assert.equal(error.storageDiagnostics?.receiptCount, 0);
+  return true;
+});
 assert.equal(storageFailure.publicPosts.length, 0);
+
+const syncStorageFailure = harness();
+const confirmed = await syncStorageFailure.sandbox.openCommentReceipts(options);
+confirmed.data.posts.push({
+  state: "confirmed",
+  activity: { postUrl: "https://www.linkedin.com/feed/update/urn:li:activity:1" },
+});
+await syncStorageFailure.sandbox.saveCommentReceipts(confirmed);
+syncStorageFailure.failWrites();
+await assert.rejects(syncStorageFailure.sandbox.syncConfirmedComments(confirmed), error => {
+  assert.match(error.message, /comment was posted but its progress could not be saved/i);
+  assert.equal(error.code, "COMMENT_RECEIPT_STORAGE_FAILED");
+  assert.equal(error.storageDiagnostics?.stage, "write");
+  assert.equal(error.storageDiagnostics?.reason, "quota");
+  return true;
+});
+assert.equal(syncStorageFailure.data[confirmed.key].posts[0].state, "confirmed",
+  "a failed synced write retains the durable confirmation for safe recovery");
+assert.equal(syncStorageFailure.saves.length, 1);
+assert.equal(syncStorageFailure.publicPosts.length, 0,
+  "sync recovery must not post a second public comment");
+
+const visibleWorkflowSource = content.slice(
+  content.indexOf("function runVisibleWorkflow"),
+  content.indexOf("// --- Core Automation Functions ---"),
+);
+const visibleWorkflow = { Promise, overlayContainer: null, initOverlay() {},
+  cleanError: error => error.message || String(error), showWorkflowError() {} };
+vm.runInNewContext(visibleWorkflowSource, visibleWorkflow);
+let reportedFailure;
+await new Promise(resolve => visibleWorkflow.runVisibleWorkflow(
+  async () => {
+    const error = new Error("Comment progress could not be saved.");
+    error.code = "COMMENT_RECEIPT_STORAGE_FAILED";
+    error.storageDiagnostics = { stage: "write", reason: "quota", receiptCount: 0 };
+    throw error;
+  },
+  response => { reportedFailure = response; resolve(); },
+));
+assert.equal(reportedFailure.errorCode, "COMMENT_RECEIPT_STORAGE_FAILED");
+assert.equal(reportedFailure.storageDiagnostics.reason, "quota");
+assert.match(background, /scouts:recordCommentStorageFailure/,
+  "the background must persist only the sanitized storage failure classification");
 
 // Run the actual submit confirmation function with minimal DOM fixtures.
 const submitSource = content.slice(content.indexOf("async function submitComment("), content.indexOf("function countVisibleMatchingComments("));
