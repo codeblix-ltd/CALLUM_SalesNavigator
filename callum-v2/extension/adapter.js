@@ -160,17 +160,7 @@ globalThis.CallumAdapter = (() => {
     }
     return null;
   }
-  async function inspectPendingInvitation(config,command) {
-    CallumConfig.validate(config);
-    let url;
-    try{url=new URL(location.href)}catch{}
-    const manager=url?.protocol==='https:' && ['linkedin.com','www.linkedin.com'].includes(url.hostname) &&
-      /^\/mynetwork\/invitation-manager\/sent\/?$/i.test(url.pathname);
-    if(!manager)return {profileMatched:false,profileKey:null,pageReady:false,diagnosticCode:'PROFILE_MISMATCH'};
-    const main=document.querySelector('main');
-    const marker=main && config.invitationPage.flatMap(selector=>{try{return [...main.querySelectorAll(selector)].filter(visible)}catch{return []}})
-      .some(node=>config.labels.invitationPage.some(label=>norm(node.textContent)===norm(label)||norm(node.textContent).startsWith(`${norm(label)} `)));
-    if(!marker)return {profileMatched:false,profileKey:null,pageReady:false,diagnosticCode:'PAGE_HYDRATING'};
+  function matchingInvitationCards(config,command,main) {
     const cards=[...new Set(config.invitationCard.flatMap(selector=>{try{return [...main.querySelectorAll(selector)].filter(visible)}catch{return []}}))].slice(0,100);
     const matches=[];
     for(const card of cards){
@@ -182,6 +172,20 @@ globalThis.CallumAdapter = (() => {
       if(!anchor || !nameMatches(anchor.textContent,command.payload?.expectedName))continue;
       matches.push(card);
     }
+    return matches;
+  }
+  async function inspectPendingInvitation(config,command) {
+    CallumConfig.validate(config);
+    let url;
+    try{url=new URL(location.href)}catch{}
+    const manager=url?.protocol==='https:' && ['linkedin.com','www.linkedin.com'].includes(url.hostname) &&
+      /^\/mynetwork\/invitation-manager\/sent\/?$/i.test(url.pathname);
+    if(!manager)return {profileMatched:false,profileKey:null,pageReady:false,diagnosticCode:'PROFILE_MISMATCH'};
+    const main=document.querySelector('main');
+    const marker=main && config.invitationPage.flatMap(selector=>{try{return [...main.querySelectorAll(selector)].filter(visible)}catch{return []}})
+      .some(node=>config.labels.invitationPage.some(label=>norm(node.textContent)===norm(label)||norm(node.textContent).startsWith(`${norm(label)} `)));
+    if(!marker)return {profileMatched:false,profileKey:null,pageReady:false,diagnosticCode:'PAGE_HYDRATING'};
+    const matches=matchingInvitationCards(config,command,main);
     if(matches.length!==1)return {profileMatched:false,profileKey:null,pageReady:true,invitationFound:false,invitationNameMatched:false,
       diagnosticCode:matches.length?'UNEXPECTED_BROWSER_STATE':'INVITATION_NOT_FOUND'};
     const card=matches[0];
@@ -191,5 +195,40 @@ globalThis.CallumAdapter = (() => {
       invitationAgeDays:ageDays,invitationWithdrawAvailable:!!withdraw,
       diagnosticCode:ageDays===null?'INVITATION_AGE_UNKNOWN':ageDays<30?'INVITATION_TOO_RECENT':withdraw?'OK':'ACTION_UNAVAILABLE'};
   }
-  return { observe, connect, inspectCommentState, extractContactInfo, inspectPendingInvitation, key };
+  function visibleWithdrawDialogs(config) {
+    return [...new Set(config.withdrawDialog.flatMap(selector=>{try{return [...document.querySelectorAll(selector)].filter(visible)}catch{return []}}))];
+  }
+  function matchingWithdrawDialog(config) {
+    return visibleWithdrawDialogs(config).find(dialog=>{
+      const heading=dialog.querySelector('h1,h2,[role="heading"]');
+      return heading && config.labels.withdrawDialog.some(label=>norm(heading.textContent).startsWith(norm(label)));
+    })||null;
+  }
+  async function withdraw(config,command) {
+    const before=await inspectPendingInvitation(config,command);
+    const safe=before.profileMatched && before.pageReady && before.invitationFound && before.invitationNameMatched &&
+      before.invitationWithdrawAvailable && before.invitationAgeDays>=30;
+    if(!safe)return {status:'not_submitted',facts:{...before,withdrawalTargetVerified:false}};
+    if(visibleWithdrawDialogs(config).length)return {status:'uncertain',facts:{...before,withdrawalTargetVerified:true,diagnosticCode:'WITHDRAW_DIALOG_UNKNOWN'}};
+    const cards=matchingInvitationCards(config,command,document.querySelector('main'));
+    if(cards.length!==1)return {status:'not_submitted',facts:{...before,withdrawalTargetVerified:false,diagnosticCode:'PROFILE_MISMATCH'}};
+    const button=first(cards[0],config.invitationWithdraw)||labelled(cards[0],config.labels.invitationWithdraw);
+    if(!button)return {status:'not_submitted',facts:{...before,withdrawalTargetVerified:false,diagnosticCode:'ACTION_UNAVAILABLE'}};
+    button.click();
+    const deadline=Date.now()+config.waitMs;let dialog=null;
+    while(Date.now()<deadline){dialog=matchingWithdrawDialog(config);if(dialog)break;await new Promise(r=>setTimeout(r,250));}
+    if(!dialog)return {status:'uncertain',facts:{...before,withdrawalTargetVerified:true,diagnosticCode:'WITHDRAW_DIALOG_UNKNOWN'}};
+    const confirm=first(dialog,config.withdrawConfirm)||labelled(dialog,config.labels.withdrawConfirm);
+    if(!confirm)return {status:'uncertain',facts:{...before,withdrawalTargetVerified:true,withdrawalConfirmationOpened:true,diagnosticCode:'ACTION_UNAVAILABLE'}};
+    confirm.click();
+    const end=Date.now()+config.waitMs;
+    while(Date.now()<end){
+      const after=await inspectPendingInvitation(config,command);
+      if(after.pageReady && !after.invitationFound && !matchingWithdrawDialog(config))return {status:'confirmed',facts:{...before,invitationFound:false,
+        invitationWithdrawAvailable:false,withdrawalTargetVerified:true,withdrawalConfirmationOpened:true,withdrawalPostcondition:true,diagnosticCode:'OK'}};
+      await new Promise(r=>setTimeout(r,250));
+    }
+    return {status:'uncertain',facts:{...before,withdrawalTargetVerified:true,withdrawalConfirmationOpened:true,diagnosticCode:'POSTCONDITION_UNKNOWN'}};
+  }
+  return { observe, connect, inspectCommentState, extractContactInfo, inspectPendingInvitation, withdraw, key };
 })();

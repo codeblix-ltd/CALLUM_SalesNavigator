@@ -136,3 +136,39 @@ test('sent invitation inspection requires matching profile, name and conservativ
   const wrongPage=fixture(html,'https://www.linkedin.com/in/qa-test/');
   assert.equal((await wrongPage.adapter.inspectPendingInvitation(DEFAULT_CONFIG,command)).pageReady,false);
 });
+test('one targeted old invitation is withdrawn through one confirmed dialog',async()=>{
+  const manager='https://www.linkedin.com/mynetwork/invitation-manager/sent/';
+  const html='<main><h1>Sent invitations</h1><div role="listitem" id="other"><a href="/in/other-person/">Other Person</a><p>Sent 90 days ago</p><button>Withdraw</button></div><div role="listitem" id="target"><a href="/in/qa-test/">QA Test</a><p>Sent 35 days ago</p><button id="start" aria-label="Withdraw invitation sent to QA Test">Withdraw</button></div></main>';
+  const {adapter,document}=fixture(html,manager);
+  let starts=0,confirms=0;
+  document.getElementById('start').click=()=>{
+    starts++;
+    const dialog=document.createElement('div');dialog.setAttribute('role','dialog');
+    dialog.innerHTML='<h2>Withdraw invitation</h2><button aria-label="Withdraw">Withdraw</button>';
+    dialog.querySelector('button').click=()=>{confirms++;document.getElementById('target').remove();dialog.remove()};
+    document.body.append(dialog);
+  };
+  const first=await adapter.withdraw(DEFAULT_CONFIG,command);
+  assert.equal(first.status,'confirmed');
+  assert.equal(first.facts.withdrawalPostcondition,true);
+  assert.equal(starts,1);assert.equal(confirms,1);
+  assert.ok(document.getElementById('other'));
+  const second=await adapter.withdraw(DEFAULT_CONFIG,command);
+  assert.equal(second.status,'not_submitted');
+  assert.equal(starts,1);assert.equal(confirms,1);
+});
+test('young or ambiguous invitations never reach confirmation',async()=>{
+  const manager='https://www.linkedin.com/mynetwork/invitation-manager/sent/';
+  const young=fixture('<main><h1>Sent</h1><div role="listitem"><a href="/in/qa-test/">QA Test</a><p>Sent 29 days ago</p><button id="start" aria-label="Withdraw">Withdraw</button></div></main>',manager);
+  let clicks=0;young.document.getElementById('start').click=()=>clicks++;
+  assert.equal((await young.adapter.withdraw(DEFAULT_CONFIG,command)).status,'not_submitted');
+  assert.equal(clicks,0);
+  const ambiguous=fixture('<main><h1>Sent</h1><div role="listitem"><a href="/in/qa-test/">QA Test</a><p>Sent 31 days ago</p><button aria-label="Withdraw">Withdraw</button></div><div role="listitem"><a href="/in/qa-test/">QA Test</a><p>Sent 31 days ago</p><button aria-label="Withdraw">Withdraw</button></div></main>',manager);
+  assert.equal((await ambiguous.adapter.withdraw(DEFAULT_CONFIG,command)).status,'not_submitted');
+  const uncertain=fixture('<main><h1>Sent</h1><div role="listitem"><a href="/in/qa-test/">QA Test</a><p>Sent 31 days ago</p><button id="start" aria-label="Withdraw">Withdraw</button></div></main>',manager);
+  uncertain.document.getElementById('start').click=()=>clicks++;
+  const result=await uncertain.adapter.withdraw({...DEFAULT_CONFIG,waitMs:250},command);
+  assert.equal(result.status,'uncertain');
+  assert.equal(clicks,1);
+  assert.equal(result.facts.withdrawalPostcondition,undefined);
+});

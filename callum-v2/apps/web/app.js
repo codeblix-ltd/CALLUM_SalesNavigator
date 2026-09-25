@@ -46,6 +46,7 @@ bindForm('operatorForm','/api/admin/operators',f=>({id:f.get('id'),cohort:f.get(
 bindForm('installationForm','/api/admin/installations',f=>({operatorId:f.get('operatorId'),extensionVersion:f.get('extensionVersion'),buildSha:f.get('buildSha')}),r=>{$('issuedToken').hidden=false;$('issuedToken').textContent=`Installation ${r.id}\nToken (copy now; shown only once): ${r.token}`;});
 bindForm('runForm','/api/admin/runs',f=>({operatorId:f.get('operatorId'),mode:f.get('mode'),count:Number(f.get('count')),niche:f.get('niche')||null,leadId:f.get('leadId')||null}));
 bindForm('inspectionForm','/api/admin/inspections',f=>({runId:f.get('runId'),leadId:f.get('leadId'),type:f.get('type'),postUrl:f.get('postUrl')||null}));
+bindForm('withdrawalForm','/api/admin/withdrawals',f=>({runId:f.get('runId'),leadId:f.get('leadId'),inspectionCommandId:f.get('inspectionCommandId')}));
 bindForm('flagForm','/api/admin/flags',f=>({flagKey:f.get('flagKey'),disabled:f.get('disabled')==='true'}));
 bindForm('configForm','/api/admin/configs',f=>({config:JSON.parse(f.get('config')),minVersion:f.get('minVersion')}));
 bindForm('activateForm','/api/admin/configs/activate',f=>({version:Number(f.get('version')),channel:f.get('channel'),rolloutPercent:Number(f.get('rolloutPercent'))}));

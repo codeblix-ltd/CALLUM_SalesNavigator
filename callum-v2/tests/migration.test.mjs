@@ -19,3 +19,10 @@ test('invitation migration only alters V2 command type and is repeatable',async(
   assert.match(sql,/INSPECT_PENDING_INVITATION/);
   assert.doesNotMatch(sql,/\b(?:ALTER|DROP|TRUNCATE|UPDATE|DELETE)\s+(?:TABLE\s+)?public\./i);
 });
+test('withdrawal migration only expands the V2 command constraint',async()=>{
+  const sql=await readFile(new URL('../database/migrations/003_withdraw_action.sql',import.meta.url),'utf8');
+  assert.match(sql,/ALTER TABLE callum_v2\.commands DROP CONSTRAINT IF EXISTS check_type/);
+  assert.match(sql,/ALTER TABLE callum_v2\.commands ADD CONSTRAINT check_type/);
+  assert.match(sql,/EXECUTE_WITHDRAW/);
+  assert.doesNotMatch(sql,/\b(?:ALTER|DROP|TRUNCATE|UPDATE|DELETE)\s+(?:TABLE\s+)?public\./i);
+});

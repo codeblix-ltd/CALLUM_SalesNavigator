@@ -16,6 +16,8 @@ test('protocol rejects stale, cross-site and incompatible commands',()=>{
   assert.doesNotThrow(()=>assertCommand(invitation));
   assert.throws(()=>assertCommand({...invitation,targetUrl:'https://www.linkedin.com/in/qa-test/'}),/COMMAND_TARGET_INVALID/);
   assert.throws(()=>assertCommand({...invitation,targetUrl:'https://www.linkedin.com/mynetwork/invitation-manager/sent/?x=1'}),/COMMAND_TARGET_INVALID/);
+  assert.throws(()=>assertCommand({...invitation,type:'EXECUTE_WITHDRAW'}),/COMMAND_INTENT_MISSING/);
+  assert.doesNotThrow(()=>assertCommand({...invitation,type:'EXECUTE_WITHDRAW',actionIntentId:randomUUID()}));
 });
 test('profile key normalization excludes unrelated hosts and paths',()=>{
   assert.equal(profileKeyFromUrl('https://www.linkedin.com/in/QA-Test/?trk=foo'),'qa-test');
@@ -38,4 +40,7 @@ test('post and contact facts are bounded to explicit LinkedIn evidence',()=>{
   const invitation=sanitizeResult({commandId:randomUUID(),status:'observed',facts:{invitationFound:true,invitationNameMatched:true,invitationAgeDays:32,invitationWithdrawAvailable:true,invitationText:'private'}});
   assert.equal(invitation.facts.invitationAgeDays,32);
   assert.equal('invitationText' in invitation.facts,false);
+  const withdrawal=sanitizeResult({commandId:randomUUID(),status:'confirmed',facts:{withdrawalTargetVerified:true,withdrawalConfirmationOpened:true,withdrawalPostcondition:true,invitationAgeDays:35,wholePage:'private'}});
+  assert.equal(withdrawal.facts.withdrawalPostcondition,true);
+  assert.equal('wholePage' in withdrawal.facts,false);
 });

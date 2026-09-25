@@ -15,12 +15,12 @@ test('read-only inspections preserve lead stage and scope contact email', {skip:
     await control.seed();
     previousConfig=Number((await db.query("SELECT active_config_version FROM callum_v2.release_channels WHERE channel='dev'")).rows[0].active_config_version);
     await control.createOperator(operatorId,'dev',0);
-    const issued=await control.createInstallation(operatorId,'2.2.0','b820d227');
+    const issued=await control.createInstallation(operatorId,'2.3.0','b820d227');
     const installation=await control.installation(issued.token);
-    const draft=await control.createConfig(DEFAULT_CONFIG,'2.2.0');
+    const draft=await control.createConfig(DEFAULT_CONFIG,'2.3.0');
     const version=Number(draft.version);
     await control.activateConfig(version,'dev');
-    const legacy=await control.createInstallation(operatorId,'2.1.0','b820d227');
+    const legacy=await control.createInstallation(operatorId,'2.2.0','b820d227');
     const legacyInstallation=await control.installation(legacy.token);
     await assert.rejects(()=>control.claim(legacyInstallation),/CONFIG_INCOMPATIBLE/);
     async function fixture(mode,key) {

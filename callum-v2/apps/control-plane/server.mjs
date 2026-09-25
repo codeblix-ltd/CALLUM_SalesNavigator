@@ -73,6 +73,7 @@ const server = http.createServer(async (req, res) => {
       if (path === '/api/admin/installations/revoke' && req.method === 'POST') { await control.revokeInstallation(data.id); return json(res, 200, { ok:true }); }
       if (path === '/api/admin/runs' && req.method === 'POST') return json(res, 200, await control.createRun(data));
       if (path === '/api/admin/inspections' && req.method === 'POST') return json(res, 200, await control.queueInspection(data));
+      if (path === '/api/admin/withdrawals' && req.method === 'POST') return json(res, 200, await control.queueWithdrawal(data));
       if (/^\/api\/admin\/runs\/[0-9a-f-]+\/(pause|resume)$/.test(path) && req.method === 'POST') {
         const [, , , , id, operation] = path.split('/');
         if (operation === 'pause') await control.pauseRun(id); else await control.resumeRun(id);

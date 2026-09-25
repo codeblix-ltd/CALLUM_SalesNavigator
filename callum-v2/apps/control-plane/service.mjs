@@ -75,7 +75,7 @@ export class ControlPlane {
   }
 
   async flagDisabled(q, installation, type, configVersion) {
-    const scope = type === 'EXECUTE_CONNECT' ? 'connection' : type === 'EXTRACT_CONTACT_INFO' ? 'contact' : type === 'INSPECT_PENDING_INVITATION' ? 'withdrawal' : null;
+    const scope = type === 'EXECUTE_CONNECT' ? 'connection' : type === 'EXTRACT_CONTACT_INFO' ? 'contact' : ['INSPECT_PENDING_INVITATION','EXECUTE_WITHDRAW'].includes(type) ? 'withdrawal' : null;
     const keys = ['all', `operator:${installation.operator_id}`, `cohort:${installation.cohort}`, `extension:${installation.extension_version}`, `config:${configVersion}`];
     if (scope) keys.push(scope);
     const { rows } = await q.query(`SELECT flag_key FROM callum_v2.feature_flags WHERE flag_key = ANY($1) AND disabled=true`, [keys]);
@@ -96,7 +96,7 @@ export class ControlPlane {
       if (catalog.rows.length === 0) throw new Error('LEADS_NOT_FOUND');
       if (mode === 'live_canary' && profileKeyFromUrl(catalog.rows[0].linkedin_url) !== process.env.V2_QA_PROFILE_KEY.toLowerCase()) throw new Error('QA_RECIPIENT_REQUIRED');
       if (mode === 'live_canary' && !catalog.rows[0].full_name?.trim()) throw new Error('QA_RECIPIENT_NAME_REQUIRED');
-      const config = await this.activeConfig(q, { cohort: op.cohort, extension_version: '2.2.0' });
+      const config = await this.activeConfig(q, { cohort: op.cohort, extension_version: '2.3.0' });
       const run = (await q.query(`INSERT INTO callum_v2.runs(operator_id,installation_id,mode,config_version)
         VALUES ($1,$2,$3,$4) RETURNING id,operator_id,mode,status,config_version`, [operatorId, installationId, mode, config.version])).rows[0];
       let selected = 0;
@@ -129,7 +129,7 @@ export class ControlPlane {
       const run=rows[0];
       if (!run) throw new Error('RUN_NOT_FOUND');
       if (type === 'EXTRACT_CONTACT_INFO' && (run.mode !== 'live_canary' || !process.env.V2_QA_PROFILE_KEY || run.profile_key !== process.env.V2_QA_PROFILE_KEY.toLowerCase())) throw new Error('QA_RECIPIENT_REQUIRED');
-      const config=await this.activeConfig(q,{cohort:run.cohort,extension_version:'2.2.0'});
+      const config=await this.activeConfig(q,{cohort:run.cohort,extension_version:'2.3.0'});
       const required=type === 'EXTRACT_CONTACT_INFO' ? ['contactLink','contactDialog','contactEmail'] : type === 'INSPECT_PENDING_INVITATION' ? ['invitationPage','invitationCard','invitationProfile','invitationAge','invitationWithdraw'] : ['postScope','postLink','commentButton'];
       if (required.some(key=>!config.config[key]?.length) || (type === 'EXTRACT_CONTACT_INFO' && !config.config.labels.contactInfo?.length)) throw new Error('CONFIG_INCOMPATIBLE');
       if (type === 'INSPECT_PENDING_INVITATION' && (!config.config.labels.invitationWithdraw?.length || !config.config.labels.invitationSent?.length)) throw new Error('CONFIG_INCOMPATIBLE');
@@ -143,9 +143,48 @@ export class ControlPlane {
     });
   }
 
+  async queueWithdrawal({ runId, leadId, inspectionCommandId }) {
+    if (![runId,leadId,inspectionCommandId].every(x=>uuid.test(x||''))) throw new Error('WITHDRAWAL_INVALID');
+    return this.db.tx(async q=>{
+      const run=(await q.query(`SELECT r.*,l.profile_key,l.linkedin_url,l.full_name,o.cohort FROM callum_v2.runs r
+        JOIN callum_v2.run_leads l ON l.run_id=r.id AND l.lead_id=$2
+        JOIN callum_v2.operators o ON o.id=r.operator_id AND o.enabled=true
+        WHERE r.id=$1 AND r.status='running' FOR UPDATE OF r`,[runId,leadId])).rows[0];
+      if (!run || !run.installation_id || run.mode !== 'live_canary' || !process.env.V2_QA_PROFILE_KEY ||
+          run.profile_key !== process.env.V2_QA_PROFILE_KEY.toLowerCase() || !run.full_name?.trim()) throw new Error('QA_RECIPIENT_REQUIRED');
+      const config=await this.activeConfig(q,{cohort:run.cohort,extension_version:'2.3.0'});
+      if (['invitationPage','invitationCard','invitationProfile','invitationAge','invitationWithdraw','withdrawDialog','withdrawConfirm'].some(key=>!config.config[key]?.length) ||
+          !config.config.labels.withdrawDialog?.length || !config.config.labels.withdrawConfirm?.length) throw new Error('CONFIG_INCOMPATIBLE');
+      const source=(await q.query(`SELECT c.id,c.config_version,o.facts FROM callum_v2.commands c
+        JOIN callum_v2.observations o ON o.command_id=c.id
+        WHERE c.id=$1 AND c.run_id=$2 AND c.lead_id=$3 AND c.type='INSPECT_PENDING_INVITATION'
+          AND c.status='completed' AND c.result->>'status'='observed' AND c.installation_id=$6
+          AND c.target_profile_key=$4 AND c.target_url=$5
+          AND o.created_at>now()-INTERVAL '2 minutes'`,
+        [inspectionCommandId,runId,leadId,run.profile_key,SENT_INVITATIONS_URL,run.installation_id])).rows[0];
+      if (!source || Number(source.config_version)!==Number(config.version) || source.facts.invitationEligible!==true) throw new Error('WITHDRAWAL_PRECONDITION_FAILED');
+      const otherIntent=(await q.query(`SELECT id FROM callum_v2.action_intents WHERE operator_id=$1 AND lead_id=$2
+        AND action_type<>'withdraw' AND state IN ('reserved','submitted','reconcile_required') LIMIT 1`,[run.operator_id,leadId])).rows[0];
+      if (otherIntent) throw new Error('ACTION_CONFLICT');
+      const intent=(await q.query(`INSERT INTO callum_v2.action_intents(run_id,operator_id,lead_id,action_type,target_key,state)
+        VALUES ($1,$2,$3,'withdraw',$4,'reserved') ON CONFLICT (operator_id,lead_id,action_type,target_key)
+        DO UPDATE SET updated_at=callum_v2.action_intents.updated_at RETURNING id,state,run_id`,
+        [runId,run.operator_id,leadId,run.profile_key])).rows[0];
+      if (intent.state!=='reserved' || intent.run_id!==runId) throw new Error('WITHDRAWAL_ALREADY_RESERVED');
+      const lead={id:leadId,profile_key:run.profile_key,linkedin_url:SENT_INVITATIONS_URL};
+      const command=await this.enqueue(q,{...run,config_version:config.version},lead,'EXECUTE_WITHDRAW',
+        `withdraw:${intent.id}`,intent.id,{expectedName:run.full_name,sourceInspectionId:inspectionCommandId});
+      await q.query("UPDATE callum_v2.run_leads SET stage='awaiting_action',updated_at=now() WHERE run_id=$1 AND lead_id=$2",[runId,leadId]);
+      await this.event(q,{event_key:`intent:${intent.id}:reserved`,event_type:'withdrawal_reserved',
+        operator_id:run.operator_id,run_id:runId,lead_id:leadId,command_id:command.id,action_intent_id:intent.id,
+        config_version:Number(config.version),details:{sourceInspectionId:inspectionCommandId}});
+      return {id:command.id,type:command.type,status:command.status,configVersion:Number(config.version)};
+    });
+  }
+
   async enqueue(q, run, lead, type, key, actionIntentId = null, payload = {}) {
     const id = randomUUID();
-    const expires = new Date(Date.now() + (type === 'EXECUTE_CONNECT' ? 5 : 30) * 60_000);
+    const expires = new Date(Date.now() + (['EXECUTE_CONNECT','EXECUTE_WITHDRAW'].includes(type) ? 5 : 30) * 60_000);
     const { rows } = await q.query(`INSERT INTO callum_v2.commands
       (id,run_id,operator_id,lead_id,action_intent_id,type,idempotency_key,target_profile_key,target_url,config_version,protocol_version,payload,expires_at)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
@@ -170,11 +209,14 @@ export class ControlPlane {
       FOR UPDATE OF c`, [operatorId]);
     for (const c of rows) {
       if (commandAfterLeaseExpiry(c.type) === 'reconcile_required') {
+        const withdraw=c.type==='EXECUTE_WITHDRAW';
         await q.query("UPDATE callum_v2.commands SET status='uncertain',updated_at=now() WHERE id=$1", [c.id]);
         await q.query("UPDATE callum_v2.action_intents SET state='reconcile_required',updated_at=now() WHERE id=$1 AND state NOT IN ('confirmed','cancelled')", [c.action_intent_id]);
         await q.query("UPDATE callum_v2.run_leads SET stage='reconcile_required',updated_at=now() WHERE run_id=$1 AND lead_id=$2", [c.run_id,c.lead_id]);
-        await this.enqueue(q, c, { id: c.lead_id, profile_key: c.profile_key, linkedin_url: c.linkedin_url }, 'INSPECT_PROFILE', `reconcile:${c.action_intent_id}`, c.action_intent_id, { reconcile: true, expectedName: c.payload?.expectedName || null });
-        await this.event(q, { event_key: `intent:${c.action_intent_id}:uncertain`, event_type: 'connection_uncertain', operator_id: c.operator_id, run_id: c.run_id, lead_id: c.lead_id, command_id: c.id, action_intent_id: c.action_intent_id, config_version: Number(c.config_version), diagnostic_code: 'POSTCONDITION_UNKNOWN' });
+        await this.enqueue(q, c, { id: c.lead_id, profile_key: c.profile_key, linkedin_url: withdraw ? SENT_INVITATIONS_URL : c.linkedin_url },
+          withdraw ? 'INSPECT_PENDING_INVITATION' : 'INSPECT_PROFILE', `reconcile:${c.action_intent_id}`, c.action_intent_id,
+          { reconcile: true, expectedName: c.payload?.expectedName || null });
+        await this.event(q, { event_key: `intent:${c.action_intent_id}:uncertain`, event_type: withdraw ? 'withdrawal_uncertain' : 'connection_uncertain', operator_id: c.operator_id, run_id: c.run_id, lead_id: c.lead_id, command_id: c.id, action_intent_id: c.action_intent_id, config_version: Number(c.config_version), diagnostic_code: 'POSTCONDITION_UNKNOWN' });
       } else {
         await q.query("UPDATE callum_v2.commands SET status='pending',expires_at=now()+INTERVAL '30 minutes',lease_expires_at=NULL,updated_at=now() WHERE id=$1", [c.id]);
       }
@@ -192,11 +234,13 @@ export class ControlPlane {
       if (!c) return { command: null, config: { version: Number(config.version), value: config.config, checksum: config.checksum } };
       if (Number(c.config_version) !== Number(config.version)) {
         await q.query('UPDATE callum_v2.runs SET config_version=$2,updated_at=now() WHERE id=$1', [c.run_id,config.version]);
-        if (c.type === 'EXECUTE_CONNECT') {
+        if (['EXECUTE_CONNECT','EXECUTE_WITHDRAW'].includes(c.type)) {
+          const withdraw=c.type==='EXECUTE_WITHDRAW';
           await q.query("UPDATE callum_v2.commands SET status='cancelled',updated_at=now() WHERE id=$1", [c.id]);
           await q.query("UPDATE callum_v2.action_intents SET state='reconcile_required',updated_at=now() WHERE id=$1 AND state='reserved'", [c.action_intent_id]);
+          await q.query("UPDATE callum_v2.run_leads SET stage='reconcile_required',updated_at=now() WHERE run_id=$1 AND lead_id=$2",[c.run_id,c.lead_id]);
           await this.enqueue(q, { ...c, config_version: config.version }, { id:c.lead_id,profile_key:c.target_profile_key,linkedin_url:c.target_url },
-            'INSPECT_PROFILE', `reconcile:${c.action_intent_id}`, c.action_intent_id, { reconcile:true, expectedName:c.payload?.expectedName || null });
+            withdraw ? 'INSPECT_PENDING_INVITATION' : 'INSPECT_PROFILE', `reconcile:${c.action_intent_id}`, c.action_intent_id, { reconcile:true, expectedName:c.payload?.expectedName || null });
           return { command:null, config:{ version:Number(config.version),value:config.config,checksum:config.checksum } };
         }
         await q.query('UPDATE callum_v2.commands SET config_version=$2,updated_at=now() WHERE id=$1', [c.id,config.version]);
@@ -223,15 +267,27 @@ export class ControlPlane {
 
   async authorizeAction(installation, commandId) {
     return this.db.tx(async q => {
-      const { rows } = await q.query(`SELECT c.*,i.state AS intent_state,r.status AS run_status FROM callum_v2.commands c
+      const { rows } = await q.query(`SELECT c.*,i.state AS intent_state,i.action_type AS intent_type,r.status AS run_status,r.mode AS run_mode,r.installation_id AS run_installation_id FROM callum_v2.commands c
         JOIN callum_v2.action_intents i ON i.id=c.action_intent_id JOIN callum_v2.runs r ON r.id=c.run_id
         WHERE c.id=$1 AND c.operator_id=$2 FOR UPDATE OF c`, [commandId, installation.operator_id]);
       const c = rows[0];
-      if (!c || c.type !== 'EXECUTE_CONNECT' || c.installation_id !== installation.id || c.status !== 'leased' || c.intent_state !== 'reserved' || c.run_status !== 'running' || c.expires_at <= new Date() || c.lease_expires_at <= new Date()) throw new Error('ACTION_NOT_AUTHORIZED');
+      const withdraw=c?.type==='EXECUTE_WITHDRAW';
+      if (!c || !['EXECUTE_CONNECT','EXECUTE_WITHDRAW'].includes(c.type) || c.intent_type !== (withdraw?'withdraw':'connect') ||
+          c.installation_id !== installation.id || c.status !== 'leased' || c.intent_state !== 'reserved' ||
+          c.run_status !== 'running' || c.expires_at <= new Date() || c.lease_expires_at <= new Date()) throw new Error('ACTION_NOT_AUTHORIZED');
+      if (withdraw) {
+        if (c.run_mode!=='live_canary' || c.run_installation_id!==installation.id || !process.env.V2_QA_PROFILE_KEY ||
+            c.target_profile_key!==process.env.V2_QA_PROFILE_KEY.toLowerCase()) throw new Error('ACTION_NOT_AUTHORIZED');
+        const source=(await q.query(`SELECT o.facts FROM callum_v2.observations o JOIN callum_v2.commands source ON source.id=o.command_id
+          WHERE source.id=$1 AND source.run_id=$2 AND source.lead_id=$3 AND source.type='INSPECT_PENDING_INVITATION'
+            AND source.status='completed' AND source.config_version=$4 AND o.created_at>now()-INTERVAL '5 minutes'`,
+          [c.payload?.sourceInspectionId,c.run_id,c.lead_id,c.config_version])).rows[0];
+        if (source?.facts?.invitationEligible!==true) throw new Error('ACTION_NOT_AUTHORIZED');
+      }
       const config = await this.activeConfig(q, installation);
       if (Number(config.version) !== Number(c.config_version) || (await this.flagDisabled(q, installation, c.type, c.config_version)).length) throw new Error('ACTION_NOT_AUTHORIZED');
       await q.query("UPDATE callum_v2.action_intents SET state='submitted',updated_at=now() WHERE id=$1 AND state='reserved'", [c.action_intent_id]);
-      await this.event(q, { event_key:`intent:${c.action_intent_id}:authorized`, event_type:'connection_authorized',
+      await this.event(q, { event_key:`intent:${c.action_intent_id}:authorized`, event_type:withdraw?'withdrawal_authorized':'connection_authorized',
         operator_id:c.operator_id,installation_id:installation.id,run_id:c.run_id,lead_id:c.lead_id,
         command_id:c.id,action_intent_id:c.action_intent_id,extension_version:installation.extension_version,
         build_sha:installation.build_sha,protocol_version:PROTOCOL_VERSION,config_version:Number(c.config_version) });
@@ -261,10 +317,16 @@ export class ControlPlane {
         facts.targetPostPresent=!!targetPost && facts.postUrls.includes(targetPost);
         if (!facts.postUrls.length || (targetPost && !facts.targetPostPresent)) facts.commentBoxAvailable=false;
       }
-      if (c.type !== 'INSPECT_PENDING_INVITATION' || result.status !== 'observed' || !facts.profileMatched || !facts.pageReady || !facts.invitationNameMatched) {
+      const invitationObservation=c.type==='INSPECT_PENDING_INVITATION' && result.status==='observed';
+      const withdrawalAction=c.type==='EXECUTE_WITHDRAW';
+      if (!(invitationObservation || withdrawalAction) || !facts.profileMatched || !facts.pageReady || !facts.invitationNameMatched) {
         facts.invitationFound=false;facts.invitationNameMatched=false;facts.invitationWithdrawAvailable=false;facts.invitationAgeDays=null;
       }
-      facts.invitationEligible=c.type === 'INSPECT_PENDING_INVITATION' && facts.invitationFound && facts.invitationNameMatched && facts.invitationWithdrawAvailable && facts.invitationAgeDays >= 30;
+      facts.invitationEligible=invitationObservation && facts.invitationFound && facts.invitationNameMatched && facts.invitationWithdrawAvailable && facts.invitationAgeDays >= 30;
+      facts.withdrawalTargetVerified=withdrawalAction && facts.withdrawalTargetVerified && facts.profileMatched && facts.invitationNameMatched && facts.invitationAgeDays >= 30;
+      facts.withdrawalConfirmationOpened=withdrawalAction && facts.withdrawalTargetVerified && facts.withdrawalConfirmationOpened;
+      facts.withdrawalPostcondition=withdrawalAction && result.status==='confirmed' && facts.withdrawalTargetVerified && facts.withdrawalConfirmationOpened &&
+        facts.withdrawalPostcondition && facts.pageReady && !facts.invitationFound;
       await q.query('INSERT INTO callum_v2.observations(command_id,run_id,lead_id,facts,diagnostic_code) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (command_id) DO NOTHING', [c.id,c.run_id,c.lead_id,facts,facts.diagnosticCode]);
       await q.query("UPDATE callum_v2.command_attempts SET finished_at=now(),outcome=$2 WHERE command_id=$1 AND finished_at IS NULL", [c.id,result.status]);
       await q.query("UPDATE callum_v2.commands SET status='completed',result=$2,updated_at=now() WHERE id=$1", [c.id,result]);
@@ -273,12 +335,23 @@ export class ControlPlane {
         extension_version: installation.extension_version, build_sha: installation.build_sha, protocol_version: PROTOCOL_VERSION,
         config_version: Number(c.config_version), diagnostic_code: facts.diagnosticCode });
       if (c.type === 'EXECUTE_CONNECT') return this.finishAction(q, installation, c, result);
+      if (c.type === 'EXECUTE_WITHDRAW') return this.finishWithdraw(q, installation, c, result);
       if (c.type === 'INSPECT_COMMENT_STATE' || c.type === 'EXTRACT_CONTACT_INFO' || c.type === 'INSPECT_PENDING_INVITATION') {
         await this.event(q,{event_key:`command:${c.id}:inspection`,event_type:c.type === 'INSPECT_COMMENT_STATE' ? 'comment_state_observed' : c.type === 'INSPECT_PENDING_INVITATION' ? 'pending_invitation_observed' : facts.contactEmail ? 'contact_info_confirmed' : 'contact_info_observed',
           operator_id:c.operator_id,installation_id:installation.id,run_id:c.run_id,lead_id:c.lead_id,command_id:c.id,
           extension_version:installation.extension_version,build_sha:installation.build_sha,protocol_version:PROTOCOL_VERSION,
           config_version:Number(c.config_version),diagnostic_code:facts.diagnosticCode});
         if (!facts.profileMatched || !facts.pageReady) await this.diagnostic(q,installation,c,'inspection',facts.diagnosticCode);
+        if (c.type==='INSPECT_PENDING_INVITATION' && c.payload?.reconcile===true && c.action_intent_id) {
+          const intent=(await q.query('SELECT state FROM callum_v2.action_intents WHERE id=$1',[c.action_intent_id])).rows[0];
+          if (intent?.state==='confirmed' || intent?.state==='cancelled') return {duplicate:false,stage:c.stage};
+          await q.query("UPDATE callum_v2.run_leads SET stage='paused',updated_at=now() WHERE run_id=$1 AND lead_id=$2",[c.run_id,c.lead_id]);
+          await this.event(q,{event_key:`intent:${c.action_intent_id}:reconciled_observation`,event_type:'withdrawal_reconciliation_observed',
+            operator_id:c.operator_id,installation_id:installation.id,run_id:c.run_id,lead_id:c.lead_id,command_id:c.id,
+            action_intent_id:c.action_intent_id,config_version:Number(c.config_version),diagnostic_code:facts.diagnosticCode,
+            details:{invitationFound:facts.invitationFound}});
+          return {duplicate:false,stage:'paused'};
+        }
         return { duplicate:false,stage:c.stage };
       }
       if (c.payload?.reconcile === true && c.action_intent_id) {
@@ -363,6 +436,41 @@ export class ControlPlane {
     return { duplicate: false, stage: 'reconcile_required' };
   }
 
+  async finishWithdraw(q, installation, c, result) {
+    const authorization=(await q.query("SELECT id FROM callum_v2.events WHERE action_intent_id=$1 AND event_type='withdrawal_authorized' LIMIT 1",[c.action_intent_id])).rows[0];
+    if (result.status==='not_submitted') {
+      await q.query("UPDATE callum_v2.action_intents SET state='cancelled',updated_at=now() WHERE id=$1 AND state IN ('reserved','submitted','reconcile_required')",[c.action_intent_id]);
+      await q.query("UPDATE callum_v2.commands SET status='cancelled',updated_at=now() WHERE idempotency_key=$1 AND status='pending'",[`reconcile:${c.action_intent_id}`]);
+      await q.query("UPDATE callum_v2.run_leads SET stage='paused',updated_at=now() WHERE run_id=$1 AND lead_id=$2",[c.run_id,c.lead_id]);
+      await this.event(q,{event_key:`intent:${c.action_intent_id}:not_submitted`,event_type:'withdrawal_not_submitted',
+        operator_id:c.operator_id,installation_id:installation.id,run_id:c.run_id,lead_id:c.lead_id,
+        command_id:c.id,action_intent_id:c.action_intent_id,config_version:Number(c.config_version),
+        diagnostic_code:result.facts.diagnosticCode});
+      return {duplicate:false,stage:'paused'};
+    }
+    const confirmed=!!authorization && result.status==='confirmed' && result.facts.withdrawalPostcondition;
+    if (confirmed) {
+      await q.query("UPDATE callum_v2.action_intents SET state='confirmed',updated_at=now() WHERE id=$1 AND state IN ('submitted','reconcile_required')",[c.action_intent_id]);
+      await q.query("UPDATE callum_v2.commands SET status='cancelled',updated_at=now() WHERE idempotency_key=$1 AND status='pending'",[`reconcile:${c.action_intent_id}`]);
+      await q.query("UPDATE callum_v2.run_leads SET stage='completed',updated_at=now() WHERE run_id=$1 AND lead_id=$2",[c.run_id,c.lead_id]);
+      await this.event(q,{event_key:`intent:${c.action_intent_id}:confirmed`,event_type:'withdrawal_confirmed',
+        operator_id:c.operator_id,installation_id:installation.id,run_id:c.run_id,lead_id:c.lead_id,
+        command_id:c.id,action_intent_id:c.action_intent_id,extension_version:installation.extension_version,
+        build_sha:installation.build_sha,protocol_version:PROTOCOL_VERSION,config_version:Number(c.config_version),diagnostic_code:'OK'});
+      return {duplicate:false,stage:'completed'};
+    }
+    await q.query("UPDATE callum_v2.action_intents SET state='reconcile_required',updated_at=now() WHERE id=$1 AND state NOT IN ('confirmed','cancelled')",[c.action_intent_id]);
+    await q.query("UPDATE callum_v2.run_leads SET stage='reconcile_required',updated_at=now() WHERE run_id=$1 AND lead_id=$2",[c.run_id,c.lead_id]);
+    await this.enqueue(q,c,{id:c.lead_id,profile_key:c.target_profile_key,linkedin_url:SENT_INVITATIONS_URL},
+      'INSPECT_PENDING_INVITATION',`reconcile:${c.action_intent_id}`,c.action_intent_id,
+      {reconcile:true,expectedName:c.payload?.expectedName||null});
+    await this.event(q,{event_key:`intent:${c.action_intent_id}:uncertain`,event_type:'withdrawal_uncertain',
+      operator_id:c.operator_id,installation_id:installation.id,run_id:c.run_id,lead_id:c.lead_id,
+      command_id:c.id,action_intent_id:c.action_intent_id,config_version:Number(c.config_version),
+      diagnostic_code:result.facts.diagnosticCode});
+    return {duplicate:false,stage:'reconcile_required'};
+  }
+
   async applyPay(q, c, eventId, eventType) {
     const intent = (await q.query('SELECT * FROM callum_v2.action_intents WHERE id=$1', [c.action_intent_id])).rows[0];
     const authorization = (await q.query("SELECT id FROM callum_v2.events WHERE action_intent_id=$1 AND event_type='connection_authorized' LIMIT 1", [c.action_intent_id])).rows[0];
@@ -394,7 +502,7 @@ export class ControlPlane {
       ON CONFLICT (flag_key) DO UPDATE SET disabled=excluded.disabled,updated_at=now()`, [flagKey, disabled === true]);
   }
 
-  async createConfig(config, minVersion = '2.2.0') {
+  async createConfig(config, minVersion = '2.3.0') {
     const clean = validateConfig(config);
     if (!/^2\.\d+\.\d+$/.test(minVersion)) throw new Error('CONFIG_INVALID');
     const { rows } = await this.db.query(`INSERT INTO callum_v2.remote_configs(version,status,min_extension_version,rollout_percent,config,checksum)

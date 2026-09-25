@@ -22,11 +22,11 @@ async function api(endpoint, token, path, payload = null) {
   return data;
 }
 function assertCommand(c, configVersion) {
-  if (!c || !['INSPECT_PROFILE', 'EXECUTE_CONNECT', 'INSPECT_COMMENT_STATE', 'EXTRACT_CONTACT_INFO', 'INSPECT_PENDING_INVITATION'].includes(c.type) || c.protocolVersion !== CALLUM_V2_BUILD.protocol || c.configVersion !== configVersion) throw new Error('CONFIG_INCOMPATIBLE');
+  if (!c || !['INSPECT_PROFILE', 'EXECUTE_CONNECT', 'INSPECT_COMMENT_STATE', 'EXTRACT_CONTACT_INFO', 'INSPECT_PENDING_INVITATION', 'EXECUTE_WITHDRAW'].includes(c.type) || c.protocolVersion !== CALLUM_V2_BUILD.protocol || c.configVersion !== configVersion) throw new Error('CONFIG_INCOMPATIBLE');
   const url = new URL(c.targetUrl);
-  const validPath=c.type === 'INSPECT_PENDING_INVITATION' ? /^\/mynetwork\/invitation-manager\/sent\/?$/i.test(url.pathname) && !url.search && !url.hash : /^\/in\/[a-z0-9_%.-]+\/?$/i.test(url.pathname);
+  const validPath=['INSPECT_PENDING_INVITATION','EXECUTE_WITHDRAW'].includes(c.type) ? /^\/mynetwork\/invitation-manager\/sent\/?$/i.test(url.pathname) && !url.search && !url.hash : /^\/in\/[a-z0-9_%.-]+\/?$/i.test(url.pathname);
   if (url.protocol !== 'https:' || !['linkedin.com','www.linkedin.com'].includes(url.hostname) || !validPath) throw new Error('PROFILE_MISMATCH');
-  if (Date.parse(c.expiresAt) <= Date.now() || !c.id || !c.actionIntentId && c.type === 'EXECUTE_CONNECT') throw new Error('COMMAND_EXPIRED');
+  if (Date.parse(c.expiresAt) <= Date.now() || !c.id || !c.actionIntentId && ['EXECUTE_CONNECT','EXECUTE_WITHDRAW'].includes(c.type)) throw new Error('COMMAND_EXPIRED');
 }
 async function targetTab(url) {
   const tabs = await chrome.tabs.query({ url: ['https://www.linkedin.com/*', 'https://linkedin.com/*'] });
@@ -69,7 +69,7 @@ async function poll() {
     let primitiveStarted = false;
     try {
       const tabId = await targetTab(command.targetUrl);
-      if (command.type === 'EXECUTE_CONNECT') {
+      if (['EXECUTE_CONNECT','EXECUTE_WITHDRAW'].includes(command.type)) {
         const authorization=await api(endpoint, token, `/api/commands/${command.id}/authorize`, {});
         if(authorization.authorized!==true)throw new Error('ACTION_NOT_AUTHORIZED');
       }
@@ -77,7 +77,7 @@ async function poll() {
       result = await primitive(tabId, command, claimed.config.value);
     } catch (error) {
       const code = ['TAB_CLOSED','NAVIGATION_FAILED','ACTION_NOT_AUTHORIZED','BACKEND_UNAVAILABLE','CONFIG_INCOMPATIBLE'].includes(error.message) ? error.message : 'UNEXPECTED_BROWSER_STATE';
-      result = { commandId: command.id, status: command.type === 'EXECUTE_CONNECT' ? (primitiveStarted ? 'uncertain' : 'not_submitted') : 'observed',
+      result = { commandId: command.id, status: ['EXECUTE_CONNECT','EXECUTE_WITHDRAW'].includes(command.type) ? (primitiveStarted ? 'uncertain' : 'not_submitted') : 'observed',
         facts: { profileMatched: false, profileKey: null, pageReady: false, diagnosticCode: code } };
     }
     await api(endpoint, token, `/api/commands/${command.id}/ack`, result);
