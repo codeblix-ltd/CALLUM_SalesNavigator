@@ -117,3 +117,35 @@ test('authorization network loss before the primitive reports not submitted',asy
   assert.equal((await x.poll()).state,'waiting');
   assert.equal(ack.status,'not_submitted');assert.equal(clicks,0);
 });
+
+for(const interruption of ['tab closes','page refreshes']){
+  test(`${interruption} after action dispatch is uncertain and is not dispatched again`,async()=>{
+    const command={id:`interrupted-${interruption.replaceAll(' ','-')}`,type:'EXECUTE_CONNECT',protocolVersion:1,configVersion:1,
+      targetUrl:'https://www.linkedin.com/in/qa-test/',expiresAt:new Date(Date.now()+60000).toISOString(),actionIntentId:'intent'};
+    const reply=value=>({ok:true,json:async()=>value});
+    let claims=0,authorizations=0,dispatches=0;
+    const acknowledgements=[];
+    const x=worker({storage:async()=>({v2Token:'a'.repeat(40),v2Environment:'local'}),
+      tabQuery:async()=>[{id:7,url:command.targetUrl,status:'complete'}],
+      sendMessage:async()=>{
+        dispatches++;
+        throw new Error(interruption==='tab closes' ? 'No tab with id: 7' : 'The message port closed before a response was received.');
+      },
+      fetchImpl:async(url,options)=>{
+        if(url.endsWith('/api/installation'))return reply({id:'install'});
+        if(url.endsWith('/api/commands/claim'))return reply({command:++claims===1?command:null,config:{version:1,value:DEFAULT_CONFIG}});
+        if(url.endsWith('/authorize')){authorizations++;return reply({authorized:true});}
+        if(url.endsWith('/ack')){acknowledgements.push(JSON.parse(options.body));return reply({stage:'reconcile_required'});}
+        throw new Error('unexpected request');
+      }});
+    assert.equal((await x.poll()).state,'waiting');
+    assert.equal(acknowledgements.length,1);
+    assert.equal(acknowledgements[0].commandId,command.id);
+    assert.equal(acknowledgements[0].status,'uncertain');
+    assert.equal(acknowledgements[0].facts.diagnosticCode,'UNEXPECTED_BROWSER_STATE');
+    assert.equal((await x.poll()).state,'waiting');
+    assert.equal(dispatches,1);
+    assert.equal(authorizations,1);
+    assert.equal(acknowledgements.length,1);
+  });
+}

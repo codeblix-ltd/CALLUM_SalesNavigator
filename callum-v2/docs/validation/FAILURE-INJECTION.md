@@ -24,7 +24,8 @@ Environment: Node 24 fixtures, Cockroach V2 test rows, isolated Chrome. Baseline
 | Real concurrent Cockroach write conflict | At `1df8cd6`, one V2 transaction read a test operator's limit, a second transaction updated and committed that row, and the first resumed. Cockroach forced a retry; the final limit was 3 after both increments | Uses one V2 test row and two database clients; it does not inject browser/network faults or prove every multi-host action race |
 | Run pause/resume after hydrating-page failure | Cockroach requeued one read-only profile inspection; unresolved action intent blocked new Connect | Larger paused-run batches not yet measured |
 | Daily limit and conflicting action intent | Cockroach returned paused with `DAILY_LIMIT` or `ACTION_CONFLICT`, and did not claim a reservation | Race under simultaneous independent operators not yet injected |
-| Chrome restart/resume during an actual click, tab closure during submit, page refresh during action | Pending dedicated injection | Safety cannot be claimed for these races from fixture tests alone |
+| Tab closure or page refresh after action dispatch | Two background-worker VM tests forced a rejected Chrome message after authorization and dispatch. Both ACKed `uncertain`; a second poll did not dispatch the same command again. Existing Cockroach tests separately show uncertain/expired actions enter read-only reconciliation | The mock claim response models server non-redelivery; no live Chrome tab-close/refresh timing was injected |
+| Chrome restart/resume during an actual click | Pending dedicated injection | Safety cannot be claimed from fixture tests alone |
 
 `pnpm test` is the local suite. `V2_TEST_DB=1 node --env-file=<local server env> --test tests/db.integration.test.mjs tests/remote-config.integration.test.mjs` is the Cockroach suite, run sequentially because configuration tests change the dev release pointer.
 
