@@ -21,9 +21,10 @@ Environment: Node 24 fixtures, Cockroach V2 test rows, isolated Chrome. Baseline
 | Authorization network loss before primitive | Background VM emitted `not_submitted` and never invoked content action | Live network fault not injected |
 | Late uncertain ACK after successful reconciliation | Cockroach preserved the completed lead and one pay line | Browser click itself was simulated |
 | Injected Cockroach SQLSTATE `40001` after an uncommitted V2 event write | `tests/db-retry.integration.test.mjs` passed against Cockroach at `95b835c`: the first transaction rolled back, the callback ran twice, and one event remained | An actual concurrent serialization conflict was not forced; the first test invocation hit a transient connection timeout before the transaction and the retry passed |
+| Real concurrent Cockroach write conflict | At `1df8cd6`, one V2 transaction read a test operator's limit, a second transaction updated and committed that row, and the first resumed. Cockroach forced a retry; the final limit was 3 after both increments | Uses one V2 test row and two database clients; it does not inject browser/network faults or prove every multi-host action race |
 | Run pause/resume after hydrating-page failure | Cockroach requeued one read-only profile inspection; unresolved action intent blocked new Connect | Larger paused-run batches not yet measured |
 | Daily limit and conflicting action intent | Cockroach returned paused with `DAILY_LIMIT` or `ACTION_CONFLICT`, and did not claim a reservation | Race under simultaneous independent operators not yet injected |
-| Chrome restart/resume during an actual click, tab closure during submit, a real concurrent DB transaction conflict, page refresh during action | Pending dedicated injection | Safety cannot be claimed for these races from fixture tests alone |
+| Chrome restart/resume during an actual click, tab closure during submit, page refresh during action | Pending dedicated injection | Safety cannot be claimed for these races from fixture tests alone |
 
 `pnpm test` is the local suite. `V2_TEST_DB=1 node --env-file=<local server env> --test tests/db.integration.test.mjs tests/remote-config.integration.test.mjs` is the Cockroach suite, run sequentially because configuration tests change the dev release pointer.
 
