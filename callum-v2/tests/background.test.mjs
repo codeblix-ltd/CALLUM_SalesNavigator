@@ -5,11 +5,11 @@ import { readFile } from 'node:fs/promises';
 import { DEFAULT_CONFIG } from '../packages/linkedin-config/index.mjs';
 
 const files={};for(const name of ['build-info.js','config.js','background.js'])files[name]=await readFile(new URL(`../extension/${name}`,import.meta.url),'utf8');
-function worker({storage,fetchImpl,tabQuery=async()=>[]}){
+function worker({storage,fetchImpl,tabQuery=async()=>[],sendMessage=async()=>null}){
   let listener,fetchCount=0,tabCount=0;
   const sandbox={setTimeout,clearTimeout,URL,Date,fetch:async(...args)=>{fetchCount++;return fetchImpl(...args)},
     chrome:{storage:{local:{get:storage}},alarms:{create(){},onAlarm:{addListener(){}}},runtime:{id:'test',getManifest:()=>({version:'2.4.0'}),
-      onInstalled:{addListener(){}},onStartup:{addListener(){}},onMessage:{addListener(fn){listener=fn}}},tabs:{query:async()=>{tabCount++;return tabQuery()},create:async()=>{tabCount++;return {id:1}},onUpdated:{addListener(){},removeListener(){}},onRemoved:{addListener(){},removeListener(){}}}}};
+      onInstalled:{addListener(){}},onStartup:{addListener(){}},onMessage:{addListener(fn){listener=fn}}},tabs:{query:async()=>{tabCount++;return tabQuery()},create:async()=>{tabCount++;return {id:1}},sendMessage,onUpdated:{addListener(){},removeListener(){}},onRemoved:{addListener(){},removeListener(){}}}}};
   sandbox.globalThis=sandbox;vm.createContext(sandbox);
   sandbox.importScripts=(...names)=>{for(const name of names)vm.runInContext(files[name],sandbox)};
   vm.runInContext(files['background.js'],sandbox);
@@ -78,4 +78,42 @@ test('comment navigation failure cannot reach authorization or a click',async()=
   assert.equal((await x.poll()).state,'waiting');
   assert.equal(ack.status,'not_submitted');
   assert.equal(authorizations,0);
+});
+test('service worker restart after an ACK network loss never repeats the action primitive',async()=>{
+  const command={id:'lost-ack',type:'EXECUTE_CONNECT',protocolVersion:1,configVersion:1,
+    targetUrl:'https://www.linkedin.com/in/qa-test/',expiresAt:new Date(Date.now()+60000).toISOString(),actionIntentId:'intent'};
+  const reply=value=>({ok:true,json:async()=>value});
+  let claims=0,authorizations=0,clicks=0;
+  const fetchImpl=async url=>{
+    if(url.endsWith('/api/installation'))return reply({id:'install'});
+    if(url.endsWith('/api/commands/claim'))return reply({command:++claims===1?command:null,config:{version:1,value:DEFAULT_CONFIG}});
+    if(url.endsWith('/authorize')){authorizations++;return reply({authorized:true});}
+    if(url.endsWith('/ack'))throw new Error('network lost after click');
+    throw new Error('unexpected request');
+  };
+  const options={storage:async()=>({v2Token:'a'.repeat(40),v2Environment:'local'}),fetchImpl,
+    tabQuery:async()=>[{id:7,url:command.targetUrl,status:'complete'}],
+    sendMessage:async(_tabId,message)=>{clicks++;return {commandId:message.command.id,status:'confirmed',facts:{pendingVisible:true}};}};
+  const first=worker(options);
+  assert.equal((await first.poll()).state,'paused');
+  const restarted=worker(options);
+  assert.equal((await restarted.poll()).state,'waiting');
+  assert.equal(clicks,1);assert.equal(authorizations,1);assert.equal(claims,2);
+});
+test('authorization network loss before the primitive reports not submitted',async()=>{
+  const command={id:'authorize-lost',type:'EXECUTE_COMMENT',protocolVersion:1,configVersion:1,
+    targetUrl:'https://www.linkedin.com/in/qa-test/',expiresAt:new Date(Date.now()+60000).toISOString(),actionIntentId:'intent'};
+  const reply=value=>({ok:true,json:async()=>value});let clicks=0,ack=null;
+  const x=worker({storage:async()=>({v2Token:'a'.repeat(40),v2Environment:'local'}),
+    tabQuery:async()=>[{id:7,url:command.targetUrl,status:'complete'}],
+    sendMessage:async()=>{clicks++;return null;},
+    fetchImpl:async(url,options)=>{
+      if(url.endsWith('/api/installation'))return reply({id:'install'});
+      if(url.endsWith('/api/commands/claim'))return reply({command,config:{version:1,value:DEFAULT_CONFIG}});
+      if(url.endsWith('/authorize'))throw new Error('authorization network lost');
+      if(url.endsWith('/ack')){ack=JSON.parse(options.body);return reply({stage:'paused'});}
+      throw new Error('unexpected request');
+    }});
+  assert.equal((await x.poll()).state,'waiting');
+  assert.equal(ack.status,'not_submitted');assert.equal(clicks,0);
 });

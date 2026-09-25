@@ -78,8 +78,9 @@ const server = http.createServer(async (req, res) => {
       if (path === '/api/admin/comment-drafts/review' && req.method === 'POST') return json(res, 200, await control.reviewCommentDraft(data));
       if (/^\/api\/admin\/runs\/[0-9a-f-]+\/(pause|resume)$/.test(path) && req.method === 'POST') {
         const [, , , , id, operation] = path.split('/');
-        if (operation === 'pause') await control.pauseRun(id); else await control.resumeRun(id);
-        return json(res, 200, { status: operation === 'pause' ? 'paused' : 'running' });
+        const result=operation==='pause'?await control.pauseRun(id):await control.resumeRun(id);
+        if(!result.status)throw new Error('RUN_NOT_FOUND');
+        return json(res, 200, result);
       }
       if (path === '/api/admin/flags' && req.method === 'POST') { await control.setFlag(data.flagKey, data.disabled); return json(res, 200, { ok: true }); }
       if (path === '/api/admin/configs' && req.method === 'POST') return json(res, 200, await control.createConfig(data.config, data.minVersion));

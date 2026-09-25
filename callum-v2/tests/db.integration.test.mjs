@@ -11,7 +11,7 @@ test('Cockroach V2 command lease, lost ACK, reconciliation, and duplicate pay in
   const ruleVersion=Number(String(Date.now()).slice(-12));
   try {
     await s.seed();await s.createOperator(operatorId,'dev',5);
-    const issued=await s.createInstallation(operatorId,'2.3.0','68f5971a');
+    const issued=await s.createInstallation(operatorId,'2.4.0','68f5971a');
     const install=await s.installation(issued.token);
     // A zero-amount rule verifies attribution without defining compensation.
     await db.query(`INSERT INTO callum_v2.pay_rules(version,event_type,amount_minor,currency,enabled)
@@ -50,6 +50,11 @@ test('Cockroach V2 command lease, lost ACK, reconciliation, and duplicate pay in
     assert.equal(reconciledPay.rows.length,1);
     assert.equal(reconciledPay.rows[0].event_type,'connection_confirmed');
     assert.equal(Number(reconciledPay.rows[0].pay_rule_version),ruleVersion);
+    assert.equal((await s.acknowledge(install,{commandId:action.command.id,status:'uncertain',facts:{
+      ...observed,diagnosticCode:'POSTCONDITION_UNKNOWN'}})).stage,'completed',
+      'late uncertain action ACK cannot reopen a reconciled connection');
+    assert.equal((await db.query('SELECT stage FROM callum_v2.run_leads WHERE run_id=$1',[first.run.id])).rows[0].stage,'completed');
+    assert.equal((await db.query('SELECT count(*)::INT4 n FROM callum_v2.pay_ledger WHERE run_id=$1',[first.run.id])).rows[0].n,1);
 
     const second=await setup('pay');
     const inspect=await s.claim(install);

@@ -16,9 +16,9 @@ test('withdrawal intent authorizes once and uncertainty only reconciles by obser
     await control.seed();
     previousConfig=Number((await db.query("SELECT active_config_version FROM callum_v2.release_channels WHERE channel='dev'")).rows[0].active_config_version);
     await control.createOperator(operatorId,'dev',0);
-    const issued=await control.createInstallation(operatorId,'2.3.0','25cf3adf');
+    const issued=await control.createInstallation(operatorId,'2.4.0','25cf3adf');
     const installation=await control.installation(issued.token);
-    const draft=await control.createConfig(DEFAULT_CONFIG,'2.3.0');
+    const draft=await control.createConfig(DEFAULT_CONFIG,'2.4.0');
     const version=Number(draft.version);
     await control.activateConfig(version,'dev');
     process.env.V2_QA_PROFILE_KEY=qaKey;
