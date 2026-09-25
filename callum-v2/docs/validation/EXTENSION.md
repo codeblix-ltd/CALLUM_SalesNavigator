@@ -1,6 +1,6 @@
 # Extension validation
 
-Environment: Chrome DevTools MCP launched with `--categoryExtensions --headless --isolated --workspace=.` against a dedicated temporary Chrome profile. Latest packaged extension version `2.2.0`, build SHA `25cf3adfcbc6` from implementation commit `25cf3adfcbc6`.
+Environment: Chrome DevTools MCP launched with `--categoryExtensions --headless --isolated --workspace=.` against a dedicated temporary Chrome profile. Latest packaged extension version `2.3.0`, build SHA `7a1e5a3dd88c` from implementation commit `7a1e5a3dd88c9eda430ba483b97e2b230ecd9997`.
 
 | Command | Result | Proves | Does not prove |
 | --- | --- | --- | --- |
@@ -14,5 +14,7 @@ Environment: Chrome DevTools MCP launched with `--categoryExtensions --headless 
 | `node --env-file=<local server env> scripts/chrome-shadow-smoke.mjs dist/extension --comment-inspection` | Run `a9086837-853e-4129-8d95-05bfb1d668a9` completed comment-state command `0cd87c16-d37c-4af2-a815-3955ca737667`, ACKed `PROFILE_MISMATCH`, and recorded `comment_state_observed`; popup saw config 10 | New read-only command routes backend → running extension → backend | Real posts, comment controls, or contact email on an authenticated page |
 | `node scripts/chrome-lifecycle.mjs dist/extension` after 2.2.0 build | Installed/listed v2.2.0 as ID `blkkihmcpjhihcfihfoijkgnmfpeigbd`, reloaded, triggered, popup reported SHA `25cf3adfcbc6` and adapter 3, service worker present, no popup console errors, uninstalled | Current packaged MV3 lifecycle | Authenticated LinkedIn behavior |
 | `node --env-file=<local server env> scripts/chrome-shadow-smoke.mjs dist/extension --invitation-inspection` | Run `fe2814e0-e619-4575-9870-4a9bd20c5bd8` completed invitation command `1c655cf6-ea92-4faf-8357-f9e5cb53aa1b`, ACKed `PROFILE_MISMATCH`, and recorded `pending_invitation_observed`; popup saw config 11 | Manager URL command routes backend → running extension → backend | Real invitation card, age, or withdrawal on an authenticated page |
+| `node scripts/chrome-lifecycle.mjs dist/extension` after 2.3.0 build | Installed/listed v2.3.0 as ID `blkkihmcpjhihcfihfoijkgnmfpeigbd`, reloaded, triggered, popup reported SHA `7a1e5a3dd88c` and adapter 4, service worker present, no popup console errors, uninstalled | Current packaged MV3 lifecycle | Authenticated LinkedIn withdrawal behavior |
+| `node --env-file=<local server env> scripts/chrome-shadow-smoke.mjs dist/extension --invitation-inspection` | Run `45885c19-0995-4945-ad4f-78a18f04f769` completed read-only invitation command `372c60ad-7c05-4d00-a922-5c82052bc0aa`, ACKed `PROFILE_MISMATCH`, and reported config 15; no action was queued | 2.3.0 command/config delivery through running extension | Authenticated invitation card/dialog or live withdrawal |
 
 The extension stores only its V2 token and environment choice locally. Workflow state lives in Cockroach. Local storage and backend outage tests assert no browser action begins. No broad browsing permission or V1 extension file is used.

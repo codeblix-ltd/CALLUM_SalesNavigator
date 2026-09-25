@@ -2,7 +2,7 @@
 
 Production-isolated canary. The Node control plane owns workflow, command claims, action intents, reconciliation, remote config, events and pay. The MV3 extension only observes LinkedIn or performs one server-authorized atomic action. The web app is a V2 staging administration surface.
 
-Current browser work includes profile observation, read-only recent-post/comment-state inspection, controlled contact-email extraction, and a guarded connection request. The inspection commands leave lead stage and Connect intents unchanged. Comment submission, withdrawal, and invitation-manager workflows still require implementation and validation; do not use this branch for production scouts. See the readiness record for the remaining gates.
+Current browser work includes profile observation, read-only recent-post/comment-state and sent-invitation inspection, controlled contact-email extraction, a guarded connection request, and a QA-scoped one-time withdrawal primitive. The withdrawal path requires a recent matching invitation observation and server authorization. Comment submission and authenticated LinkedIn withdrawal validation remain open; do not use this branch for production scouts. See the readiness record for the remaining gates.
 
 ## Local setup
 

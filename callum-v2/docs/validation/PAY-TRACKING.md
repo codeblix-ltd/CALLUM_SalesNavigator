@@ -7,3 +7,5 @@ Environment: Node fixtures and Cockroach V2 test operator. Baseline SHA: `68f597
 This proves derivation and uniqueness for the tested connection outcome. It does not establish real scout compensation policy, actual payable rates, comment/observation eligibility, payroll approval or live-action attribution. Those require owner-approved versioned rules and further tests.
 
 The later Cockroach regression enabled the fixture rule before reconciliation. A Pending observation after a lost action ACK produced one ledger row tied to a `connection_confirmed` source event and the tested rule version. Direct confirmation, late ACK, and `not_submitted` cases remained distinct.
+
+The withdrawal Cockroach test produced zero pay rows across confirmed, uncertain, late-ACK, and `not_submitted` outcomes. Withdrawal compensation is not configured or implied by this implementation.

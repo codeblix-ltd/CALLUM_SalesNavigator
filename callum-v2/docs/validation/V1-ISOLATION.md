@@ -18,3 +18,5 @@ An independent HTTP check on 2026-09-25 returned 200 from `https://lead.careerac
 After the 2.1.0 inspection changes, `pnpm verify:v1` still passed and a fresh request to the V1 web endpoint returned HTTP 200. Both V2 DNS names remained unresolved.
 
 After the 2.2.0 invitation-inspection changes, `pnpm verify:v1` again passed against baseline `68f5971a5e4b91d0814cd0f2b32dd18dbd64237b`. The V1 `public.lead_assignments` count remained 63,135 after migration and Cockroach tests; `https://lead.careeraccelerator.net/` returned HTTP 200. Both V2 hostnames still lacked A records at the latest check. The branch remains isolated from the V1 production workflow.
+
+After the 2.3.0 withdrawal changes, `pnpm verify:v1` passed again. V1 assignment count was still 63,135 after migration and all four Cockroach integration tests, and V1 web returned HTTP 200. Both V2 hostnames still had no A records. No V1 protected path, production workflow, or public-schema assignment row was changed by this work.
