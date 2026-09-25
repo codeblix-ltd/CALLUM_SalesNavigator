@@ -1,0 +1,9 @@
+# Support diagnostics validation
+
+The V2 admin support view now joins each diagnostic to its run, lead, command, installation, action intent, and any reconciliation command. It shows the trace ID, extension/build/config version, command and lead state, attempt count, failure stage and code, and selected structured browser facts. It does not return contact email, post text, page HTML, screenshots, or tokens in diagnostic rows.
+
+The backend records a diagnostic for failed profile/inspection observations, an action that ends paused or requires reconciliation, an expired action lease, and an inconclusive comment or withdrawal reconciliation. The action intent and reconciliation command states remain visible after the diagnostic was created, so support can see the current recovery position.
+
+`V2_TEST_DB=1 node --env-file=<local server env> --test tests/support-diagnostics.integration.test.mjs` passed 1/1 against Cockroach on 2026-09-26. A failed profile observation had the expected IDs, versions, completed command state, paused lead stage, one attempt, and sanitized mismatch facts. An uncertain Connect had an intent in `reconcile_required` and a pending read-only reconciliation command. A separate V2-only contact fixture stored a test email in an observation; its support row exposed only `contact_email_present=true` and did not contain the address. The affected Connect, comment, and withdrawal integrations then passed sequentially 3/3 with no skips.
+
+This is a DB/API read-model test, not a test of a staffed support session or authenticated LinkedIn browser failure. A backend outage before any command is received cannot create a server-side diagnostic; the extension popup reports its paused state locally. Managed staff identity and an approved retention policy remain prerequisites for broader access.

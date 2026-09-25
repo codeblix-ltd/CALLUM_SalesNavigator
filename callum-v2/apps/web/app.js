@@ -29,7 +29,11 @@ async function refresh() {
   table('assignments',x.assignments,['run_id','lead_id','full_name','niche','stage']);
   table('intents',x.intents,['id','operator_id','lead_id','action_type','state','updated_at']);
   table('drafts',x.drafts,['id','run_id','lead_id','post_url','body','status','reviewer','action_intent_id','created_at']);
-  table('diagnostics',x.diagnostics,['operator_id','stage','code','command_id','action_intent_id','created_at']);
+  table('diagnostics',x.diagnostics,['operator_id','stage','code','run_id','run_status','lead_id','command_id','trace_id','installation_id',
+    'command_type','command_status','lead_stage','action_intent_id','intent_state','reconciliation_command_id',
+    'reconciliation_status','attempt_count','extension_version','build_sha','config_version','profile_matched',
+    'page_ready','pending_visible','connected_visible','target_post_present','viewer_matched','invitation_found',
+    'contact_info_opened','contact_email_present','created_at']);
   table('observations',x.observations,['run_id','lead_id','command_id','type','diagnostic_code','profile_matched','target_post_present','target_post_authored_by_lead','viewer_matched','own_comment_present','invitation_found','invitation_age_days','invitation_eligible','contact_info_opened','contact_email_present','created_at']);
   table('events',x.events,['event_type','operator_id','run_id','lead_id','command_id','action_intent_id','config_version','diagnostic_code','created_at']);
   table('configs',x.configs,['version','status','min_extension_version','rollout_percent','checksum','created_at']);

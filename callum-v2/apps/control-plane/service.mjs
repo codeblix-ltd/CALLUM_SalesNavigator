@@ -304,6 +304,7 @@ export class ControlPlane {
           withdraw ? 'INSPECT_PENDING_INVITATION' : comment ? 'INSPECT_COMMENT_STATE' : 'INSPECT_PROFILE', `reconcile:${c.action_intent_id}`, c.action_intent_id,
           { reconcile: true, expectedName: c.payload?.expectedName || null,...(comment?{postUrl:c.payload.postUrl,approvedText:c.payload.approvedText,actorProfileKey:c.payload.actorProfileKey}: {}) });
         await this.event(q, { event_key: `intent:${c.action_intent_id}:uncertain`, event_type: withdraw ? 'withdrawal_uncertain' : comment ? 'comment_uncertain' : 'connection_uncertain', operator_id: c.operator_id, run_id: c.run_id, lead_id: c.lead_id, command_id: c.id, action_intent_id: c.action_intent_id, config_version: Number(c.config_version), diagnostic_code: 'POSTCONDITION_UNKNOWN' });
+        await this.diagnostic(q,{id:c.installation_id,operator_id:c.operator_id},c,'action_lease','POSTCONDITION_UNKNOWN');
       } else {
         await q.query("UPDATE callum_v2.commands SET status='pending',expires_at=now()+INTERVAL '30 minutes',lease_expires_at=NULL,updated_at=now() WHERE id=$1", [c.id]);
       }
@@ -447,6 +448,11 @@ export class ControlPlane {
       if (c.status === 'completed') return finish({ duplicate: true, state: c.status });
       if (!['leased', 'uncertain'].includes(c.status)) throw new Error('COMMAND_NOT_ACTIVE');
       const facts = result.facts;
+      const finishActionOutcome=async outcome=>{
+        if(['paused','reconcile_required'].includes(outcome.stage))await this.diagnostic(q,installation,c,'action',
+          facts.diagnosticCode==='OK' ? result.status==='not_submitted' ? 'UNEXPECTED_BROWSER_STATE' : 'POSTCONDITION_UNKNOWN' : facts.diagnosticCode);
+        return finish(outcome);
+      };
       if (facts.profileKey !== c.target_profile_key.toLowerCase()) facts.profileMatched = false;
       if (c.type !== 'EXTRACT_CONTACT_INFO' || c.mode !== 'live_canary' || result.status !== 'observed' ||
         !process.env.V2_QA_PROFILE_KEY || c.target_profile_key !== process.env.V2_QA_PROFILE_KEY.toLowerCase() ||
@@ -484,9 +490,9 @@ export class ControlPlane {
         installation_id: installation.id, run_id: c.run_id, lead_id: c.lead_id, command_id: c.id, action_intent_id: c.action_intent_id,
         extension_version: installation.extension_version, build_sha: installation.build_sha, protocol_version: PROTOCOL_VERSION,
         config_version: Number(c.config_version), diagnostic_code: facts.diagnosticCode });
-      if (c.type === 'EXECUTE_CONNECT') return finish(await this.finishAction(q, installation, c, result));
-      if (c.type === 'EXECUTE_WITHDRAW') return finish(await this.finishWithdraw(q, installation, c, result));
-      if (c.type === 'EXECUTE_COMMENT') return finish(await this.finishComment(q, installation, c, result));
+      if (c.type === 'EXECUTE_CONNECT') return finishActionOutcome(await this.finishAction(q, installation, c, result));
+      if (c.type === 'EXECUTE_WITHDRAW') return finishActionOutcome(await this.finishWithdraw(q, installation, c, result));
+      if (c.type === 'EXECUTE_COMMENT') return finishActionOutcome(await this.finishComment(q, installation, c, result));
       if (c.type === 'INSPECT_COMMENT_STATE' || c.type === 'EXTRACT_CONTACT_INFO' || c.type === 'INSPECT_PENDING_INVITATION') {
         await this.event(q,{event_key:`command:${c.id}:inspection`,event_type:c.type === 'INSPECT_COMMENT_STATE' ? 'comment_state_observed' : c.type === 'INSPECT_PENDING_INVITATION' ? 'pending_invitation_observed' : facts.contactEmail ? 'contact_info_confirmed' : 'contact_info_observed',
           operator_id:c.operator_id,installation_id:installation.id,run_id:c.run_id,lead_id:c.lead_id,command_id:c.id,
@@ -505,6 +511,7 @@ export class ControlPlane {
             operator_id:c.operator_id,installation_id:installation.id,run_id:c.run_id,lead_id:c.lead_id,command_id:c.id,
             action_intent_id:c.action_intent_id,config_version:Number(c.config_version),diagnostic_code:facts.diagnosticCode});
           if(confirmed)await this.applyPay(q,c,eventId,'comment_confirmed');
+          if(!confirmed)await this.diagnostic(q,installation,c,'reconciliation',facts.diagnosticCode==='OK'?'POSTCONDITION_UNKNOWN':facts.diagnosticCode);
           return finish({duplicate:false,stage});
         }
         if (c.type==='INSPECT_PENDING_INVITATION' && c.payload?.reconcile===true && c.action_intent_id) {
@@ -515,6 +522,7 @@ export class ControlPlane {
             operator_id:c.operator_id,installation_id:installation.id,run_id:c.run_id,lead_id:c.lead_id,command_id:c.id,
             action_intent_id:c.action_intent_id,config_version:Number(c.config_version),diagnostic_code:facts.diagnosticCode,
             details:{invitationFound:facts.invitationFound}});
+          await this.diagnostic(q,installation,c,'reconciliation',facts.diagnosticCode==='OK'?'POSTCONDITION_UNKNOWN':facts.diagnosticCode);
           return finish({duplicate:false,stage:'paused'});
         }
         return finish({ duplicate:false,stage:c.stage });
@@ -776,7 +784,26 @@ export class ControlPlane {
       intents: 'SELECT id,run_id,operator_id,lead_id,action_type,state,updated_at FROM callum_v2.action_intents ORDER BY updated_at DESC LIMIT 100',
       drafts: 'SELECT id,run_id,lead_id,inspection_command_id,post_url,body,body_sha256,status,reviewer,action_intent_id,created_at FROM callum_v2.comment_drafts ORDER BY created_at DESC LIMIT 100',
       events: 'SELECT id,event_type,operator_id,run_id,lead_id,command_id,action_intent_id,config_version,diagnostic_code,created_at FROM callum_v2.events ORDER BY created_at DESC LIMIT 100',
-      diagnostics: 'SELECT operator_id,installation_id,run_id,lead_id,command_id,action_intent_id,stage,code,created_at FROM callum_v2.support_diagnostics ORDER BY created_at DESC LIMIT 100',
+      diagnostics: `SELECT d.operator_id,COALESCE(d.installation_id,c.installation_id) AS installation_id,
+        d.run_id,d.lead_id,d.command_id,d.action_intent_id,d.stage,d.code,d.created_at,
+        i.extension_version,i.build_sha,c.config_version,c.trace_id,c.type AS command_type,c.status AS command_status,
+        r.status AS run_status,l.stage AS lead_stage,a.state AS intent_state,
+        rc.id AS reconciliation_command_id,rc.status AS reconciliation_status,
+        (SELECT count(*)::INT4 FROM callum_v2.command_attempts t WHERE t.command_id=d.command_id) AS attempt_count,
+        o.facts->>'profileMatched' AS profile_matched,o.facts->>'pageReady' AS page_ready,
+        o.facts->>'pendingVisible' AS pending_visible,o.facts->>'connectedVisible' AS connected_visible,
+        o.facts->>'targetPostPresent' AS target_post_present,o.facts->>'viewerMatched' AS viewer_matched,
+        o.facts->>'invitationFound' AS invitation_found,o.facts->>'contactInfoOpened' AS contact_info_opened,
+        (o.facts->>'contactEmail') IS NOT NULL AS contact_email_present
+        FROM callum_v2.support_diagnostics d
+        LEFT JOIN callum_v2.commands c ON c.id=d.command_id
+        LEFT JOIN callum_v2.installations i ON i.id=COALESCE(d.installation_id,c.installation_id)
+        LEFT JOIN callum_v2.runs r ON r.id=d.run_id
+        LEFT JOIN callum_v2.run_leads l ON l.run_id=d.run_id AND l.lead_id=d.lead_id
+        LEFT JOIN callum_v2.action_intents a ON a.id=d.action_intent_id
+        LEFT JOIN callum_v2.commands rc ON rc.idempotency_key='reconcile:' || d.action_intent_id::STRING
+        LEFT JOIN callum_v2.observations o ON o.command_id=d.command_id
+        ORDER BY d.created_at DESC,d.id DESC LIMIT 100`,
       observations: `SELECT o.run_id,o.lead_id,o.command_id,c.type,o.diagnostic_code,
         o.facts->>'profileMatched' AS profile_matched,
         o.facts->>'contactInfoOpened' AS contact_info_opened,
