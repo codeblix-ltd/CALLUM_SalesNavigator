@@ -1,6 +1,6 @@
 # Readiness decision
 
-**NOT PROD-READY-CANDIDATE** as of 2026-09-25. Starting main SHA: `68f5971a5e4b91d0814cd0f2b32dd18dbd64237b`. Current implementation commit: `11a5096732ba`; local packaged build SHA: `11a5096732ba`. Protocol `1`; extension `2.5.0`; adapter `6`; dev remote config `27`; DB migrations `001_init` through `004_comment_action`.
+**NOT PROD-READY-CANDIDATE** as of 2026-09-25. Starting main SHA: `68f5971a5e4b91d0814cd0f2b32dd18dbd64237b`. Current implementation commit: `8b04b5c7f891`; local packaged build SHA: `8b04b5c7f891`. Protocol `1`; extension `2.5.0`; adapter `6`; dev remote config `27`; DB migrations `001_init` through `004_comment_action`.
 
 The local V2 architecture, migration, protocol fixtures, Cockroach action reconciliation, remote config update, Chrome MCP lifecycle, 1k/10k real-catalog shadow workloads, and local API smoke have evidence in sibling validation files. These results do not substitute for all 15 gates in the context kit.
 
