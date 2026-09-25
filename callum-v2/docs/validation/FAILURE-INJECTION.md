@@ -16,7 +16,13 @@ Environment: Node 24 fixtures, Cockroach V2 test rows, isolated Chrome. Baseline
 | Invitation observation scope | Cockroach inspection test rejected a forged target profile key, derived 35-day eligibility only for a matched observation, and blocked/resumed a pending read-only command with the withdrawal flag | No authenticated invitation card or withdrawal action tested |
 | Withdrawal action uncertainty | Cockroach test required a fresh same-installation QA observation, authorized once, prevented redelivery after an expired lease, used only a read-only reconciliation command, accepted a late confirmed ACK without a second action, and generated no pay; adapter fixtures clicked one matching 35-day card and one confirmation button | No real authenticated LinkedIn withdrawal or browser crash after a live click |
 | Withdrawal kill between claim and authorization | Cockroach rejected authorization after the flag changed and recorded `not_submitted` with no pay; worker navigation-failure test also sent `not_submitted` without authorization | Real Chrome tab-close race remains untested |
-| Chrome restart/resume, tab closure, DB retry/transaction conflict, network loss before action, comment/withdraw uncertainty | Pending dedicated injection | Safety cannot be claimed from unit tests alone |
+| Backend process restart after an authorized action | New local API process recovered an expired Connect lease as one read-only inspection; no second action command | Browser click itself was simulated |
+| Service worker restart after lost result ACK | Background VM restarted its worker and observed one primitive invocation and one authorization | Actual Chrome worker termination during a live click not injected |
+| Authorization network loss before primitive | Background VM emitted `not_submitted` and never invoked content action | Live network fault not injected |
+| Late uncertain ACK after successful reconciliation | Cockroach preserved the completed lead and one pay line | Browser click itself was simulated |
+| Run pause/resume after hydrating-page failure | Cockroach requeued one read-only profile inspection; unresolved action intent blocked new Connect | Larger paused-run batches not yet measured |
+| Daily limit and conflicting action intent | Cockroach returned paused with `DAILY_LIMIT` or `ACTION_CONFLICT`, and did not claim a reservation | Race under simultaneous independent operators not yet injected |
+| Chrome restart/resume during an actual click, tab closure during submit, DB retry/transaction conflict, page refresh during action | Pending dedicated injection | Safety cannot be claimed for these races from fixture tests alone |
 
 `pnpm test` is the local suite. `V2_TEST_DB=1 node --env-file=<local server env> --test tests/db.integration.test.mjs tests/remote-config.integration.test.mjs` is the Cockroach suite, run sequentially because configuration tests change the dev release pointer.
 
