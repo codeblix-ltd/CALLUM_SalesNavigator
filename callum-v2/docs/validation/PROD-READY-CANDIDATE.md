@@ -4,7 +4,7 @@
 
 The local V2 architecture, migration, protocol fixtures, Cockroach action reconciliation, remote config update, Chrome MCP lifecycle, 1k/10k real-catalog shadow workloads, and local API smoke have evidence in sibling validation files. These results do not substitute for all 15 gates in the context kit.
 
-The branch-scoped V2 GitHub Actions run `36155386021` passed and uploaded static web files to the V2 FTP directory. Public V2 web/API DNS remains unresolved, and no dedicated backend is deployed.
+Branch-scoped V2 GitHub Actions runs `36155386021` and `36159922057` passed and uploaded static web files to the V2 FTP directory. Public V2 web/API DNS remains unresolved, and no dedicated backend is deployed.
 
 Read-only comment-state and canary-scoped contact-email inspection now have fixture and Cockroach tests. The 2.1.0 Chrome shadow smoke proved comment-state command routing but hit LinkedIn authwall, so target selectors and contact extraction remain unverified on authenticated pages.
 
