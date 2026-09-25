@@ -96,6 +96,14 @@ export class ControlPlane {
       const op = (await q.query('SELECT * FROM callum_v2.operators WHERE id=$1 AND enabled=true', [operatorId])).rows[0];
       if (!op) throw new Error('OPERATOR_DISABLED');
       if (mode === 'live_canary' && (!leadId || count !== 1 || !process.env.V2_QA_PROFILE_KEY)) throw new Error('QA_RECIPIENT_REQUIRED');
+      let canaryInstallation = null;
+      if (mode === 'live_canary') {
+        if (!uuid.test(installationId || '')) throw new Error('CANARY_INSTALLATION_REQUIRED');
+        canaryInstallation = (await q.query(`SELECT id,extension_version FROM callum_v2.installations
+          WHERE id=$1 AND operator_id=$2 AND disabled=false AND protocol_version=$3`,
+          [installationId, operatorId, PROTOCOL_VERSION])).rows[0];
+        if (!canaryInstallation) throw new Error('CANARY_INSTALLATION_REQUIRED');
+      }
       const catalog = await q.query(`SELECT l.id,l.profile_key,l.linkedin_url,l.full_name,
         (SELECT min(ln.niche) FROM public.lead_niches ln WHERE ln.lead_id=l.id) AS niche
         FROM public.leads l WHERE ($1::UUID IS NULL OR l.id=$1::UUID)
@@ -105,7 +113,7 @@ export class ControlPlane {
       if (mode === 'live_canary' && profileKeyFromUrl(catalog.rows[0].linkedin_url) !== process.env.V2_QA_PROFILE_KEY.toLowerCase()) throw new Error('QA_RECIPIENT_REQUIRED');
       if (mode === 'live_canary' && !catalog.rows[0].full_name?.trim()) throw new Error('QA_RECIPIENT_NAME_REQUIRED');
       if (mode === 'live_canary') await this.assertNoV1Assignment(q, catalog.rows[0].id);
-      const config = await this.activeConfig(q, { cohort: op.cohort, extension_version: CURRENT_EXTENSION_VERSION });
+      const config = await this.activeConfig(q, { cohort: op.cohort, extension_version: canaryInstallation?.extension_version || CURRENT_EXTENSION_VERSION });
       const run = (await q.query(`INSERT INTO callum_v2.runs(operator_id,installation_id,mode,config_version)
         VALUES ($1,$2,$3,$4) RETURNING id,operator_id,mode,status,config_version`, [operatorId, installationId, mode, config.version])).rows[0];
       let selected = 0;

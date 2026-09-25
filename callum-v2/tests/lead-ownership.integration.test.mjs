@@ -26,6 +26,17 @@ test('V2 refuses a live canary run and action for a lead already assigned in V1'
     const issued = await control.createInstallation(operatorId, '2.5.0', '8b04b5c7');
     const installation = await control.installation(issued.token);
     await assert.rejects(
+      () => control.createRun({ operatorId, mode: 'live_canary', count: 1, leadId: lead.id }),
+      /CANARY_INSTALLATION_REQUIRED/
+    );
+    const otherOperatorId = `v2other_${randomUUID().slice(0,8)}`;
+    await control.createOperator(otherOperatorId, 'dev', 1);
+    const otherIssued = await control.createInstallation(otherOperatorId, '2.5.0', '8b04b5c7');
+    await assert.rejects(
+      () => control.createRun({ operatorId, mode: 'live_canary', count: 1, leadId: lead.id, installationId: otherIssued.id }),
+      /CANARY_INSTALLATION_REQUIRED/
+    );
+    await assert.rejects(
       () => control.createRun({ operatorId, mode: 'live_canary', count: 1, leadId: lead.id, installationId: installation.id }),
       /V1_LEAD_ASSIGNED/
     );

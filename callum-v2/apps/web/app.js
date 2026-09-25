@@ -51,7 +51,7 @@ const payEvent=document.createElement('select');payEvent.name='eventType';payEve
 $('payForm').insertBefore(payEvent,$('payForm').querySelector('button'));
 bindForm('operatorForm','/api/admin/operators',f=>({id:f.get('id'),cohort:f.get('cohort'),dailyLimit:Number(f.get('dailyLimit'))}));
 bindForm('installationForm','/api/admin/installations',f=>({operatorId:f.get('operatorId'),extensionVersion:f.get('extensionVersion'),buildSha:f.get('buildSha'),actorProfileUrl:f.get('actorProfileUrl')||null}),r=>{$('issuedToken').hidden=false;$('issuedToken').textContent=`Installation ${r.id}\nToken (copy now; shown only once): ${r.token}`;});
-bindForm('runForm','/api/admin/runs',f=>({operatorId:f.get('operatorId'),mode:f.get('mode'),count:Number(f.get('count')),niche:f.get('niche')||null,leadId:f.get('leadId')||null}));
+bindForm('runForm','/api/admin/runs',f=>({operatorId:f.get('operatorId'),mode:f.get('mode'),count:Number(f.get('count')),niche:f.get('niche')||null,leadId:f.get('leadId')||null,installationId:f.get('installationId')||null}));
 bindForm('inspectionForm','/api/admin/inspections',f=>({runId:f.get('runId'),leadId:f.get('leadId'),type:f.get('type'),postUrl:f.get('postUrl')||null}));
 bindForm('withdrawalForm','/api/admin/withdrawals',f=>({runId:f.get('runId'),leadId:f.get('leadId'),inspectionCommandId:f.get('inspectionCommandId')}));
 const comments=document.createElement('article');
