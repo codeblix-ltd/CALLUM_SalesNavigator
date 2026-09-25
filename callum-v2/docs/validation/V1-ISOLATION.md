@@ -14,3 +14,5 @@ No V1 deployment command was run in this task. V2 was pushed only to `codex/thin
 After the V2 branch push, GitHub Actions showed only `Deploy Callum V2 web staging` for that branch. The latest V1 production workflow run was on `main` at 13:52 UTC, before the V2 push; V2 did not trigger it.
 
 An independent HTTP check on 2026-09-25 returned 200 from `https://lead.careeraccelerator.net/`. It confirms the V1 web endpoint responded at that moment; it does not certify all V1 workflows.
+
+After the 2.1.0 inspection changes, `pnpm verify:v1` still passed and a fresh request to the V1 web endpoint returned HTTP 200. Both V2 DNS names remained unresolved.

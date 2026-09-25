@@ -1,6 +1,6 @@
 # Extension validation
 
-Environment: Chrome DevTools MCP launched with `--categoryExtensions --headless --isolated --workspace=.` against a dedicated temporary Chrome profile. Latest packaged extension version `2.0.0`, build SHA `b820d22748bb` from implementation commit `b820d22748bb65b563e48b394cea70e5c434d69a`.
+Environment: Chrome DevTools MCP launched with `--categoryExtensions --headless --isolated --workspace=.` against a dedicated temporary Chrome profile. Latest packaged extension version `2.1.0`, build SHA `0c647e29c017` from implementation commit `0c647e29c017392fe1d86ba048fbbd1d41a43a57`.
 
 | Command | Result | Proves | Does not prove |
 | --- | --- | --- | --- |
@@ -10,5 +10,7 @@ Environment: Chrome DevTools MCP launched with `--categoryExtensions --headless 
 | `pnpm run build` then `node scripts/chrome-lifecycle.mjs dist/extension` | Initial package installed as ID `blkkihmcpjhihcfihfoijkgnmfpeigbd`, listed v2.0.0, reloaded, triggered, popup build SHA `4b4a5b8501d8`, service worker present, no popup console errors, uninstalled | That packaged build runs as MV3 | Authenticated LinkedIn behavior |
 | Same lifecycle command after late-ACK code commit | Rebuilt package `b820d22748bb` installed as ID `blkkihmcpjhihcfihfoijkgnmfpeigbd`, reloaded, popup reported new SHA, service worker present, no popup errors, uninstalled | Latest package metadata and MV3 lifecycle | Authenticated LinkedIn behavior |
 | `node --env-file=<local server env> scripts/chrome-shadow-smoke.mjs dist/extension` | Run `5ad02216-a189-474f-9456-bce332a0a271` completed command and ACKed `PROFILE_MISMATCH` after authwall redirect; extension saw config `6` | Final packaged extension and current remote config reach V2 backend | Signed-in QA profile observation |
+| `node scripts/chrome-lifecycle.mjs dist/extension` after 2.1.0 build | Installed/listed v2.1.0 as ID `blkkihmcpjhihcfihfoijkgnmfpeigbd`, reloaded, triggered, popup reported SHA `0c647e29c017` and adapter 2, service worker present, no popup console errors, uninstalled | 2.1.0 packaged MV3 lifecycle | Authenticated target-state behavior |
+| `node --env-file=<local server env> scripts/chrome-shadow-smoke.mjs dist/extension --comment-inspection` | Run `a9086837-853e-4129-8d95-05bfb1d668a9` completed comment-state command `0cd87c16-d37c-4af2-a815-3955ca737667`, ACKed `PROFILE_MISMATCH`, and recorded `comment_state_observed`; popup saw config 10 | New read-only command routes backend → running extension → backend | Real posts, comment controls, or contact email on an authenticated page |
 
 The extension stores only its V2 token and environment choice locally. Workflow state lives in Cockroach. Local storage and backend outage tests assert no browser action begins. No broad browsing permission or V1 extension file is used.
