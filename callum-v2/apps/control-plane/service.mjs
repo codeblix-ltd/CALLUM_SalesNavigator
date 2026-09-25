@@ -228,16 +228,26 @@ export class ControlPlane {
         extension_version: installation.extension_version, build_sha: installation.build_sha, protocol_version: PROTOCOL_VERSION,
         config_version: Number(c.config_version), diagnostic_code: facts.diagnosticCode });
       if (c.type === 'EXECUTE_CONNECT') return this.finishAction(q, installation, c, result);
+      if (c.payload?.reconcile === true && c.action_intent_id) {
+        const intent = (await q.query('SELECT state FROM callum_v2.action_intents WHERE id=$1', [c.action_intent_id])).rows[0];
+        if (intent?.state === 'confirmed' || intent?.state === 'cancelled') return { duplicate: false, stage: c.stage };
+      }
       const choice = decideObservation(c.mode, facts, c.payload?.reconcile === true);
       await q.query('UPDATE callum_v2.run_leads SET stage=$3,updated_at=now() WHERE run_id=$1 AND lead_id=$2', [c.run_id,c.lead_id,choice.stage]);
       if (c.payload?.reconcile === true && c.action_intent_id && choice.event === 'connection_reconciled') {
         await q.query("UPDATE callum_v2.action_intents SET state='confirmed',updated_at=now() WHERE id=$1 AND state='reconcile_required'", [c.action_intent_id]);
       }
-      const eventId = await this.event(q, { event_key: `command:${c.id}:${choice.event}`, event_type: choice.event, operator_id: c.operator_id,
+      await this.event(q, { event_key: `command:${c.id}:${choice.event}`, event_type: choice.event, operator_id: c.operator_id,
         installation_id: installation.id, run_id: c.run_id, lead_id: c.lead_id, command_id: c.id, action_intent_id: c.action_intent_id,
         extension_version: installation.extension_version, build_sha: installation.build_sha, protocol_version: PROTOCOL_VERSION,
         config_version: Number(c.config_version), diagnostic_code: facts.diagnosticCode });
-      if (choice.event === 'connection_reconciled') await this.applyPay(q, c, eventId, 'connection_confirmed');
+      if (choice.event === 'connection_reconciled' && c.action_intent_id) {
+        const confirmedEventId = await this.event(q, { event_key: `intent:${c.action_intent_id}:confirmed`, event_type: 'connection_confirmed',
+          operator_id: c.operator_id, installation_id: installation.id, run_id: c.run_id, lead_id: c.lead_id,
+          command_id: c.id, action_intent_id: c.action_intent_id, extension_version: installation.extension_version,
+          build_sha: installation.build_sha, protocol_version: PROTOCOL_VERSION, config_version: Number(c.config_version), diagnostic_code: facts.diagnosticCode });
+        await this.applyPay(q, c, confirmedEventId, 'connection_confirmed');
+      }
       if (choice.stage === 'awaiting_action') await this.reserveConnect(q, c);
       if (choice.stage === 'paused') await this.diagnostic(q, installation, c, 'observation', facts.diagnosticCode);
       return { duplicate: false, stage: choice.stage };
@@ -272,6 +282,7 @@ export class ControlPlane {
       const observedExisting = result.facts.profileMatched && result.facts.pageReady && (result.facts.pendingVisible || result.facts.connectedVisible);
       const stage = observedExisting ? 'completed' : 'paused';
       await q.query("UPDATE callum_v2.action_intents SET state='cancelled',updated_at=now() WHERE id=$1 AND state IN ('reserved','submitted')", [c.action_intent_id]);
+      await q.query("UPDATE callum_v2.commands SET status='cancelled',updated_at=now() WHERE idempotency_key=$1 AND status='pending'", [`reconcile:${c.action_intent_id}`]);
       await q.query('UPDATE callum_v2.run_leads SET stage=$3,updated_at=now() WHERE run_id=$1 AND lead_id=$2', [c.run_id,c.lead_id,stage]);
       await this.event(q, { event_key: `intent:${c.action_intent_id}:not_submitted`, event_type: observedExisting ? 'already_pending' : 'connection_not_submitted',
         operator_id: c.operator_id, installation_id: installation.id, run_id: c.run_id, lead_id: c.lead_id,
@@ -281,6 +292,7 @@ export class ControlPlane {
     const confirmed = !!authorization && result.status === 'confirmed' && result.facts.profileMatched && result.facts.pageReady && result.facts.pendingVisible;
     if (confirmed) {
       await q.query("UPDATE callum_v2.action_intents SET state='confirmed',updated_at=now() WHERE id=$1 AND state IN ('reserved','submitted','reconcile_required')", [c.action_intent_id]);
+      await q.query("UPDATE callum_v2.commands SET status='cancelled',updated_at=now() WHERE idempotency_key=$1 AND status='pending'", [`reconcile:${c.action_intent_id}`]);
       await q.query("UPDATE callum_v2.run_leads SET stage='completed',updated_at=now() WHERE run_id=$1 AND lead_id=$2", [c.run_id,c.lead_id]);
       const eventId = await this.event(q, { event_key: `intent:${c.action_intent_id}:confirmed`, event_type: 'connection_confirmed', operator_id: c.operator_id,
         installation_id: installation.id, run_id: c.run_id, lead_id: c.lead_id, command_id: c.id, action_intent_id: c.action_intent_id,
