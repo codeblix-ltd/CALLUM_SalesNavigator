@@ -5,15 +5,19 @@ import { fileURLToPath } from 'node:url';
 import { timingSafeEqual } from 'node:crypto';
 import { openDatabase } from './db.mjs';
 import { ControlPlane } from './service.mjs';
+import { createOriginPolicy } from './origin-policy.mjs';
 
-const db = openDatabase();
-const control = new ControlPlane(db);
-await control.seed();
 const port = Number(process.env.V2_PORT || 8788);
 const adminToken = process.env.V2_ADMIN_TOKEN;
 if (!adminToken || adminToken.length < 32) throw new Error('V2_ADMIN_TOKEN must be at least 32 characters');
 const webRoot = fileURLToPath(new URL('../web/', import.meta.url));
 const webOrigin = process.env.V2_WEB_ORIGIN || `http://localhost:${port}`;
+const environment = process.env.V2_ENVIRONMENT || 'local';
+const bindHost = process.env.V2_BIND_HOST || '127.0.0.1';
+const originPolicy = createOriginPolicy({ environment, webOrigin, extensionOrigin:process.env.V2_EXTENSION_ORIGIN || '', bindHost, port });
+const db = openDatabase();
+const control = new ControlPlane(db);
+await control.seed();
 
 function authorized(actual, expected) {
   if (!actual || typeof actual !== 'string') return false;
@@ -50,8 +54,8 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://localhost:${port}`);
     const path = url.pathname;
     const origin = req.headers.origin;
-    if (origin && origin !== webOrigin && origin !== `http://localhost:${port}` && !origin.startsWith('chrome-extension://')) return json(res, 403, { error: 'ORIGIN_DENIED' });
-    if (origin && (origin === webOrigin || origin.startsWith('chrome-extension://'))) {
+    if (origin && !originPolicy.allows(origin)) return json(res, 403, { error: 'ORIGIN_DENIED' });
+    if (origin) {
       res.setHeader('access-control-allow-origin', origin);
       res.setHeader('vary', 'Origin');
       res.setHeader('access-control-allow-headers', 'authorization,content-type');
@@ -60,7 +64,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
     if (path === '/api/health' && req.method === 'GET') {
       await db.query('SELECT 1');
-      return json(res, 200, { status: 'ok', environment: process.env.V2_ENVIRONMENT || 'local', protocolVersion: 1 });
+      return json(res, 200, { status: 'ok', environment, protocolVersion: 1 });
     }
     if (!path.startsWith('/api/')) return staticFile(path, res);
     const data = req.method === 'POST' ? await body(req) : {};
@@ -96,7 +100,7 @@ const server = http.createServer(async (req, res) => {
     const installation = await control.installation(bearer(req));
     if (path === '/api/installation' && req.method === 'GET') return json(res, 200, {
       id: installation.id, operatorId: installation.operator_id, extensionVersion: installation.extension_version,
-      buildSha: installation.build_sha, environment: process.env.V2_ENVIRONMENT || 'local', protocolVersion: 1
+      buildSha: installation.build_sha, environment, protocolVersion: 1
     });
     if (path === '/api/commands/claim' && req.method === 'POST') return json(res, 200, await control.claim(installation));
     const match = /^\/api\/commands\/([0-9a-f-]+)\/(authorize|ack)$/.exec(path);
@@ -113,6 +117,5 @@ const server = http.createServer(async (req, res) => {
     json(res, status, { error: code });
   }
 });
-const bindHost = process.env.V2_BIND_HOST || '127.0.0.1';
-server.listen(port, bindHost, () => console.log(`Callum V2 ${process.env.V2_ENVIRONMENT || 'local'} listening on ${bindHost}:${port}`));
+server.listen(port, bindHost, () => console.log(`Callum V2 ${environment} listening on ${bindHost}:${port}`));
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => server.close(() => db.close().finally(() => process.exit())));

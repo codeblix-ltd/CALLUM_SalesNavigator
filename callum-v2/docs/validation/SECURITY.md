@@ -10,6 +10,7 @@ Environment: source review and local tests. Baseline SHA: `68f5971a5e4b91d0814cd
 | Remote config | Strict allowlist and bounds for the new viewer-menu and post-detail selectors; no eval/remote JS. Isolated adapter 6 saw temporary config 28 without reload; dev was restored to 27 | Selector effectiveness through an authenticated running extension still needs proof |
 | Privacy | Post inspection returns at most five validated LinkedIn URLs and no post text; contact email is accepted only from an observed, identity-matched live canary target and is hidden in admin overview | Contact-email retention and staff access policy still need approval; authenticated UI behavior is unverified |
 | Browser permissions | `alarms`, `storage`, `tabs`, exact LinkedIn and V2 API/local host permissions | Final host should be audited after DNS/backend provisioning |
+| API browser origins | Staging startup requires an exact HTTPS web origin and a 32-character Chrome extension ID origin. A focused server test accepted only the configured web/extension origins and denied another extension ID and local web origin; local mode is loopback-bound | CORS is an additional browser boundary, not a substitute for token auth; the deployed extension ID and managed admin auth remain to be configured |
 
 Web UI inserts server data through `textContent`, not HTML. Admin token remains in page memory. CSP and exact staging origin controls are present. This is a source-level review, not penetration testing.
 

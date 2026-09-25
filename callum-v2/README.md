@@ -16,7 +16,7 @@ pnpm test
 pnpm run build
 ```
 
-`COCKROACH_DATABASE_URL` and a unique `V2_ADMIN_TOKEN` (at least 32 characters) are server-only environment variables. `V2_PORT` defaults to 8788. `V2_WEB_ORIGIN` is the exact allowed staging web origin. `V2_QA_PROFILE_KEY` must identify the separately authorized consenting QA recipient before any `live_canary` run can be created. Never copy a V1 Convex or gateway secret into V2 clients.
+`COCKROACH_DATABASE_URL` and a unique `V2_ADMIN_TOKEN` (at least 32 characters) are server-only environment variables. `V2_PORT` defaults to 8788. Staging requires `V2_ENVIRONMENT=staging`, `V2_WEB_ORIGIN=https://lead-v2.careeraccelerator.net`, and `V2_EXTENSION_ORIGIN=chrome-extension://<the installed V2 extension ID>`; the API accepts only those exact browser origins. Use the ID from the actual V2 package installed in the target QA profile. Local mode binds to loopback and permits isolated test extension origins. `V2_QA_PROFILE_KEY` must identify the separately authorized consenting QA recipient before any `live_canary` run can be created. Never copy a V1 Convex or gateway secret into V2 clients.
 
 Run `pnpm server` for the local API and web UI. Create operator `antish` in V2, then issue a V2 installation token. The token is shown once. Load `dist/extension` into the dedicated QA Chrome profile using Chrome DevTools MCP extension tooling when available. Its popup shows the exact build/config and accepts only a V2 installation token.
 

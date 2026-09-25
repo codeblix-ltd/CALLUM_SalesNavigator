@@ -7,6 +7,7 @@ services:
     env_file: .env.v2
     environment:
       V2_BIND_HOST: 0.0.0.0
+      V2_ENVIRONMENT: staging
     ports:
       - "127.0.0.1:8788:8788"
     healthcheck:
