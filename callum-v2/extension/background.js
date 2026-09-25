@@ -25,7 +25,7 @@ function assertCommand(c, configVersion) {
   if (!c || !['INSPECT_PROFILE', 'EXECUTE_CONNECT', 'INSPECT_COMMENT_STATE', 'EXTRACT_CONTACT_INFO', 'INSPECT_PENDING_INVITATION', 'EXECUTE_WITHDRAW','EXECUTE_COMMENT'].includes(c.type) || c.protocolVersion !== CALLUM_V2_BUILD.protocol || c.configVersion !== configVersion) throw new Error('CONFIG_INCOMPATIBLE');
   const url = new URL(c.targetUrl);
   const postTarget=['EXECUTE_COMMENT','INSPECT_COMMENT_STATE'].includes(c.type) &&
-    /^\/feed\/update\/urn:li:activity:\d+$/i.test(url.pathname) && !url.search && !url.hash &&
+    /^\/(?:feed\/update\/urn:li:activity:\d+|posts\/[a-z0-9_%.-]+)$/i.test(url.pathname) && !url.search && !url.hash &&
     c.targetUrl===c.payload?.postUrl && (c.type==='EXECUTE_COMMENT'||c.payload?.reconcile===true);
   const validPath=['INSPECT_PENDING_INVITATION','EXECUTE_WITHDRAW'].includes(c.type) ? /^\/mynetwork\/invitation-manager\/sent\/?$/i.test(url.pathname) && !url.search && !url.hash :
     c.type==='EXECUTE_COMMENT' ? postTarget : /^\/in\/[a-z0-9_%.-]+\/?$/i.test(url.pathname) || postTarget;
