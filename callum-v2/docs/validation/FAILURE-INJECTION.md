@@ -13,6 +13,7 @@ Environment: Node 24 fixtures, Cockroach V2 test rows, isolated Chrome. Baseline
 | Navigation fails before content primitive | Background VM reports `not_submitted`; Cockroach test cancels a non-submitted intent without pay or reconciliation | Live Chrome tab-close race still pending |
 | Config rollback, stale pending command, operator kill | Cockroach config integration passed | Global kill under concurrent live click not tested |
 | Contact gate and stale extension | Cockroach inspection test rejected a 2.0.0 installation for 2.1.0 dev config, blocked a contact command with the contact kill switch, and resumed it after clearing the flag | No authenticated contact extraction in Chrome |
+| Invitation observation scope | Cockroach inspection test rejected a forged target profile key, derived 35-day eligibility only for a matched observation, and blocked/resumed a pending read-only command with the withdrawal flag | No authenticated invitation card or withdrawal action tested |
 | Chrome restart/resume, tab closure, DB retry/transaction conflict, network loss before action, comment/withdraw uncertainty | Pending dedicated injection | Safety cannot be claimed from unit tests alone |
 
 `pnpm test` is the local suite. `V2_TEST_DB=1 node --env-file=<local server env> --test tests/db.integration.test.mjs tests/remote-config.integration.test.mjs` is the Cockroach suite, run sequentially because configuration tests change the dev release pointer.
