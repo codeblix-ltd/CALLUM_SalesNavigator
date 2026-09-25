@@ -115,3 +115,24 @@ test('contact info is identity and first-degree scoped to the target dialog',asy
   const wrong=fixture(html.replace('/in/qa-test/overlay/','/in/another/overlay/'));
   assert.equal((await wrong.adapter.extractContactInfo(DEFAULT_CONFIG,command)).diagnosticCode,'PROFILE_MISMATCH');
 });
+test('sent invitation inspection requires matching profile, name and conservative age',async()=>{
+  const manager='https://www.linkedin.com/mynetwork/invitation-manager/sent/';
+  const card=(slug,name,age)=>`<div role="listitem"><a href="/in/${slug}/">${name}</a><p>${age}</p><button aria-label="Withdraw invitation sent to ${name}">Withdraw</button></div>`;
+  const html=`<main><h1>Sent invitations</h1>${card('other-person','Other Person','Sent 70 days ago')}${card('qa-test','QA Test','Sent 5 weeks ago')}</main>`;
+  const {adapter}=fixture(html,manager);
+  const facts=await adapter.inspectPendingInvitation(DEFAULT_CONFIG,command);
+  assert.equal(facts.profileMatched,true);
+  assert.equal(facts.invitationFound,true);
+  assert.equal(facts.invitationAgeDays,35);
+  assert.equal(facts.invitationWithdrawAvailable,true);
+  assert.equal(facts.diagnosticCode,'OK');
+  assert.equal(JSON.stringify(facts).includes('Other Person'),false);
+  const recent=fixture(`<main><h1>Sent</h1>${card('qa-test','QA Test','Sent 29 days ago')}</main>`,manager);
+  assert.equal((await recent.adapter.inspectPendingInvitation(DEFAULT_CONFIG,command)).diagnosticCode,'INVITATION_TOO_RECENT');
+  const unknown=fixture(`<main><h1>Sent</h1>${card('qa-test','QA Test','Recently sent')}</main>`,manager);
+  assert.equal((await unknown.adapter.inspectPendingInvitation(DEFAULT_CONFIG,command)).invitationAgeDays,null);
+  const wrong=fixture(`<main><h1>Sent</h1>${card('qa-test','Someone Else','Sent 60 days ago')}</main>`,manager);
+  assert.equal((await wrong.adapter.inspectPendingInvitation(DEFAULT_CONFIG,command)).invitationFound,false);
+  const wrongPage=fixture(html,'https://www.linkedin.com/in/qa-test/');
+  assert.equal((await wrongPage.adapter.inspectPendingInvitation(DEFAULT_CONFIG,command)).pageReady,false);
+});

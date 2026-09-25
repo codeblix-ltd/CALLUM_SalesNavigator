@@ -4,6 +4,7 @@ import { decideObservation, commandAfterLeaseExpiry, isPayable } from '../../pac
 import { DEFAULT_CONFIG, validateConfig } from '../../packages/linkedin-config/index.mjs';
 
 const hash = x => createHash('sha256').update(x).digest('hex');
+const SENT_INVITATIONS_URL = 'https://www.linkedin.com/mynetwork/invitation-manager/sent/';
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const versionAtLeast = (actual, minimum) => {
   const a = String(actual).split('.').map(Number), b = String(minimum).split('.').map(Number);
@@ -74,7 +75,7 @@ export class ControlPlane {
   }
 
   async flagDisabled(q, installation, type, configVersion) {
-    const scope = type === 'EXECUTE_CONNECT' ? 'connection' : type === 'EXTRACT_CONTACT_INFO' ? 'contact' : null;
+    const scope = type === 'EXECUTE_CONNECT' ? 'connection' : type === 'EXTRACT_CONTACT_INFO' ? 'contact' : type === 'INSPECT_PENDING_INVITATION' ? 'withdrawal' : null;
     const keys = ['all', `operator:${installation.operator_id}`, `cohort:${installation.cohort}`, `extension:${installation.extension_version}`, `config:${configVersion}`];
     if (scope) keys.push(scope);
     const { rows } = await q.query(`SELECT flag_key FROM callum_v2.feature_flags WHERE flag_key = ANY($1) AND disabled=true`, [keys]);
@@ -95,7 +96,7 @@ export class ControlPlane {
       if (catalog.rows.length === 0) throw new Error('LEADS_NOT_FOUND');
       if (mode === 'live_canary' && profileKeyFromUrl(catalog.rows[0].linkedin_url) !== process.env.V2_QA_PROFILE_KEY.toLowerCase()) throw new Error('QA_RECIPIENT_REQUIRED');
       if (mode === 'live_canary' && !catalog.rows[0].full_name?.trim()) throw new Error('QA_RECIPIENT_NAME_REQUIRED');
-      const config = await this.activeConfig(q, { cohort: op.cohort, extension_version: '2.1.0' });
+      const config = await this.activeConfig(q, { cohort: op.cohort, extension_version: '2.2.0' });
       const run = (await q.query(`INSERT INTO callum_v2.runs(operator_id,installation_id,mode,config_version)
         VALUES ($1,$2,$3,$4) RETURNING id,operator_id,mode,status,config_version`, [operatorId, installationId, mode, config.version])).rows[0];
       let selected = 0;
@@ -115,7 +116,8 @@ export class ControlPlane {
   }
 
   async queueInspection({ runId, leadId, type, postUrl = null }) {
-    if (!uuid.test(runId || '') || !uuid.test(leadId || '') || !['INSPECT_COMMENT_STATE', 'EXTRACT_CONTACT_INFO'].includes(type)) throw new Error('INSPECTION_INVALID');
+    if (!uuid.test(runId || '') || !uuid.test(leadId || '') || !['INSPECT_COMMENT_STATE', 'EXTRACT_CONTACT_INFO', 'INSPECT_PENDING_INVITATION'].includes(type)) throw new Error('INSPECTION_INVALID');
+    if (type !== 'INSPECT_COMMENT_STATE' && postUrl !== null) throw new Error('INSPECTION_TARGET_INVALID');
     if (postUrl !== null && typeof postUrl !== 'string') throw new Error('INSPECTION_TARGET_INVALID');
     const targetPost = postUrl === null ? null : linkedInPostUrl(postUrl);
     if (postUrl !== null && !targetPost) throw new Error('INSPECTION_TARGET_INVALID');
@@ -127,10 +129,11 @@ export class ControlPlane {
       const run=rows[0];
       if (!run) throw new Error('RUN_NOT_FOUND');
       if (type === 'EXTRACT_CONTACT_INFO' && (run.mode !== 'live_canary' || !process.env.V2_QA_PROFILE_KEY || run.profile_key !== process.env.V2_QA_PROFILE_KEY.toLowerCase())) throw new Error('QA_RECIPIENT_REQUIRED');
-      const config=await this.activeConfig(q,{cohort:run.cohort,extension_version:'2.1.0'});
-      const required=type === 'EXTRACT_CONTACT_INFO' ? ['contactLink','contactDialog','contactEmail'] : ['postScope','postLink','commentButton'];
+      const config=await this.activeConfig(q,{cohort:run.cohort,extension_version:'2.2.0'});
+      const required=type === 'EXTRACT_CONTACT_INFO' ? ['contactLink','contactDialog','contactEmail'] : type === 'INSPECT_PENDING_INVITATION' ? ['invitationPage','invitationCard','invitationProfile','invitationAge','invitationWithdraw'] : ['postScope','postLink','commentButton'];
       if (required.some(key=>!config.config[key]?.length) || (type === 'EXTRACT_CONTACT_INFO' && !config.config.labels.contactInfo?.length)) throw new Error('CONFIG_INCOMPATIBLE');
-      const lead={id:leadId,profile_key:run.profile_key,linkedin_url:run.linkedin_url};
+      if (type === 'INSPECT_PENDING_INVITATION' && (!config.config.labels.invitationWithdraw?.length || !config.config.labels.invitationSent?.length)) throw new Error('CONFIG_INCOMPATIBLE');
+      const lead={id:leadId,profile_key:run.profile_key,linkedin_url:type === 'INSPECT_PENDING_INVITATION' ? SENT_INVITATIONS_URL : run.linkedin_url};
       const payload={expectedName:run.full_name,postUrl:targetPost};
       const command=await this.enqueue(q,{...run,config_version:config.version},lead,type,
         `inspect:${type}:${runId}:${leadId}:${config.version}:${hash(targetPost||'').slice(0,12)}`,null,payload);
@@ -258,6 +261,10 @@ export class ControlPlane {
         facts.targetPostPresent=!!targetPost && facts.postUrls.includes(targetPost);
         if (!facts.postUrls.length || (targetPost && !facts.targetPostPresent)) facts.commentBoxAvailable=false;
       }
+      if (c.type !== 'INSPECT_PENDING_INVITATION' || result.status !== 'observed' || !facts.profileMatched || !facts.pageReady || !facts.invitationNameMatched) {
+        facts.invitationFound=false;facts.invitationNameMatched=false;facts.invitationWithdrawAvailable=false;facts.invitationAgeDays=null;
+      }
+      facts.invitationEligible=c.type === 'INSPECT_PENDING_INVITATION' && facts.invitationFound && facts.invitationNameMatched && facts.invitationWithdrawAvailable && facts.invitationAgeDays >= 30;
       await q.query('INSERT INTO callum_v2.observations(command_id,run_id,lead_id,facts,diagnostic_code) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (command_id) DO NOTHING', [c.id,c.run_id,c.lead_id,facts,facts.diagnosticCode]);
       await q.query("UPDATE callum_v2.command_attempts SET finished_at=now(),outcome=$2 WHERE command_id=$1 AND finished_at IS NULL", [c.id,result.status]);
       await q.query("UPDATE callum_v2.commands SET status='completed',result=$2,updated_at=now() WHERE id=$1", [c.id,result]);
@@ -266,8 +273,8 @@ export class ControlPlane {
         extension_version: installation.extension_version, build_sha: installation.build_sha, protocol_version: PROTOCOL_VERSION,
         config_version: Number(c.config_version), diagnostic_code: facts.diagnosticCode });
       if (c.type === 'EXECUTE_CONNECT') return this.finishAction(q, installation, c, result);
-      if (c.type === 'INSPECT_COMMENT_STATE' || c.type === 'EXTRACT_CONTACT_INFO') {
-        await this.event(q,{event_key:`command:${c.id}:inspection`,event_type:c.type === 'INSPECT_COMMENT_STATE' ? 'comment_state_observed' : facts.contactEmail ? 'contact_info_confirmed' : 'contact_info_observed',
+      if (c.type === 'INSPECT_COMMENT_STATE' || c.type === 'EXTRACT_CONTACT_INFO' || c.type === 'INSPECT_PENDING_INVITATION') {
+        await this.event(q,{event_key:`command:${c.id}:inspection`,event_type:c.type === 'INSPECT_COMMENT_STATE' ? 'comment_state_observed' : c.type === 'INSPECT_PENDING_INVITATION' ? 'pending_invitation_observed' : facts.contactEmail ? 'contact_info_confirmed' : 'contact_info_observed',
           operator_id:c.operator_id,installation_id:installation.id,run_id:c.run_id,lead_id:c.lead_id,command_id:c.id,
           extension_version:installation.extension_version,build_sha:installation.build_sha,protocol_version:PROTOCOL_VERSION,
           config_version:Number(c.config_version),diagnostic_code:facts.diagnosticCode});
@@ -387,7 +394,7 @@ export class ControlPlane {
       ON CONFLICT (flag_key) DO UPDATE SET disabled=excluded.disabled,updated_at=now()`, [flagKey, disabled === true]);
   }
 
-  async createConfig(config, minVersion = '2.1.0') {
+  async createConfig(config, minVersion = '2.2.0') {
     const clean = validateConfig(config);
     if (!/^2\.\d+\.\d+$/.test(minVersion)) throw new Error('CONFIG_INVALID');
     const { rows } = await this.db.query(`INSERT INTO callum_v2.remote_configs(version,status,min_extension_version,rollout_percent,config,checksum)
@@ -425,6 +432,9 @@ export class ControlPlane {
         o.facts->>'profileMatched' AS profile_matched,
         o.facts->>'contactInfoOpened' AS contact_info_opened,
         (o.facts->>'contactEmail') IS NOT NULL AS contact_email_present,
+        o.facts->>'invitationFound' AS invitation_found,
+        o.facts->>'invitationAgeDays' AS invitation_age_days,
+        o.facts->>'invitationEligible' AS invitation_eligible,
         o.created_at FROM callum_v2.observations o JOIN callum_v2.commands c ON c.id=o.command_id
         ORDER BY o.created_at DESC LIMIT 100`,
       configs: 'SELECT version,status,min_extension_version,rollout_percent,checksum,created_at FROM callum_v2.remote_configs ORDER BY version DESC LIMIT 30',

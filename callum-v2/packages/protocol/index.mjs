@@ -1,12 +1,12 @@
 export const PROTOCOL_VERSION = 1;
-export const COMMAND_TYPES = new Set(['INSPECT_PROFILE', 'EXECUTE_CONNECT', 'INSPECT_COMMENT_STATE', 'EXTRACT_CONTACT_INFO']);
+export const COMMAND_TYPES = new Set(['INSPECT_PROFILE', 'EXECUTE_CONNECT', 'INSPECT_COMMENT_STATE', 'EXTRACT_CONTACT_INFO', 'INSPECT_PENDING_INVITATION']);
 export const ACTION_TYPES = new Set(['EXECUTE_CONNECT']);
 export const DIAGNOSTIC_CODES = new Set([
   'OK', 'PROFILE_MISMATCH', 'PAGE_HYDRATING', 'ACTION_UNAVAILABLE', 'ALREADY_PENDING',
   'ALREADY_CONNECTED', 'BACKEND_UNAVAILABLE', 'TAB_CLOSED', 'NAVIGATION_FAILED',
   'CONFIG_INVALID', 'CONFIG_INCOMPATIBLE', 'STORAGE_UNAVAILABLE', 'POSTCONDITION_UNKNOWN',
   'COMMAND_EXPIRED', 'KILL_SWITCH', 'UNEXPECTED_BROWSER_STATE', 'NO_RECENT_POSTS',
-  'CONTACT_INFO_EMPTY'
+  'CONTACT_INFO_EMPTY', 'INVITATION_NOT_FOUND', 'INVITATION_AGE_UNKNOWN', 'INVITATION_TOO_RECENT'
 ]);
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -15,7 +15,7 @@ export function assertCommand(value, now = Date.now()) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('COMMAND_INVALID');
   for (const key of ['id', 'runId', 'leadId', 'traceId']) if (!uuid.test(value[key] || '')) throw new Error('COMMAND_INVALID');
   if (!COMMAND_TYPES.has(value.type) || typeof value.operatorId !== 'string' || !value.operatorId) throw new Error('COMMAND_INVALID');
-  if (!profile.test(value.targetProfileKey || '') || !isLinkedInProfileUrl(value.targetUrl)) throw new Error('COMMAND_TARGET_INVALID');
+  if (!profile.test(value.targetProfileKey || '') || !(value.type === 'INSPECT_PENDING_INVITATION' ? isLinkedInSentInvitationsUrl(value.targetUrl) : isLinkedInProfileUrl(value.targetUrl))) throw new Error('COMMAND_TARGET_INVALID');
   if (!Number.isSafeInteger(value.configVersion) || value.protocolVersion !== PROTOCOL_VERSION) throw new Error('COMMAND_VERSION_INVALID');
   if (!uuid.test(value.actionIntentId || '') && ACTION_TYPES.has(value.type)) throw new Error('COMMAND_INTENT_MISSING');
   if (typeof value.idempotencyKey !== 'string' || value.idempotencyKey.length < 12 || value.idempotencyKey.length > 200) throw new Error('COMMAND_INVALID');
@@ -27,6 +27,14 @@ export function isLinkedInProfileUrl(raw) {
   try {
     const url = new URL(raw);
     return url.protocol === 'https:' && ['www.linkedin.com', 'linkedin.com'].includes(url.hostname) && /^\/in\/[a-z0-9_%.-]+\/?$/i.test(url.pathname);
+  } catch { return false; }
+}
+
+export function isLinkedInSentInvitationsUrl(raw) {
+  try {
+    const url = new URL(raw);
+    return url.protocol === 'https:' && ['www.linkedin.com','linkedin.com'].includes(url.hostname) &&
+      /^\/mynetwork\/invitation-manager\/sent\/?$/i.test(url.pathname) && !url.search && !url.hash;
   } catch { return false; }
 }
 
@@ -61,6 +69,10 @@ export function sanitizeFacts(raw) {
     commentBoxAvailable: x.commentBoxAvailable === true,
     contactInfoOpened: x.contactInfoOpened === true,
     contactEmail,
+    invitationFound: x.invitationFound === true,
+    invitationNameMatched: x.invitationNameMatched === true,
+    invitationWithdrawAvailable: x.invitationWithdrawAvailable === true,
+    invitationAgeDays: Number.isSafeInteger(x.invitationAgeDays) && x.invitationAgeDays >= 0 && x.invitationAgeDays <= 3650 ? x.invitationAgeDays : null,
     diagnosticCode: DIAGNOSTIC_CODES.has(x.diagnosticCode) ? x.diagnosticCode : 'UNEXPECTED_BROWSER_STATE'
   };
 }

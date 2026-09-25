@@ -1,1 +1,1 @@
-globalThis.CALLUM_V2_BUILD = Object.freeze({ sha: 'unbuilt', protocol: 1, adapter: 2, environment: 'local' });
+globalThis.CALLUM_V2_BUILD = Object.freeze({ sha: 'unbuilt', protocol: 1, adapter: 3, environment: 'local' });

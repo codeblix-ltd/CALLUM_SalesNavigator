@@ -147,5 +147,49 @@ globalThis.CallumAdapter = (() => {
     return {profileMatched:true,profileKey:ctx.currentKey,pageReady:true,contactInfoOpened:true,contactEmail,
       diagnosticCode:contactEmail?'OK':'CONTACT_INFO_EMPTY'};
   }
-  return { observe, connect, inspectCommentState, extractContactInfo, key };
+  function invitationAgeDays(card,config) {
+    const candidates=config.invitationAge.flatMap(selector=>{try{return [...card.querySelectorAll(selector)].filter(visible)}catch{return []}});
+    for(const node of candidates){
+      const words=norm(node.textContent).split(' ');
+      if(words.length!==4 || !config.labels.invitationSent.some(x=>norm(x)===words[0]) || !config.labels.invitationAgo.some(x=>norm(x)===words[3]))continue;
+      const amount=/^\d{1,3}$/.test(words[1])?Number(words[1]):words[1]==='a'||words[1]==='an'?1:null;
+      if(amount===null)continue;
+      for(const [unit,days] of [['invitationDay',1],['invitationWeek',7],['invitationMonth',30],['invitationYear',365]]){
+        if(config.labels[unit].some(x=>norm(x)===words[2]))return Math.min(amount*days,3650);
+      }
+    }
+    return null;
+  }
+  async function inspectPendingInvitation(config,command) {
+    CallumConfig.validate(config);
+    let url;
+    try{url=new URL(location.href)}catch{}
+    const manager=url?.protocol==='https:' && ['linkedin.com','www.linkedin.com'].includes(url.hostname) &&
+      /^\/mynetwork\/invitation-manager\/sent\/?$/i.test(url.pathname);
+    if(!manager)return {profileMatched:false,profileKey:null,pageReady:false,diagnosticCode:'PROFILE_MISMATCH'};
+    const main=document.querySelector('main');
+    const marker=main && config.invitationPage.flatMap(selector=>{try{return [...main.querySelectorAll(selector)].filter(visible)}catch{return []}})
+      .some(node=>config.labels.invitationPage.some(label=>norm(node.textContent)===norm(label)||norm(node.textContent).startsWith(`${norm(label)} `)));
+    if(!marker)return {profileMatched:false,profileKey:null,pageReady:false,diagnosticCode:'PAGE_HYDRATING'};
+    const cards=[...new Set(config.invitationCard.flatMap(selector=>{try{return [...main.querySelectorAll(selector)].filter(visible)}catch{return []}}))].slice(0,100);
+    const matches=[];
+    for(const card of cards){
+      const anchors=[...new Set(config.invitationProfile.flatMap(selector=>{try{return [...card.querySelectorAll(selector)].filter(visible)}catch{return []}}))];
+      const profiles=anchors.map(anchor=>{try{return {anchor,profileKey:key(new URL(anchor.getAttribute('href'),location.href).href)}}catch{return null}}).filter(Boolean);
+      const keys=[...new Set(profiles.map(x=>x.profileKey).filter(Boolean))];
+      if(keys.length!==1 || keys[0]!==norm(command.targetProfileKey))continue;
+      const anchor=profiles.find(x=>x.profileKey===keys[0])?.anchor;
+      if(!anchor || !nameMatches(anchor.textContent,command.payload?.expectedName))continue;
+      matches.push(card);
+    }
+    if(matches.length!==1)return {profileMatched:false,profileKey:null,pageReady:true,invitationFound:false,invitationNameMatched:false,
+      diagnosticCode:matches.length?'UNEXPECTED_BROWSER_STATE':'INVITATION_NOT_FOUND'};
+    const card=matches[0];
+    const ageDays=invitationAgeDays(card,config);
+    const withdraw=first(card,config.invitationWithdraw)||labelled(card,config.labels.invitationWithdraw);
+    return {profileMatched:true,profileKey:norm(command.targetProfileKey),pageReady:true,invitationFound:true,invitationNameMatched:true,
+      invitationAgeDays:ageDays,invitationWithdrawAvailable:!!withdraw,
+      diagnosticCode:ageDays===null?'INVITATION_AGE_UNKNOWN':ageDays<30?'INVITATION_TOO_RECENT':withdraw?'OK':'ACTION_UNAVAILABLE'};
+  }
+  return { observe, connect, inspectCommentState, extractContactInfo, inspectPendingInvitation, key };
 })();

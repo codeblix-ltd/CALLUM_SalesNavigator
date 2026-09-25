@@ -22,9 +22,10 @@ async function api(endpoint, token, path, payload = null) {
   return data;
 }
 function assertCommand(c, configVersion) {
-  if (!c || !['INSPECT_PROFILE', 'EXECUTE_CONNECT', 'INSPECT_COMMENT_STATE', 'EXTRACT_CONTACT_INFO'].includes(c.type) || c.protocolVersion !== CALLUM_V2_BUILD.protocol || c.configVersion !== configVersion) throw new Error('CONFIG_INCOMPATIBLE');
+  if (!c || !['INSPECT_PROFILE', 'EXECUTE_CONNECT', 'INSPECT_COMMENT_STATE', 'EXTRACT_CONTACT_INFO', 'INSPECT_PENDING_INVITATION'].includes(c.type) || c.protocolVersion !== CALLUM_V2_BUILD.protocol || c.configVersion !== configVersion) throw new Error('CONFIG_INCOMPATIBLE');
   const url = new URL(c.targetUrl);
-  if (url.protocol !== 'https:' || !['linkedin.com','www.linkedin.com'].includes(url.hostname) || !/^\/in\/[a-z0-9_%.-]+\/?$/i.test(url.pathname)) throw new Error('PROFILE_MISMATCH');
+  const validPath=c.type === 'INSPECT_PENDING_INVITATION' ? /^\/mynetwork\/invitation-manager\/sent\/?$/i.test(url.pathname) && !url.search && !url.hash : /^\/in\/[a-z0-9_%.-]+\/?$/i.test(url.pathname);
+  if (url.protocol !== 'https:' || !['linkedin.com','www.linkedin.com'].includes(url.hostname) || !validPath) throw new Error('PROFILE_MISMATCH');
   if (Date.parse(c.expiresAt) <= Date.now() || !c.id || !c.actionIntentId && c.type === 'EXECUTE_CONNECT') throw new Error('COMMAND_EXPIRED');
 }
 async function targetTab(url) {

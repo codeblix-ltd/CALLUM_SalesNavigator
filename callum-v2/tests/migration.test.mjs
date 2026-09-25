@@ -12,3 +12,10 @@ test('migration only creates explicitly qualified V2 objects',async()=>{
   assert.match(sql,/idempotency_key STRING NOT NULL UNIQUE/);
   assert.match(sql,/action_intent_id UUID NOT NULL UNIQUE/);
 });
+test('invitation migration only alters V2 command type and is repeatable',async()=>{
+  const sql=await readFile(new URL('../database/migrations/002_invitation_inspection.sql',import.meta.url),'utf8');
+  assert.match(sql,/ALTER TABLE callum_v2\.commands DROP CONSTRAINT IF EXISTS check_type/);
+  assert.match(sql,/ALTER TABLE callum_v2\.commands ADD CONSTRAINT check_type/);
+  assert.match(sql,/INSPECT_PENDING_INVITATION/);
+  assert.doesNotMatch(sql,/\b(?:ALTER|DROP|TRUNCATE|UPDATE|DELETE)\s+(?:TABLE\s+)?public\./i);
+});

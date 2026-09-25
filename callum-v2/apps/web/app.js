@@ -29,7 +29,7 @@ async function refresh() {
   table('assignments',x.assignments,['run_id','lead_id','full_name','niche','stage']);
   table('intents',x.intents,['id','operator_id','lead_id','action_type','state','updated_at']);
   table('diagnostics',x.diagnostics,['operator_id','stage','code','command_id','action_intent_id','created_at']);
-  table('observations',x.observations,['run_id','lead_id','command_id','type','diagnostic_code','profile_matched','contact_info_opened','contact_email_present','created_at']);
+  table('observations',x.observations,['run_id','lead_id','command_id','type','diagnostic_code','profile_matched','invitation_found','invitation_age_days','invitation_eligible','contact_info_opened','contact_email_present','created_at']);
   table('events',x.events,['event_type','operator_id','run_id','lead_id','command_id','action_intent_id','config_version','diagnostic_code','created_at']);
   table('configs',x.configs,['version','status','min_extension_version','rollout_percent','checksum','created_at']);
   table('flags',x.flags,['flag_key','disabled','updated_at']);

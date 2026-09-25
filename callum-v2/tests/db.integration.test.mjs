@@ -11,7 +11,7 @@ test('Cockroach V2 command lease, lost ACK, reconciliation, and duplicate pay in
   const ruleVersion=Number(String(Date.now()).slice(-12));
   try {
     await s.seed();await s.createOperator(operatorId,'dev',5);
-    const issued=await s.createInstallation(operatorId,'2.1.0','68f5971a');
+    const issued=await s.createInstallation(operatorId,'2.2.0','68f5971a');
     const install=await s.installation(issued.token);
     // A zero-amount rule verifies attribution without defining compensation.
     await db.query(`INSERT INTO callum_v2.pay_rules(version,event_type,amount_minor,currency,enabled)

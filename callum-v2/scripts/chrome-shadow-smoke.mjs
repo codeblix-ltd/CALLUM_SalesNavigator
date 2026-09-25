@@ -43,6 +43,14 @@ try {
     const observed=(await db.query('SELECT status,result FROM callum_v2.commands WHERE id=$1',[queued.id])).rows[0];
     commentInspection={commandId:queued.id,status:observed.status,diagnostic:observed.result?.facts?.diagnosticCode||null};
   }
+  let invitationInspection=null;
+  if(process.argv.includes('--invitation-inspection')){
+    const queued=await control.queueInspection({runId:run.id,leadId:lead.id,type:'INSPECT_PENDING_INVITATION'});
+    await tool('evaluate_script',{pageId:1,function:"async () => await chrome.runtime.sendMessage({kind:'V2_POLL'})"});
+    const observed=(await db.query('SELECT status,result,target_url FROM callum_v2.commands WHERE id=$1',[queued.id])).rows[0];
+    invitationInspection={commandId:queued.id,status:observed.status,targetUrl:observed.target_url,
+      diagnostic:observed.result?.facts?.diagnosticCode||null,eligible:observed.result?.facts?.invitationEligible||false};
+  }
   let hotfix=null;
   if(process.argv.includes('--hotfix')){
     const draft=await control.createConfig({...DEFAULT_CONFIG,connect:['button[data-callum-v2-hotfix="connect"]']});
@@ -55,12 +63,12 @@ try {
       popupSawVersion:secondResponse.includes(`\"configVersion\":${hotfixVersion}`),extensionReloaded:false};
   }
   const events=(await db.query('SELECT event_type,diagnostic_code FROM callum_v2.events WHERE run_id=$1 ORDER BY created_at',[run.id])).rows;
-  const command=(await db.query('SELECT type,status,result FROM callum_v2.commands WHERE run_id=$1',[run.id])).rows[0];
+  const command=(await db.query('SELECT type,status,result FROM callum_v2.commands WHERE run_id=$1 ORDER BY created_at,id LIMIT 1',[run.id])).rows[0];
   const assignment=(await db.query('SELECT stage FROM callum_v2.run_leads WHERE run_id=$1',[run.id])).rows[0];
   const pages=content(await tool('list_pages'));
   console.log(JSON.stringify({extensionId:id,runId:run.id,commandType:command?.type,commandStatus:command?.status,
     diagnostic:command?.result?.facts?.diagnosticCode||null,profileMatched:command?.result?.facts?.profileMatched||false,
-    assignmentStage:assignment?.stage,events:events.map(x=>x.event_type),popupResponse:response.slice(0,800),hotfix,commentInspection,
+    assignmentStage:assignment?.stage,events:events.map(x=>x.event_type),popupResponse:response.slice(0,800),hotfix,commentInspection,invitationInspection,
     authwallRedirect:pages.includes('/authwall'),serviceWorkerPresent:pages.includes('background.js')}));
 } finally {
   if(id&&mcp)await tool('uninstall_extension',{id}).catch(()=>{});

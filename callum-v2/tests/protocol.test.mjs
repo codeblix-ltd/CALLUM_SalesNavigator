@@ -12,6 +12,10 @@ test('protocol rejects stale, cross-site and incompatible commands',()=>{
   assert.throws(()=>assertCommand({...command(),targetUrl:'https://example.com/in/qa-test/'}),/COMMAND_TARGET_INVALID/);
   assert.throws(()=>assertCommand({...command(),protocolVersion:999}),/COMMAND_VERSION_INVALID/);
   assert.throws(()=>assertCommand({...command(),type:'EXECUTE_CONNECT'}),/COMMAND_INTENT_MISSING/);
+  const invitation={...command(),type:'INSPECT_PENDING_INVITATION',targetUrl:'https://www.linkedin.com/mynetwork/invitation-manager/sent/'};
+  assert.doesNotThrow(()=>assertCommand(invitation));
+  assert.throws(()=>assertCommand({...invitation,targetUrl:'https://www.linkedin.com/in/qa-test/'}),/COMMAND_TARGET_INVALID/);
+  assert.throws(()=>assertCommand({...invitation,targetUrl:'https://www.linkedin.com/mynetwork/invitation-manager/sent/?x=1'}),/COMMAND_TARGET_INVALID/);
 });
 test('profile key normalization excludes unrelated hosts and paths',()=>{
   assert.equal(profileKeyFromUrl('https://www.linkedin.com/in/QA-Test/?trk=foo'),'qa-test');
@@ -31,4 +35,7 @@ test('post and contact facts are bounded to explicit LinkedIn evidence',()=>{
   assert.deepEqual(result.facts.postUrls,[good]);
   assert.equal(result.facts.contactEmail,'qa@example.com');
   assert.equal('wholePage' in result.facts,false);
+  const invitation=sanitizeResult({commandId:randomUUID(),status:'observed',facts:{invitationFound:true,invitationNameMatched:true,invitationAgeDays:32,invitationWithdrawAvailable:true,invitationText:'private'}});
+  assert.equal(invitation.facts.invitationAgeDays,32);
+  assert.equal('invitationText' in invitation.facts,false);
 });

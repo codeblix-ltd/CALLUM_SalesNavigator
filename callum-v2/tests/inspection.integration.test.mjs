@@ -15,12 +15,12 @@ test('read-only inspections preserve lead stage and scope contact email', {skip:
     await control.seed();
     previousConfig=Number((await db.query("SELECT active_config_version FROM callum_v2.release_channels WHERE channel='dev'")).rows[0].active_config_version);
     await control.createOperator(operatorId,'dev',0);
-    const issued=await control.createInstallation(operatorId,'2.1.0','b820d227');
+    const issued=await control.createInstallation(operatorId,'2.2.0','b820d227');
     const installation=await control.installation(issued.token);
-    const draft=await control.createConfig(DEFAULT_CONFIG,'2.1.0');
+    const draft=await control.createConfig(DEFAULT_CONFIG,'2.2.0');
     const version=Number(draft.version);
     await control.activateConfig(version,'dev');
-    const legacy=await control.createInstallation(operatorId,'2.0.0','b820d227');
+    const legacy=await control.createInstallation(operatorId,'2.1.0','b820d227');
     const legacyInstallation=await control.installation(legacy.token);
     await assert.rejects(()=>control.claim(legacyInstallation),/CONFIG_INCOMPATIBLE/);
     async function fixture(mode,key) {
@@ -57,6 +57,34 @@ test('read-only inspections preserve lead stage and scope contact email', {skip:
     const mismatchedFacts=(await db.query('SELECT facts FROM callum_v2.observations WHERE command_id=$1',[mismatchedClaim.command.id])).rows[0].facts;
     assert.equal(mismatchedFacts.targetPostPresent,false);
 
+    const invitation=await fixture('shadow','qa-invitation-test');
+    await assert.rejects(()=>control.queueInspection({...invitation,type:'INSPECT_PENDING_INVITATION',postUrl:post}),/INSPECTION_TARGET_INVALID/);
+    const invitationRequest=await control.queueInspection({...invitation,type:'INSPECT_PENDING_INVITATION'});
+    assert.equal(invitationRequest.type,'INSPECT_PENDING_INVITATION');
+    await control.setFlag('withdrawal',true);
+    assert.equal((await control.claim(installation)).command,null);
+    await control.setFlag('withdrawal',false);
+    const invitationClaim=await control.claim(installation);
+    assert.equal(invitationClaim.command.targetUrl,'https://www.linkedin.com/mynetwork/invitation-manager/sent/');
+    assert.equal(invitationClaim.command.targetProfileKey,invitation.key);
+    assert.equal(invitationClaim.command.type,'INSPECT_PENDING_INVITATION');
+    const invitationResult=await control.acknowledge(installation,{commandId:invitationClaim.command.id,status:'observed',facts:{
+      profileMatched:true,profileKey:invitation.key,pageReady:true,invitationFound:true,invitationNameMatched:true,
+      invitationWithdrawAvailable:true,invitationAgeDays:35,diagnosticCode:'OK'}});
+    assert.equal(invitationResult.stage,'awaiting_observation');
+    const invitationFacts=(await db.query('SELECT facts FROM callum_v2.observations WHERE command_id=$1',[invitationClaim.command.id])).rows[0].facts;
+    assert.equal(invitationFacts.invitationEligible,true);
+    assert.equal((await db.query('SELECT count(*)::INT4 n FROM callum_v2.action_intents WHERE run_id=$1',[invitation.runId])).rows[0].n,0);
+    const forged=await fixture('shadow','qa-invitation-forged');
+    await control.queueInspection({...forged,type:'INSPECT_PENDING_INVITATION'});
+    const forgedClaim=await control.claim(installation);
+    await control.acknowledge(installation,{commandId:forgedClaim.command.id,status:'observed',facts:{
+      profileMatched:true,profileKey:'someone-else',pageReady:true,invitationFound:true,invitationNameMatched:true,
+      invitationWithdrawAvailable:true,invitationAgeDays:365,diagnosticCode:'OK'}});
+    const forgedFacts=(await db.query('SELECT facts FROM callum_v2.observations WHERE command_id=$1',[forgedClaim.command.id])).rows[0].facts;
+    assert.equal(forgedFacts.invitationEligible,false);
+    assert.equal(forgedFacts.invitationFound,false);
+
     process.env.V2_QA_PROFILE_KEY=shadow.key;
     const canary=await fixture('live_canary',shadow.key);
     const contact=await control.queueInspection({...canary,type:'EXTRACT_CONTACT_INFO'});
@@ -75,6 +103,7 @@ test('read-only inspections preserve lead stage and scope contact email', {skip:
     assert.deepEqual(stored.postUrls,[]);
     const overview=await control.overview();
     assert.equal(overview.observations.some(row=>row.command_id===contactClaim.command.id && row.contact_email_present===true),true);
+    assert.equal(overview.observations.some(row=>row.command_id===invitationClaim.command.id && row.invitation_eligible==='true'),true);
     assert.equal(JSON.stringify(overview.observations).includes('qa@example.com'),false);
     const uncertain=await fixture('live_canary',shadow.key);
     await control.queueInspection({...uncertain,type:'EXTRACT_CONTACT_INFO'});
@@ -87,6 +116,7 @@ test('read-only inspections preserve lead stage and scope contact email', {skip:
   } finally {
     if(previousQa===undefined)delete process.env.V2_QA_PROFILE_KEY;else process.env.V2_QA_PROFILE_KEY=previousQa;
     await control.setFlag('contact',false).catch(()=>{});
+    await control.setFlag('withdrawal',false).catch(()=>{});
     if(previousConfig!==null)await control.activateConfig(previousConfig,'dev').catch(()=>{});
     await db.close();
   }
