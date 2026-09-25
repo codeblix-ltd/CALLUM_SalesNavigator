@@ -671,6 +671,29 @@ export const claimNextLead = action({
       : "";
     const queryParameters = [scout.operatorId, ...excludedLeadIds];
     const database = getPool();
+    // Older store versions do not stop after repeated unreadable connection
+    // actions. Protect their queue until the extension update reaches them.
+    const recentOutcomes = await database.query<{ event_type: string; error: string | null }>(
+      `SELECT event_type, details->>'error' AS error
+         FROM lead_assignment_events
+        WHERE operator_id = $1
+          AND created_at >= now() - INTERVAL '15 minutes'
+          AND event_type IN ('failed', 'connection_requested', 'accepted', 'skipped')
+        ORDER BY created_at DESC
+        LIMIT 3`,
+      [scout.operatorId],
+    );
+    if (
+      recentOutcomes.rows.length === 3 &&
+      recentOutcomes.rows.every((row) =>
+        row.event_type === "failed" &&
+        row.error === "The connection state could not be confirmed. Nothing was sent for this lead."
+      )
+    ) {
+      throw new Error(
+        "LinkedIn connection actions were unavailable on three recent profiles. Scout stopped to avoid checking more leads. Please open LinkedIn in this Chrome profile and use Report Bug with a screenshot of the profile actions.",
+      );
+    }
     if (args.resumeExisting) {
       const existing = await database.query(
         `SELECT
