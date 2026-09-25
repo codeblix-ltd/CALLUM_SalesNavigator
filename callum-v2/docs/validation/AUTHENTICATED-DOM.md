@@ -9,3 +9,9 @@ The profile's Activity section exposed ten `[role="listitem"]` post cards inside
 The Comment control on the profile navigates to a post URL. A read-only visit to one post URL showed a single main `[role="listitem"]` card, a Comment button, and an existing contenteditable textbox. V2 now routes an approved `EXECUTE_COMMENT` command directly to the exact inspected post URL and permits read-only reconciliation on that URL. Command validation requires the target URL to equal the approved payload URL. The adapter rechecks author and viewer identity on the post page and uses one submit primitive. The submit button's behavior after typing was **not** observed; the selector may still need a remote config hotfix. No live comment was attempted.
 
 Tests cover authenticated-style DOM fixtures, the post-detail action contract, URL routing, ownership, duplicate prevention, uncertainty reconciliation, and a Cockroach race with Connect. These fixtures and read-only page observations do **not** satisfy the running-extension authenticated browser gate or live QA acceptance.
+
+## Current Chrome profile retry — 2026-09-26
+
+A new tab in the user's selected signed-in Chrome profile loaded the authenticated LinkedIn feed. The `Me` menu exposed one self-profile URL matching the sidebar profile URL. This confirms that the browser bridge can observe the current signed-in session; no V2 command was issued and no LinkedIn action was taken. The existing `chrome://extensions` tab could not be claimed by the browser bridge, and the running Chrome process had no DevTools debugging endpoint. The user was asked to load the unpacked V2 extension manually in this profile. The local unpacked package was rebuilt from branch SHA `dc43acd612f4` at extension version `2.5.0`.
+
+This is read-only session evidence. It still does **not** prove an authenticated no-op observation through the running V2 extension, remote config delivery to that extension, or any live action.
