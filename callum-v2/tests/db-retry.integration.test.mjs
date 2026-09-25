@@ -28,3 +28,43 @@ test('an injected 40001 rolls back the first V2 write and commits one event', { 
     await db.close();
   }
 });
+
+test('a concurrent V2 row update retries a stale serializable transaction', { skip: !enabled, timeout: 300000 }, async () => {
+  const db = openDatabase();
+  const operatorId = `v2retry_${randomUUID().slice(0, 8)}`;
+  let attempts = 0;
+  try {
+    await db.query(`INSERT INTO callum_v2.operators(id,daily_connection_limit)
+      VALUES ($1,1)`, [operatorId]);
+
+    let releaseFirst, signalRead, signalFailure;
+    const waitForRelease = new Promise(resolve => { releaseFirst = resolve; });
+    const firstRead = new Promise((resolve, reject) => { signalRead = resolve; signalFailure = reject; });
+    const first = db.tx(async q => {
+      attempts++;
+      const { rows } = await q.query(`SELECT daily_connection_limit FROM callum_v2.operators WHERE id=$1`, [operatorId]);
+      if (attempts === 1) {
+        signalRead();
+        await waitForRelease;
+      }
+      await q.query(`UPDATE callum_v2.operators SET daily_connection_limit=$2 WHERE id=$1`,
+        [operatorId, rows[0].daily_connection_limit + 1]);
+    });
+    first.catch(signalFailure);
+
+    try {
+      await firstRead;
+      await db.tx(q => q.query(`UPDATE callum_v2.operators
+        SET daily_connection_limit=daily_connection_limit+1 WHERE id=$1`, [operatorId]));
+    } finally {
+      releaseFirst();
+      await first.catch(() => {});
+    }
+    await first;
+    assert.ok(attempts >= 2, `Expected a serialization retry, got ${attempts} attempt`);
+    const { rows } = await db.query(`SELECT daily_connection_limit FROM callum_v2.operators WHERE id=$1`, [operatorId]);
+    assert.equal(rows[0].daily_connection_limit, 3);
+  } finally {
+    await db.close();
+  }
+});
