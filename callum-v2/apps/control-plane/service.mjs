@@ -85,6 +85,11 @@ export class ControlPlane {
     return rows.map(x => x.flag_key);
   }
 
+  async assertNoV1Assignment(q, leadId, errorCode = 'V1_LEAD_ASSIGNED') {
+    const { rows } = await q.query('SELECT lead_id FROM public.lead_assignments WHERE lead_id=$1 LIMIT 1', [leadId]);
+    if (rows.length) throw new Error(errorCode);
+  }
+
   async createRun({ operatorId, mode = 'shadow', count = 1, niche = null, leadId = null, installationId = null }) {
     if (!['synthetic', 'shadow', 'live_canary'].includes(mode) || !Number.isInteger(count) || count < 1 || count > 1000) throw new Error('RUN_INVALID');
     return this.db.tx(async q => {
@@ -99,6 +104,7 @@ export class ControlPlane {
       if (catalog.rows.length === 0) throw new Error('LEADS_NOT_FOUND');
       if (mode === 'live_canary' && profileKeyFromUrl(catalog.rows[0].linkedin_url) !== process.env.V2_QA_PROFILE_KEY.toLowerCase()) throw new Error('QA_RECIPIENT_REQUIRED');
       if (mode === 'live_canary' && !catalog.rows[0].full_name?.trim()) throw new Error('QA_RECIPIENT_NAME_REQUIRED');
+      if (mode === 'live_canary') await this.assertNoV1Assignment(q, catalog.rows[0].id);
       const config = await this.activeConfig(q, { cohort: op.cohort, extension_version: CURRENT_EXTENSION_VERSION });
       const run = (await q.query(`INSERT INTO callum_v2.runs(operator_id,installation_id,mode,config_version)
         VALUES ($1,$2,$3,$4) RETURNING id,operator_id,mode,status,config_version`, [operatorId, installationId, mode, config.version])).rows[0];
@@ -352,6 +358,7 @@ export class ControlPlane {
       if (!c || c.installation_disabled || !c.operator_enabled || !['EXECUTE_CONNECT','EXECUTE_WITHDRAW','EXECUTE_COMMENT'].includes(c.type) || c.intent_type !== (withdraw?'withdraw':comment?'comment':'connect') ||
           c.installation_id !== installation.id || c.status !== 'leased' || c.intent_state !== 'reserved' ||
           c.run_status !== 'running' || c.expires_at <= new Date() || c.lease_expires_at <= new Date()) throw new Error('ACTION_NOT_AUTHORIZED');
+      await this.assertNoV1Assignment(q, c.lead_id, 'ACTION_NOT_AUTHORIZED');
       if (withdraw) {
         if (c.run_mode!=='live_canary' || c.run_installation_id!==installation.id || !process.env.V2_QA_PROFILE_KEY ||
             c.target_profile_key!==process.env.V2_QA_PROFILE_KEY.toLowerCase()) throw new Error('ACTION_NOT_AUTHORIZED');
