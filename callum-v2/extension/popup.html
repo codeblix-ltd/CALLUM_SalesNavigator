@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Callum Scout V2</title><link rel="stylesheet" href="popup.css"></head>
+<body><main><p class="eyebrow">CANARY BROWSER ADAPTER</p><h1>Callum Scout V2</h1>
+<dl id="diagnostics"><dt>Extension</dt><dd id="version">—</dd><dt>Build</dt><dd id="build">—</dd><dt>Protocol</dt><dd id="protocol">—</dd><dt>Adapter</dt><dd id="adapter">—</dd><dt>Config</dt><dd id="config">—</dd><dt>Backend</dt><dd id="environment">—</dd><dt>Installation</dt><dd id="installation">—</dd><dt>Status</dt><dd id="status">—</dd></dl>
+<label>Environment<select id="environmentInput"><option value="local">Local QA</option><option value="staging">V2 staging</option></select></label>
+<label>V2 installation token<input id="token" type="password" autocomplete="off" placeholder="Paste token once"></label>
+<div class="buttons"><button id="save">Connect</button><button id="poll">Check for command</button></div>
+<p id="message" role="status"></p><p class="note">Only a V2 installation token is accepted. Workflow progress stays on the V2 server.</p></main><script src="popup.js"></script></body></html>

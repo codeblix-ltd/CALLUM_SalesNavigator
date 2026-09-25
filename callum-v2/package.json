@@ -1,0 +1,18 @@
+{
+  "name": "callum-scout-v2",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.16.1",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "db:migrate": "node scripts/migrate.mjs",
+    "db:inspect": "node scripts/inspect-catalog.mjs",
+    "shadow:load": "node scripts/shadow-load.mjs",
+    "server": "node apps/control-plane/server.mjs",
+    "build": "node scripts/build.mjs",
+    "verify:v1": "node scripts/verify-v1-untouched.mjs"
+  },
+  "dependencies": { "pg": "8.22.0" },
+  "devDependencies": { "linkedom": "0.18.12" }
+}
