@@ -10,16 +10,19 @@ test('operator ownership and revocation are rechecked at claim and action author
   const owner=`v2owner_${suffix}`,other=`v2other_${suffix}`;
   const actorKey=`qa-actor-${suffix}`;
   const previousQa=process.env.V2_QA_PROFILE_KEY;
+  let ownerInstallationId=null,otherInstallationId=null,runId=null;
   try{
     await control.seed();await control.createOperator(owner,'dev',1);await control.createOperator(other,'dev',1);
     const ownerIssued=await control.createInstallation(owner,'2.5.1','a142581d',`https://www.linkedin.com/in/${actorKey}/`);
     const otherIssued=await control.createInstallation(other,'2.5.1','a142581d',`https://www.linkedin.com/in/${actorKey}/`);
+    ownerInstallationId=ownerIssued.id;otherInstallationId=otherIssued.id;
     const ownerInstallation=await control.installation(ownerIssued.token),otherInstallation=await control.installation(otherIssued.token);
     const configVersion=Number((await db.query("SELECT active_config_version FROM callum_v2.release_channels WHERE channel='dev'")).rows[0].active_config_version);
     const leadId=randomUUID(),profileKey=`qa-authorization-${leadId.slice(0,8)}`;
     process.env.V2_QA_PROFILE_KEY=profileKey;
     const run=(await db.query("INSERT INTO callum_v2.runs(operator_id,installation_id,mode,config_version) VALUES ($1,$2,'live_canary',$3) RETURNING id",
       [owner,ownerInstallation.id,configVersion])).rows[0];
+    runId=run.id;
     const lead={id:leadId,profile_key:profileKey,linkedin_url:`https://www.linkedin.com/in/${profileKey}/`};
     await db.query('INSERT INTO callum_v2.run_leads(run_id,lead_id,profile_key,linkedin_url) VALUES ($1,$2,$3,$4)',
       [run.id,leadId,profileKey,lead.linkedin_url]);
@@ -45,7 +48,11 @@ test('operator ownership and revocation are rechecked at claim and action author
     assert.equal((await db.query("SELECT count(*)::INT4 n FROM callum_v2.events WHERE run_id=$1 AND event_type='connection_authorized'",[run.id])).rows[0].n,0);
   }finally{
     if(previousQa===undefined)delete process.env.V2_QA_PROFILE_KEY;else process.env.V2_QA_PROFILE_KEY=previousQa;
-    await control.disableOperator(owner,false).catch(()=>{});
+    if(runId)await control.pauseRun(runId).catch(()=>{});
+    if(ownerInstallationId)await control.revokeInstallation(ownerInstallationId).catch(()=>{});
+    if(otherInstallationId)await control.revokeInstallation(otherInstallationId).catch(()=>{});
+    await control.disableOperator(owner,true).catch(()=>{});
+    await control.disableOperator(other,true).catch(()=>{});
     await db.close();
   }
 });
@@ -54,16 +61,20 @@ test('Connect authorization rechecks live-canary mode, installation and QA recip
   const db=openDatabase(),control=new ControlPlane(db),operatorId=`v2qaauth_${randomUUID().slice(0,8)}`;
   const actorKey=`qa-actor-${randomUUID().slice(0,8)}`;
   const previousQa=process.env.V2_QA_PROFILE_KEY;
+  const installationIds=[];
+  let runId=null;
   try{
     await control.seed();await control.createOperator(operatorId,'dev',1);
     const issued=await control.createInstallation(operatorId,'2.5.1','a142581d',`https://www.linkedin.com/in/${actorKey}/`);
     const other=await control.createInstallation(operatorId,'2.5.1','a142581d',`https://www.linkedin.com/in/${actorKey}/`);
+    installationIds.push(issued.id,other.id);
     const installation=await control.installation(issued.token);
     const version=Number((await db.query("SELECT active_config_version FROM callum_v2.release_channels WHERE channel='dev'")).rows[0].active_config_version);
     const leadId=randomUUID(),profileKey=`qa-final-auth-${leadId.slice(0,8)}`;
     const lead={id:leadId,profile_key:profileKey,linkedin_url:`https://www.linkedin.com/in/${profileKey}/`};
     const run=(await db.query("INSERT INTO callum_v2.runs(operator_id,installation_id,mode,config_version) VALUES ($1,$2,'live_canary',$3) RETURNING id",
       [operatorId,installation.id,version])).rows[0];
+    runId=run.id;
     await db.query('INSERT INTO callum_v2.run_leads(run_id,lead_id,profile_key,linkedin_url) VALUES ($1,$2,$3,$4)',
       [run.id,leadId,profileKey,lead.linkedin_url]);
     await db.tx(q=>control.enqueue(q,{id:run.id,operator_id:operatorId,config_version:version},lead,
@@ -74,6 +85,13 @@ test('Connect authorization rechecks live-canary mode, installation and QA recip
       profileMatched:true,profileKey,pageReady:true,viewerMatched:true,connectAvailable:true,diagnosticCode:'OK'}});
     const action=(await control.claim(installation)).command;
     assert.equal(action.type,'EXECUTE_CONNECT');
+    const stableVersion=Number((await db.query("SELECT active_config_version FROM callum_v2.release_channels WHERE channel='stable'")).rows[0].active_config_version);
+    assert.notEqual(stableVersion,version,'cohort channels differ for the stale-snapshot fixture');
+    try{
+      await control.createOperator(operatorId,'stable',1);
+      await assert.rejects(()=>control.authorizeAction(installation,action.id),/ACTION_NOT_AUTHORIZED/,
+        'authorization re-reads the operator cohort');
+    }finally{await control.createOperator(operatorId,'dev',1);}
     await db.query("UPDATE callum_v2.runs SET mode='shadow' WHERE id=$1",[run.id]);
     await assert.rejects(()=>control.authorizeAction(installation,action.id),/ACTION_NOT_AUTHORIZED/,'shadow run');
     await db.query("UPDATE callum_v2.runs SET mode='live_canary' WHERE id=$1",[run.id]);
@@ -94,6 +112,9 @@ test('Connect authorization rechecks live-canary mode, installation and QA recip
     assert.equal((await db.query("SELECT count(*)::INT4 n FROM callum_v2.events WHERE run_id=$1 AND event_type='connection_authorized'",[run.id])).rows[0].n,1);
   }finally{
     if(previousQa===undefined)delete process.env.V2_QA_PROFILE_KEY;else process.env.V2_QA_PROFILE_KEY=previousQa;
+    if(runId)await control.pauseRun(runId).catch(()=>{});
+    for(const id of installationIds)await control.revokeInstallation(id).catch(()=>{});
+    await control.disableOperator(operatorId,true).catch(()=>{});
     await db.close();
   }
 });

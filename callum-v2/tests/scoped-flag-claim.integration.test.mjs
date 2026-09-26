@@ -41,6 +41,20 @@ test('a scoped kill switch leaves later eligible read-only work claimable', {ski
     await control.setFlag('withdrawal',false);
     const resumed=(await control.claim(installation)).command;
     assert.equal(resumed?.id,blocked.id,'clearing the scoped flag restores the earlier command');
+    const stableVersion=Number((await db.query(`SELECT active_config_version FROM callum_v2.release_channels
+      WHERE channel='stable'`)).rows[0].active_config_version);
+    assert.notEqual(stableVersion,configVersion,'cohort channels differ for the stale-snapshot fixture');
+    const changedLead=randomUUID(),changedKey=`qa-flag-${changedLead.slice(0,8)}`;
+    await db.query(`INSERT INTO callum_v2.run_leads(run_id,lead_id,profile_key,linkedin_url)
+      VALUES ($1,$2,$3,$4)`,[runId,changedLead,changedKey,`https://www.linkedin.com/in/${changedKey}/`]);
+    const changed=await db.tx(q=>control.enqueue(q,{id:runId,operator_id:operatorId,config_version:configVersion},
+      {id:changedLead,profile_key:changedKey,linkedin_url:`https://www.linkedin.com/in/${changedKey}/`},
+      'INSPECT_PROFILE',`flag:${runId}:cohort`));
+    await control.createOperator(operatorId,'stable',0);
+    const current=(await control.claim(installation));
+    assert.equal(current.config.version,stableVersion,'claim re-reads the operator cohort');
+    assert.equal(current.command?.id,changed.id);
+    assert.equal(current.command.configVersion,stableVersion);
     assert.equal((await db.query('SELECT count(*)::INT4 n FROM callum_v2.action_intents WHERE run_id=$1',[runId])).rows[0].n,0);
   }finally{
     await control.setFlag('withdrawal',false).catch(()=>{});

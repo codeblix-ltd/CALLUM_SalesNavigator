@@ -389,13 +389,14 @@ export class ControlPlane {
       const expired=await this.expiredCommandIds(this.db,installation.operator_id);
       const discovered=expired.length ? null : await this.pendingCandidate(this.db,installation);
       return await this.db.tx(async q => {
-      const enabled=(await q.query(`SELECT i.disabled,i.token_hash,o.enabled FROM callum_v2.installations i
+      const enabled=(await q.query(`SELECT i.disabled,i.token_hash,o.enabled,o.cohort FROM callum_v2.installations i
         JOIN callum_v2.operators o ON o.id=i.operator_id WHERE i.id=$1 AND i.operator_id=$2`,
         [installation.id,installation.operator_id])).rows[0];
       if(!enabled||enabled.disabled||!enabled.enabled||enabled.token_hash!==installation.token_hash)throw new Error('UNAUTHORIZED');
+      const currentInstallation={...installation,cohort:enabled.cohort};
       await this.recoverExpired(q, installation.operator_id, expired);
-      const config = await this.activeConfig(q, installation);
-      const candidate=expired.length ? await this.pendingCandidate(q,installation) : discovered;
+      const config = await this.activeConfig(q, currentInstallation);
+      const candidate=expired.length ? await this.pendingCandidate(q,currentInstallation) : discovered;
       if (!candidate) return { command: null, config: { version: Number(config.version), value: config.config, checksum: config.checksum } };
       // Lock only the selected command; the operator-wide pending scan above is read-only.
       // Recheck status and run ownership after acquiring the row lock.
@@ -422,7 +423,7 @@ export class ControlPlane {
         await q.query('UPDATE callum_v2.commands SET config_version=$2,updated_at=now() WHERE id=$1', [c.id,config.version]);
         c.config_version=config.version;
       }
-      const disabled = await this.flagDisabled(q, installation, c.type, c.config_version);
+      const disabled = await this.flagDisabled(q, currentInstallation, c.type, c.config_version);
       if (disabled.length) {
         // Leave unclaimed work queued. Clearing the flag may resume it after a
         // fresh authorization check; expiry still takes the safe recovery path.
@@ -458,7 +459,7 @@ export class ControlPlane {
     return this.db.tx(async q => {
       const { rows } = await q.query(`SELECT c.*,i.state AS intent_state,i.action_type AS intent_type,r.status AS run_status,r.mode AS run_mode,r.installation_id AS run_installation_id,
         installation.disabled AS installation_disabled,installation.token_hash AS current_token_hash,
-        op.enabled AS operator_enabled FROM callum_v2.commands c
+        op.enabled AS operator_enabled,op.cohort AS current_cohort FROM callum_v2.commands c
         JOIN callum_v2.action_intents i ON i.id=c.action_intent_id JOIN callum_v2.runs r ON r.id=c.run_id
         JOIN callum_v2.installations installation ON installation.id=c.installation_id
         JOIN callum_v2.operators op ON op.id=c.operator_id
@@ -504,8 +505,9 @@ export class ControlPlane {
           !source.facts?.profileMatched||!source.facts?.targetPostAuthoredByLead||!source.facts?.viewerMatched||!source.facts?.commentBoxAvailable)
           throw new Error('ACTION_NOT_AUTHORIZED');
       }
-      const config = await this.activeConfig(q, installation);
-      if (Number(config.version) !== Number(c.config_version) || (await this.flagDisabled(q, installation, c.type, c.config_version)).length) throw new Error('ACTION_NOT_AUTHORIZED');
+      const currentInstallation={...installation,cohort:c.current_cohort};
+      const config = await this.activeConfig(q, currentInstallation);
+      if (Number(config.version) !== Number(c.config_version) || (await this.flagDisabled(q, currentInstallation, c.type, c.config_version)).length) throw new Error('ACTION_NOT_AUTHORIZED');
       await q.query("UPDATE callum_v2.action_intents SET state='submitted',updated_at=now() WHERE id=$1 AND state='reserved'", [c.action_intent_id]);
       await this.event(q, { event_key:`intent:${c.action_intent_id}:authorized`, event_type:withdraw?'withdrawal_authorized':comment?'comment_authorized':'connection_authorized',
         operator_id:c.operator_id,installation_id:installation.id,run_id:c.run_id,lead_id:c.lead_id,
