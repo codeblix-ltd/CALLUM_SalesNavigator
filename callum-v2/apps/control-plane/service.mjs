@@ -35,9 +35,17 @@ export class ControlPlane {
 
   async createOperator(id, cohort = 'dev', dailyLimit = 1) {
     if (!/^[a-z][a-z0-9_-]{1,50}$/.test(id) || !['dev', 'canary', 'stable'].includes(cohort) || !Number.isInteger(dailyLimit) || dailyLimit < 0 || dailyLimit > 40) throw new Error('OPERATOR_INVALID');
-    const { rows } = await this.db.query(`INSERT INTO callum_v2.operators(id,cohort,daily_connection_limit) VALUES ($1,$2,$3)
-      ON CONFLICT (id) DO UPDATE SET cohort=excluded.cohort, daily_connection_limit=excluded.daily_connection_limit RETURNING id,enabled,cohort,daily_connection_limit`, [id, cohort, dailyLimit]);
-    return rows[0];
+    return this.db.tx(async q=>{
+      const {rows}=await q.query(`INSERT INTO callum_v2.operators(id,cohort,daily_connection_limit) VALUES ($1,$2,$3)
+        ON CONFLICT (id) DO UPDATE SET cohort=excluded.cohort, daily_connection_limit=excluded.daily_connection_limit
+        WHERE callum_v2.operators.cohort IS DISTINCT FROM excluded.cohort
+          OR callum_v2.operators.daily_connection_limit IS DISTINCT FROM excluded.daily_connection_limit
+        RETURNING id,enabled,cohort,daily_connection_limit`,[id,cohort,dailyLimit]);
+      if(rows[0])await this.event(q,{event_key:`operator:${id}:configured:${randomUUID()}`,
+        event_type:'operator_configured',operator_id:id,details:{cohort,dailyLimit}});
+      return rows[0]||(await q.query(`SELECT id,enabled,cohort,daily_connection_limit
+        FROM callum_v2.operators WHERE id=$1`,[id])).rows[0];
+    });
   }
 
   async createInstallation(operatorId, extensionVersion, buildSha, actorProfileUrl = null) {
@@ -1063,6 +1071,8 @@ export class ControlPlane {
         CASE WHEN event_type='browser_failure' THEN details->>'occurredAt' END AS reported_occurred_at,
         CASE WHEN event_type='feature_flag_changed' THEN details->>'flagKey' END AS flag_key,
         CASE WHEN event_type='feature_flag_changed' THEN details->>'disabled' END AS flag_disabled,
+        CASE WHEN event_type='operator_configured' THEN details->>'cohort' END AS operator_cohort,
+        CASE WHEN event_type='operator_configured' THEN details->>'dailyLimit' END AS operator_daily_limit,
         CASE WHEN event_type IN ('pay_rule_created','pay_rule_enabled','pay_rule_disabled') THEN details->>'version' END AS pay_rule_version,
         CASE WHEN event_type IN ('pay_rule_created','pay_rule_enabled','pay_rule_disabled') THEN details->>'enabled' END AS pay_rule_enabled,
         created_at FROM callum_v2.events ORDER BY created_at DESC LIMIT 100`,
