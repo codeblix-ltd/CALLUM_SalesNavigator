@@ -1,0 +1,51 @@
+name: Deploy Callum V2 web staging
+
+on:
+  push:
+    branches:
+      - codex/thin-extension-v2
+    paths:
+      - "callum-v2/**"
+      - ".github/workflows/deploy-lead-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: callum-v2-web-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/codex/thin-extension-v2'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: callum-v2
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.16.1
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: callum-v2/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm run build
+      - name: Deploy only V2 web to V2 directory
+        uses: SamKirkland/FTP-Deploy-Action@v4.4.0
+        with:
+          server: ftp.careeraccelerator.net
+          port: 21
+          protocol: ftp
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          local-dir: callum-v2/dist/web/
+          server-dir: lead-v2.careeraccelerator.net/public_html/
+          log-level: standard
+          timeout: 60000

@@ -1,0 +1,21 @@
+# Authenticated LinkedIn DOM research — 2026-09-25
+
+An agent-created tab in the user's existing authenticated Chrome profile was used for read-only inspection. No V2 extension was installed in that profile, and no Connect, comment, withdrawal, or other external action was sent.
+
+The current profile page exposed no visible `header a[href*="/in/"]` or `nav a[href*="/in/"]` for the signed-in account. Its top navigation had one visible `Me` button. Opening that menu exposed a new visible `[role="menu"]` containing multiple links to the same signed-in profile. Adapter 6 uses declarative menu selectors and accepts that identity only when one menu and one unique profile key are observed. Ambiguous or mismatched keys fail closed.
+
+The profile's Activity section exposed ten `[role="listitem"]` post cards inside `section[role="list"]`. All ten had a post link and an `a[aria-label="Comment"]` link. The previous class and `data-urn` card selectors matched none. Among the first five cards, some had one profile key before the Comment control and others had two because they were reposts. The new inspection accepts an authored post only when all candidate keys before Comment resolve to the target profile; reposts with mixed keys fail closed.
+
+The Comment control on the profile navigates to a post URL. A read-only visit to one post URL showed a single main `[role="listitem"]` card, a Comment button, and an existing contenteditable textbox. V2 now routes an approved `EXECUTE_COMMENT` command directly to the exact inspected post URL and permits read-only reconciliation on that URL. Command validation requires the target URL to equal the approved payload URL. The adapter rechecks author and viewer identity on the post page and uses one submit primitive. The submit button's behavior after typing was **not** observed; the selector may still need a remote config hotfix. No live comment was attempted.
+
+Tests cover authenticated-style DOM fixtures, the post-detail action contract, URL routing, ownership, duplicate prevention, uncertainty reconciliation, and a Cockroach race with Connect. These fixtures and read-only page observations do **not** satisfy the running-extension authenticated browser gate or live QA acceptance.
+
+## Current Chrome profile retry — 2026-09-26
+
+A new tab in the user's selected signed-in Chrome profile loaded the authenticated LinkedIn feed. The `Me` menu exposed one self-profile URL matching the sidebar profile URL. This confirms that the browser bridge can observe the current signed-in session; no V2 command was issued and no LinkedIn action was taken. The existing `chrome://extensions` tab could not be claimed by the browser bridge, and the running Chrome process had no DevTools debugging endpoint. The user was asked to load the unpacked V2 extension manually in this profile. The local unpacked package was rebuilt from branch SHA `dc43acd612f4` at extension version `2.5.0`.
+
+This is read-only session evidence. It still does **not** prove an authenticated no-op observation through the running V2 extension, remote config delivery to that extension, or any live action.
+
+## Follow-up browser bridge check — 2026-09-26
+
+The selected current Chrome profile still has an open `chrome://extensions` tab, but a fresh bridge claim returned `Chrome internal tab ... cannot be claimed`. A preexisting LinkedIn invitation-manager tab was owned by a separate browser session and could not be adopted. Process inspection found no Chrome DevTools debugging endpoint in the current Chrome process. No extension install or reload was inferred from the presence of the tab. The local unpacked package is now extension 2.5.1 / adapter 7, built from `f47af6c83434`; the user was asked to confirm when it is loaded or reloaded in the current signed-in profile. No LinkedIn action occurred in this check.

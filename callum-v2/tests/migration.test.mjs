@@ -1,0 +1,42 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+
+test('migration only creates explicitly qualified V2 objects',async()=>{
+  const sql=await readFile(new URL('../database/migrations/001_init.sql',import.meta.url),'utf8');
+  const tables=[...sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([^\s(]+)/g)].map(m=>m[1]);
+  assert.ok(tables.length>=15);
+  assert.ok(tables.every(t=>t.startsWith('callum_v2.')));
+  assert.doesNotMatch(sql,/\b(?:UPDATE|DELETE|ALTER|DROP|TRUNCATE)\s+(?:TABLE\s+)?public\./i);
+  assert.match(sql,/UNIQUE \(operator_id, lead_id, action_type, target_key\)/);
+  assert.match(sql,/idempotency_key STRING NOT NULL UNIQUE/);
+  assert.match(sql,/action_intent_id UUID NOT NULL UNIQUE/);
+});
+test('invitation migration only alters V2 command type and is repeatable',async()=>{
+  const sql=await readFile(new URL('../database/migrations/002_invitation_inspection.sql',import.meta.url),'utf8');
+  assert.match(sql,/ALTER TABLE callum_v2\.commands DROP CONSTRAINT IF EXISTS check_type/);
+  assert.match(sql,/ALTER TABLE callum_v2\.commands ADD CONSTRAINT check_type/);
+  assert.match(sql,/INSPECT_PENDING_INVITATION/);
+  assert.doesNotMatch(sql,/\b(?:ALTER|DROP|TRUNCATE|UPDATE|DELETE)\s+(?:TABLE\s+)?public\./i);
+});
+test('withdrawal migration only expands the V2 command constraint',async()=>{
+  const sql=await readFile(new URL('../database/migrations/003_withdraw_action.sql',import.meta.url),'utf8');
+  assert.match(sql,/ALTER TABLE callum_v2\.commands DROP CONSTRAINT IF EXISTS check_type/);
+  assert.match(sql,/ALTER TABLE callum_v2\.commands ADD CONSTRAINT check_type/);
+  assert.match(sql,/EXECUTE_WITHDRAW/);
+  assert.doesNotMatch(sql,/\b(?:ALTER|DROP|TRUNCATE|UPDATE|DELETE)\s+(?:TABLE\s+)?public\./i);
+});
+test('comment migration creates only V2 review state and expands the command constraint',async()=>{
+  const sql=await readFile(new URL('../database/migrations/004_comment_action.sql',import.meta.url),'utf8');
+  assert.match(sql,/ALTER TABLE callum_v2\.installations ADD COLUMN IF NOT EXISTS actor_profile_key/);
+  assert.match(sql,/CREATE TABLE IF NOT EXISTS callum_v2\.comment_drafts/);
+  assert.match(sql,/EXECUTE_COMMENT/);
+  assert.doesNotMatch(sql,/\b(?:ALTER|DROP|TRUNCATE|UPDATE|DELETE)\s+(?:TABLE\s+)?public\./i);
+});
+test('global action target migration stays in V2 and preserves historical intents',async()=>{
+  const sql=await readFile(new URL('../database/migrations/005_global_action_targets.sql',import.meta.url),'utf8');
+  assert.match(sql,/CREATE TABLE IF NOT EXISTS callum_v2\.action_targets/);
+  assert.match(sql,/PRIMARY KEY \(action_type, target_key\)/);
+  assert.match(sql,/SELECT DISTINCT action_type, target_key FROM callum_v2\.action_intents/);
+  assert.doesNotMatch(sql,/\b(?:ALTER|DROP|TRUNCATE|UPDATE|DELETE)\s+(?:TABLE\s+)?public\./i);
+});

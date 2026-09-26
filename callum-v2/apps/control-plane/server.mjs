@@ -1,0 +1,140 @@
+import http from 'node:http';
+import { readFile } from 'node:fs/promises';
+import { resolve, extname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { timingSafeEqual } from 'node:crypto';
+import { openDatabase } from './db.mjs';
+import { ControlPlane } from './service.mjs';
+import { createOriginPolicy } from './origin-policy.mjs';
+
+const port = Number(process.env.V2_PORT || 8788);
+const adminToken = process.env.V2_ADMIN_TOKEN;
+if (!adminToken || adminToken.length < 32) throw new Error('V2_ADMIN_TOKEN must be at least 32 characters');
+const webRoot = fileURLToPath(new URL('../web/', import.meta.url));
+const webOrigin = process.env.V2_WEB_ORIGIN || `http://localhost:${port}`;
+const environment = process.env.V2_ENVIRONMENT || 'local';
+const bindHost = process.env.V2_BIND_HOST || '127.0.0.1';
+const stagingApiOrigin = 'https://api-v2.careeraccelerator.net';
+const originPolicy = createOriginPolicy({ environment, webOrigin, extensionOrigin:process.env.V2_EXTENSION_ORIGIN || '', bindHost, port });
+const db = openDatabase();
+const control = new ControlPlane(db);
+await control.seed();
+
+function authorized(actual, expected) {
+  if (!actual || typeof actual !== 'string') return false;
+  const a = Buffer.from(actual), b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+function json(res, status, body) {
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'" });
+  res.end(JSON.stringify(body));
+}
+async function body(req) {
+  const chunks = []; let bytes = 0;
+  for await (const chunk of req) { bytes += chunk.length; if (bytes > 32768) throw new Error('BODY_TOO_LARGE'); chunks.push(chunk); }
+  let data;
+  try { data = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); }
+  catch { throw new Error('INVALID_JSON'); }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('BODY_INVALID');
+  return data;
+}
+function bearer(req) { return /^Bearer (.+)$/i.exec(req.headers.authorization || '')?.[1] || ''; }
+async function staticFile(pathname, res) {
+  const name = pathname === '/' ? 'index.html' : pathname.slice(1);
+  if (!/^[a-z0-9/_-]+\.(html|css|js)$/i.test(name) || name.includes('..')) return json(res, 404, { error: 'NOT_FOUND' });
+  const file = resolve(webRoot, name);
+  if (!file.startsWith(resolve(webRoot))) return json(res, 404, { error: 'NOT_FOUND' });
+  try {
+    const content = await readFile(file);
+    const connectSources = ["'self'", webOrigin, ...(environment==='staging' ? [stagingApiOrigin] : [])];
+    res.writeHead(200, { 'content-type': ({ '.html':'text/html', '.css':'text/css', '.js':'text/javascript' })[extname(file)],
+      'cache-control': 'no-store', 'x-content-type-options':'nosniff',
+      'content-security-policy': `default-src 'self'; connect-src ${connectSources.join(' ')}; script-src 'self'; style-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'` });
+    res.end(content);
+  } catch { json(res, 404, { error: 'NOT_FOUND' }); }
+}
+
+const server = http.createServer(async (req, res) => {
+  try {
+    const url = new URL(req.url, `http://localhost:${port}`);
+    const path = url.pathname;
+    const origin = req.headers.origin;
+    if (origin && !originPolicy.allows(origin)) return json(res, 403, { error: 'ORIGIN_DENIED' });
+    if (origin) {
+      res.setHeader('access-control-allow-origin', origin);
+      res.setHeader('vary', 'Origin');
+      res.setHeader('access-control-allow-headers', 'authorization,content-type');
+      res.setHeader('access-control-allow-methods', 'GET,POST,OPTIONS');
+    }
+    if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
+    if (path === '/api/health' && req.method === 'GET') {
+      await db.query('SELECT 1');
+      return json(res, 200, { status: 'ok', environment, protocolVersion: 1 });
+    }
+    if (!path.startsWith('/api/')) return staticFile(path, res);
+    if (path.startsWith('/api/admin/')) {
+      if (!authorized(bearer(req), adminToken)) return json(res, 401, { error: 'UNAUTHORIZED' });
+      const data = req.method === 'POST' ? await body(req) : {};
+      if (path === '/api/admin/overview' && req.method === 'GET') return json(res, 200, await control.overview());
+      if(path==='/api/admin/diagnostics'&&req.method==='GET')return json(res,200,await control.listDiagnostics({
+        operatorId:url.searchParams.get('operatorId'),before:url.searchParams.get('before'),
+        limit:url.searchParams.has('limit')?Number(url.searchParams.get('limit')):100
+      }));
+      if(path==='/api/admin/pay'&&req.method==='GET')return json(res,200,await control.listPay({
+        operatorId:url.searchParams.get('operatorId'),before:url.searchParams.get('before'),
+        limit:url.searchParams.has('limit')?Number(url.searchParams.get('limit')):100
+      }));
+      const payEvidenceMatch=/^\/api\/admin\/pay\/([0-9a-f-]+)$/i.exec(path);
+      if(payEvidenceMatch&&req.method==='GET')return json(res,200,
+        await control.payEvidence(payEvidenceMatch[1]));
+      if (path === '/api/admin/operators' && req.method === 'POST') return json(res, 200, await control.createOperator(data.id, data.cohort, data.dailyLimit));
+      if (path === '/api/admin/operators/disable' && req.method === 'POST') { await control.disableOperator(data.id, data.disabled); return json(res, 200, { ok:true }); }
+      if (path === '/api/admin/installations' && req.method === 'POST') return json(res, 200, await control.createInstallation(data.operatorId, data.extensionVersion, data.buildSha,data.actorProfileUrl||null));
+      if (path === '/api/admin/installations/rotate-token' && req.method === 'POST') return json(res, 200, await control.rotateInstallationToken(data.id));
+      if (path === '/api/admin/installations/revoke' && req.method === 'POST') { await control.revokeInstallation(data.id); return json(res, 200, { ok:true }); }
+      if (path === '/api/admin/runs' && req.method === 'POST') return json(res, 200, await control.createRun(data));
+      if (path === '/api/admin/inspections' && req.method === 'POST') return json(res, 200, await control.queueInspection(data));
+      if (path === '/api/admin/withdrawals' && req.method === 'POST') return json(res, 200, await control.queueWithdrawal(data));
+      if (path === '/api/admin/comment-drafts' && req.method === 'POST') return json(res, 200, await control.createCommentDraft(data));
+      if (path === '/api/admin/comment-drafts/review' && req.method === 'POST') return json(res, 200, await control.reviewCommentDraft(data));
+      if (/^\/api\/admin\/runs\/[0-9a-f-]+\/(pause|resume)$/.test(path) && req.method === 'POST') {
+        const [, , , , id, operation] = path.split('/');
+        const result=operation==='pause'?await control.pauseRun(id):await control.resumeRun(id);
+        if(!result.status)throw new Error('RUN_NOT_FOUND');
+        return json(res, 200, result);
+      }
+      if (path === '/api/admin/flags' && req.method === 'POST') { await control.setFlag(data.flagKey, data.disabled); return json(res, 200, { ok: true }); }
+      if (path === '/api/admin/configs' && req.method === 'POST') return json(res, 200, await control.createConfig(data.config, data.minVersion));
+      if (path === '/api/admin/configs/activate' && req.method === 'POST') return json(res, 200, await control.activateConfig(data.version, data.channel, data.rolloutPercent ?? 100));
+      if (path === '/api/admin/pay-rules/status' && req.method === 'POST') return json(res, 200,
+        await control.setPayRuleEnabled(data.version,data.enabled));
+      if (path === '/api/admin/pay-rules' && req.method === 'POST') return json(res, 200,
+        await control.createPayRule(data));
+      return json(res, 404, { error: 'NOT_FOUND' });
+    }
+    const installation = await control.installation(bearer(req));
+    const data = req.method === 'POST' ? await body(req) : {};
+    if (path === '/api/installation' && req.method === 'GET') return json(res, 200, {
+      id: installation.id, operatorId: installation.operator_id, extensionVersion: installation.extension_version,
+      buildSha: installation.build_sha, environment, protocolVersion: 1
+    });
+    if (path === '/api/browser-failures' && req.method === 'POST') return json(res, 200, await control.reportBrowserFailure(installation, data));
+    if (path === '/api/commands/claim' && req.method === 'POST') return json(res, 200, await control.claim(installation));
+    const match = /^\/api\/commands\/([0-9a-f-]+)\/(authorize|ack)$/.exec(path);
+    if (match && req.method === 'POST') {
+      if (match[2] === 'authorize') return json(res, 200, await control.authorizeAction(installation, match[1]));
+      if (data.commandId !== match[1]) throw new Error('COMMAND_ID_MISMATCH');
+      return json(res, 200, await control.acknowledge(installation, data));
+    }
+    return json(res, 404, { error: 'NOT_FOUND' });
+  } catch (error) {
+    const code = /^[A-Z_]+$/.test(error.message || '') ? error.message : 'INTERNAL_ERROR';
+    if (code === 'INTERNAL_ERROR') console.error('V2 request failed', error.code || error.name);
+    const status = code === 'UNAUTHORIZED' ? 401 : code === 'PAY_LINE_NOT_FOUND' ? 404 :
+      code === 'INTERNAL_ERROR' ? 500 : 400;
+    json(res, status, { error: code });
+  }
+});
+server.listen(port, bindHost, () => console.log(`Callum V2 ${environment} listening on ${bindHost}:${port}`));
+for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => server.close(() => db.close().finally(() => process.exit())));
