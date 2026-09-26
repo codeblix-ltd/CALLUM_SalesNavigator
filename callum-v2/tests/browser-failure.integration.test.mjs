@@ -83,3 +83,42 @@ test('browser failures replay once with scoped metadata and no page content', {s
     await db.close();
   }
 });
+
+test('concurrent browser failure reports respect the installation hourly cap', {skip:!enabled,timeout:180000},async()=>{
+  const db=openDatabase(),otherDb=openDatabase(),control=new ControlPlane(db);
+  const operatorId=`v2failurecap_${randomUUID().slice(0,8)}`;
+  try{
+    await control.createOperator(operatorId,'dev',1);
+    const issued=await control.createInstallation(operatorId,'2.5.2','bc97f360');
+    const installation=await control.installation(issued.token);
+    const prefix=`installation:${issued.id}:browser_failure:seed:${randomUUID()}`;
+    await db.query(`INSERT INTO callum_v2.events(event_key,event_type,operator_id,installation_id)
+      SELECT $1 || ':' || i::STRING,'browser_failure',$2,$3 FROM generate_series(1,29) AS g(i)`,
+      [prefix,operatorId,issued.id]);
+    const counts=[];
+    let releaseCounts;
+    const bothCounted=new Promise(resolve=>{releaseCounts=resolve;});
+    const countedDb=base=>({
+      tx:fn=>base.tx(q=>fn({query:async(sql,args)=>{
+        const result=await q.query(sql,args);
+        if(sql.includes('SELECT count(*)::INT4 AS n FROM callum_v2.events')&&counts.length<2){
+          counts.push(Number(result.rows[0].n));
+          if(counts.length===2)releaseCounts();
+          await Promise.race([bothCounted,delay(15000,null,{ref:false}).then(()=>{throw new Error('COUNT_BARRIER_TIMEOUT');})]);
+        }
+        return result;
+      }}))
+    });
+    const reporters=[new ControlPlane(countedDb(db)),new ControlPlane(countedDb(otherDb))];
+    const report=reporter=>reporter.reportBrowserFailure(installation,{
+      eventId:randomUUID(),stage:'claim',code:'BACKEND_UNAVAILABLE',occurredAt:new Date().toISOString()
+    });
+    const results=await Promise.all(reporters.map(report));
+    assert.deepEqual(counts,[29,29],'both transactions saw the same pre-cap count before insertion');
+    assert.equal(results.filter(x=>x.rateLimited).length,1);
+    const count=(await db.query(`SELECT count(*)::INT4 AS n FROM callum_v2.events
+      WHERE operator_id=$1 AND installation_id=$2 AND event_type='browser_failure'`,
+      [operatorId,issued.id])).rows[0].n;
+    assert.equal(count,30);
+  }finally{ await db.close(); await otherDb.close(); }
+});
