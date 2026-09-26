@@ -5,7 +5,8 @@ import { DEFAULT_CONFIG, validateConfig } from '../../packages/linkedin-config/i
 
 const hash = x => createHash('sha256').update(x).digest('hex');
 const SENT_INVITATIONS_URL = 'https://www.linkedin.com/mynetwork/invitation-manager/sent/';
-export const CURRENT_EXTENSION_VERSION = '2.5.1';
+export const CURRENT_EXTENSION_VERSION = '2.5.2';
+const MIN_ACTOR_BOUND_EXTENSION_VERSION = '2.5.1';
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const extensionVersionPattern = /^2\.(?:0|[1-9]\d{0,5})\.(?:0|[1-9]\d{0,5})$/;
 const versionAtLeast = (actual, minimum) => {
@@ -25,9 +26,9 @@ export class ControlPlane {
     const config = validateConfig(DEFAULT_CONFIG);
     await this.db.tx(async q => {
       await q.query(`INSERT INTO callum_v2.remote_configs(version,status,min_extension_version,rollout_percent,config,checksum,activated_at)
-        VALUES (1,'stable',$3,100,$1,$2,now()) ON CONFLICT (version) DO NOTHING`, [config, hash(JSON.stringify(config)),CURRENT_EXTENSION_VERSION]);
+        VALUES (1,'stable',$3,100,$1,$2,now()) ON CONFLICT (version) DO NOTHING`, [config, hash(JSON.stringify(config)),MIN_ACTOR_BOUND_EXTENSION_VERSION]);
       for (const channel of ['dev', 'canary', 'stable']) await q.query(`INSERT INTO callum_v2.release_channels(channel,min_extension_version,active_config_version)
-        VALUES ($1,$2,1) ON CONFLICT (channel) DO NOTHING`, [channel,CURRENT_EXTENSION_VERSION]);
+        VALUES ($1,$2,1) ON CONFLICT (channel) DO NOTHING`, [channel,MIN_ACTOR_BOUND_EXTENSION_VERSION]);
     });
   }
 
@@ -111,7 +112,7 @@ export class ControlPlane {
           WHERE id=$1 AND operator_id=$2 AND disabled=false AND protocol_version=$3`,
           [installationId, operatorId, PROTOCOL_VERSION])).rows[0];
         if (!canaryInstallation) throw new Error('CANARY_INSTALLATION_REQUIRED');
-        if (!canaryInstallation.actor_profile_key || !versionAtLeast(canaryInstallation.extension_version,CURRENT_EXTENSION_VERSION)) throw new Error('CANARY_ACTOR_REQUIRED');
+        if (!canaryInstallation.actor_profile_key || !versionAtLeast(canaryInstallation.extension_version,MIN_ACTOR_BOUND_EXTENSION_VERSION)) throw new Error('CANARY_ACTOR_REQUIRED');
       }
       const catalog = await q.query(`SELECT l.id,l.profile_key,l.linkedin_url,l.full_name,
         (SELECT min(ln.niche) FROM public.lead_niches ln WHERE ln.lead_id=l.id) AS niche
@@ -462,7 +463,7 @@ export class ControlPlane {
           c.target_profile_key!==process.env.V2_QA_PROFILE_KEY.toLowerCase()) throw new Error('ACTION_NOT_AUTHORIZED');
       await this.assertNoV1Assignment(q, c.lead_id, 'ACTION_NOT_AUTHORIZED');
       if (!comment) {
-        if (!versionAtLeast(installation.extension_version,CURRENT_EXTENSION_VERSION) || !installation.actor_profile_key ||
+        if (!versionAtLeast(installation.extension_version,MIN_ACTOR_BOUND_EXTENSION_VERSION) || !installation.actor_profile_key ||
             c.payload?.actorProfileKey!==installation.actor_profile_key) throw new Error('ACTION_NOT_AUTHORIZED');
         const source=(await q.query(`SELECT source.installation_id,source.target_profile_key,source.target_url,source.payload,o.facts
           FROM callum_v2.commands source JOIN callum_v2.observations o ON o.command_id=source.id
@@ -799,6 +800,41 @@ export class ControlPlane {
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, [installation.operator_id,installation.id,c.run_id,c.lead_id,c.id,c.action_intent_id,stage,code]);
   }
 
+  async reportBrowserFailure(installation, report) {
+    const stages=['installation','claim','config','command','ack'];
+    const codes=['BACKEND_UNAVAILABLE','UNAUTHORIZED','CONFIG_INCOMPATIBLE','CONFIG_INVALID','NAVIGATION_FAILED',
+      'TAB_CLOSED','ACTION_NOT_AUTHORIZED','UNEXPECTED_BROWSER_STATE','COMMAND_EXPIRED','PROFILE_MISMATCH','STORAGE_UNAVAILABLE'];
+    if(!uuid.test(report?.eventId || '')||!stages.includes(report.stage)||!codes.includes(report.code)||
+      (report.commandId!==null&&report.commandId!==undefined&&!uuid.test(report.commandId)))throw new Error('BROWSER_REPORT_INVALID');
+    const occurredMs=typeof report.occurredAt==='string'?Date.parse(report.occurredAt):NaN;
+    const occurredAt=Number.isFinite(occurredMs)&&occurredMs>=Date.now()-7*86400_000&&occurredMs<=Date.now()+300_000
+      ? new Date(occurredMs).toISOString():null;
+    return this.db.tx(async q=>{
+      const current=(await q.query(`SELECT i.disabled,i.token_hash,o.enabled FROM callum_v2.installations i
+        JOIN callum_v2.operators o ON o.id=i.operator_id WHERE i.id=$1 AND i.operator_id=$2`,
+        [installation.id,installation.operator_id])).rows[0];
+      if(!current||current.disabled||!current.enabled||current.token_hash!==installation.token_hash)throw new Error('UNAUTHORIZED');
+      const command=report.commandId?(await q.query(`SELECT id,run_id,lead_id,action_intent_id,config_version FROM callum_v2.commands
+        WHERE id=$1 AND operator_id=$2 AND installation_id=$3`,
+        [report.commandId,installation.operator_id,installation.id])).rows[0]:null;
+      if(report.commandId&&!command)throw new Error('COMMAND_NOT_OWNED');
+      const eventKey=`installation:${installation.id}:browser_failure:${report.eventId}`;
+      if((await q.query('SELECT id FROM callum_v2.events WHERE event_key=$1',[eventKey])).rows.length)return {accepted:true};
+      const hourly=(await q.query(`SELECT count(*)::INT4 AS n FROM callum_v2.events
+        WHERE operator_id=$1 AND installation_id=$2 AND event_type='browser_failure'
+          AND created_at>now()-INTERVAL '1 hour'`,
+        [installation.operator_id,installation.id])).rows[0].n;
+      if(hourly>=30)return {accepted:true,rateLimited:true};
+      await this.event(q,{event_key:eventKey,event_type:'browser_failure',operator_id:installation.operator_id,
+        installation_id:installation.id,run_id:command?.run_id,lead_id:command?.lead_id,command_id:command?.id,
+        action_intent_id:command?.action_intent_id,extension_version:installation.extension_version,
+        build_sha:installation.build_sha,protocol_version:PROTOCOL_VERSION,
+        config_version:command?Number(command.config_version):null,diagnostic_code:report.code,
+        details:{stage:report.stage,occurredAt}});
+      return {accepted:true};
+    });
+  }
+
   async pauseRun(id) {
     return this.db.tx(async q=>{
       const run=(await q.query("UPDATE callum_v2.runs SET status='paused',updated_at=now() WHERE id=$1 AND status='running' RETURNING id,operator_id",[id])).rows[0];
@@ -886,7 +922,11 @@ export class ControlPlane {
       assignments: 'SELECT run_id,lead_id,full_name,niche,stage FROM callum_v2.run_leads ORDER BY created_at DESC LIMIT 100',
       intents: 'SELECT id,run_id,operator_id,lead_id,action_type,state,updated_at FROM callum_v2.action_intents ORDER BY updated_at DESC LIMIT 100',
       drafts: 'SELECT id,run_id,lead_id,inspection_command_id,post_url,body,body_sha256,status,reviewer,action_intent_id,created_at FROM callum_v2.comment_drafts ORDER BY created_at DESC LIMIT 100',
-      events: 'SELECT id,event_type,operator_id,installation_id,extension_version,build_sha,run_id,lead_id,command_id,action_intent_id,config_version,diagnostic_code,created_at FROM callum_v2.events ORDER BY created_at DESC LIMIT 100',
+      events: `SELECT id,event_type,operator_id,installation_id,extension_version,build_sha,run_id,lead_id,command_id,
+        action_intent_id,config_version,diagnostic_code,
+        CASE WHEN event_type='browser_failure' THEN details->>'stage' END AS failure_stage,
+        CASE WHEN event_type='browser_failure' THEN details->>'occurredAt' END AS reported_occurred_at,
+        created_at FROM callum_v2.events ORDER BY created_at DESC LIMIT 100`,
       diagnostics: `SELECT d.operator_id,COALESCE(d.installation_id,c.installation_id) AS installation_id,
         d.run_id,d.lead_id,d.command_id,d.action_intent_id,d.stage,d.code,d.created_at,
         i.extension_version,i.build_sha,c.config_version,c.trace_id,c.type AS command_type,c.status AS command_status,

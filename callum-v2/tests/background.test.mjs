@@ -1,14 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
 import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 import { DEFAULT_CONFIG } from '../packages/linkedin-config/index.mjs';
 
 const files={};for(const name of ['build-info.js','config.js','background.js'])files[name]=await readFile(new URL(`../extension/${name}`,import.meta.url),'utf8');
-function worker({storage,fetchImpl,tabQuery=async()=>[],sendMessage=async()=>null}){
+function worker({storage,storageSet=async()=>{},fetchImpl,tabQuery=async()=>[],sendMessage=async()=>null}){
   let listener,fetchCount=0,tabCount=0;
-  const sandbox={setTimeout,clearTimeout,URL,Date,fetch:async(...args)=>{fetchCount++;return fetchImpl(...args)},
-    chrome:{storage:{local:{get:storage}},alarms:{create(){},onAlarm:{addListener(){}}},runtime:{id:'test',getManifest:()=>({version:'2.4.0'}),
+  const sandbox={setTimeout,clearTimeout,URL,Date,crypto:{randomUUID},fetch:async(...args)=>{fetchCount++;return fetchImpl(...args)},
+    chrome:{storage:{local:{get:storage,set:storageSet}},alarms:{create(){},onAlarm:{addListener(){}}},runtime:{id:'test',getManifest:()=>({version:'2.5.2'}),
       onInstalled:{addListener(){}},onStartup:{addListener(){}},onMessage:{addListener(fn){listener=fn}}},tabs:{query:async()=>{tabCount++;return tabQuery()},create:async()=>{tabCount++;return {id:1}},sendMessage,onUpdated:{addListener(){},removeListener(){}},onRemoved:{addListener(){},removeListener(){}}}}};
   sandbox.globalThis=sandbox;vm.createContext(sandbox);
   sandbox.importScripts=(...names)=>{for(const name of names)vm.runInContext(files[name],sandbox)};
@@ -22,6 +23,57 @@ test('local storage failure pauses before backend or browser action',async()=>{
 test('backend outage pauses before opening a tab',async()=>{
   const x=worker({storage:async()=>({v2Token:'a'.repeat(40),v2Environment:'local'}),fetchImpl:async()=>{throw new Error('network down')}});
   const result=await x.poll();assert.equal(result.error,'BACKEND_UNAVAILABLE');assert.deepEqual(x.counts(),{fetchCount:1,tabCount:0});
+});
+test('a backend outage is buffered without secrets and reported once after reconnect',async()=>{
+  const memory={v2Token:'a'.repeat(40),v2Environment:'local'};
+  const reports=[];let online=false;
+  const reply=value=>({ok:true,json:async()=>value});
+  const options={storage:async()=>({...memory}),storageSet:async patch=>Object.assign(memory,patch),
+    fetchImpl:async(url,options)=>{
+      if(!online)throw new Error('network down');
+      if(url.endsWith('/api/installation'))return reply({id:'installation'});
+      if(url.endsWith('/api/browser-failures')){reports.push(JSON.parse(options.body));return reply({accepted:true});}
+      if(url.endsWith('/api/commands/claim'))return reply({command:null,config:{version:1,value:DEFAULT_CONFIG}});
+      throw new Error('unexpected request');
+    }};
+  const x=worker(options);
+  assert.equal((await x.poll()).error,'BACKEND_UNAVAILABLE');
+  assert.equal(memory.v2PendingFailures.length,1);
+  assert.equal(memory.v2PendingFailures[0].stage,'installation');
+  assert.equal(memory.v2PendingFailures[0].code,'BACKEND_UNAVAILABLE');
+  assert.equal(JSON.stringify(memory.v2PendingFailures).includes(memory.v2Token),false);
+  const bufferedId=memory.v2PendingFailures[0].eventId;
+  online=true;
+  const restarted=worker(options);
+  assert.equal((await restarted.poll()).state,'waiting');
+  assert.equal(reports.length,1);
+  assert.equal(reports[0].eventId,bufferedId);
+  assert.equal(memory.v2PendingFailures.length,0);
+  assert.equal((await restarted.poll()).state,'waiting');
+  assert.equal(reports.length,1);
+});
+test('a rejected old receipt does not block later buffered failures',async()=>{
+  const occurredAt=new Date().toISOString();
+  const first={eventId:randomUUID(),stage:'ack',code:'BACKEND_UNAVAILABLE',commandId:randomUUID(),occurredAt};
+  const second={eventId:randomUUID(),stage:'installation',code:'BACKEND_UNAVAILABLE',commandId:null,occurredAt};
+  const memory={v2Token:'a'.repeat(40),v2Environment:'local',v2PendingFailures:[first,second]};
+  const sent=[];
+  const reply=(value,ok=true)=>({ok,json:async()=>value});
+  const x=worker({storage:async()=>({...memory}),storageSet:async patch=>Object.assign(memory,patch),
+    fetchImpl:async(url,options)=>{
+      if(url.endsWith('/api/installation'))return reply({id:'installation'});
+      if(url.endsWith('/api/browser-failures')){
+        const report=JSON.parse(options.body);sent.push(report.eventId);
+        return report.eventId===first.eventId?reply({error:'COMMAND_NOT_OWNED'},false):reply({accepted:true});
+      }
+      if(url.endsWith('/api/commands/claim'))return reply({command:null,config:{version:1,value:DEFAULT_CONFIG}});
+      throw new Error('unexpected request');
+    }});
+  assert.equal((await x.poll()).state,'waiting');
+  assert.equal(sent.length,2);
+  assert.equal(sent[0],first.eventId);
+  assert.equal(sent[1],second.eventId);
+  assert.equal(memory.v2PendingFailures.length,0);
 });
 test('navigation failure before content primitive is reported as not submitted',async()=>{
   let ack=null;
@@ -80,25 +132,33 @@ test('comment navigation failure cannot reach authorization or a click',async()=
   assert.equal(authorizations,0);
 });
 test('service worker restart after an ACK network loss never repeats the action primitive',async()=>{
-  const command={id:'lost-ack',type:'EXECUTE_CONNECT',protocolVersion:1,configVersion:1,
+  const command={id:randomUUID(),type:'EXECUTE_CONNECT',protocolVersion:1,configVersion:1,
     targetUrl:'https://www.linkedin.com/in/qa-test/',expiresAt:new Date(Date.now()+60000).toISOString(),actionIntentId:'intent'};
   const reply=value=>({ok:true,json:async()=>value});
   let claims=0,authorizations=0,clicks=0;
-  const fetchImpl=async url=>{
+  const reports=[],memory={v2Token:'a'.repeat(40),v2Environment:'local'};
+  const fetchImpl=async (url,options)=>{
     if(url.endsWith('/api/installation'))return reply({id:'install'});
+    if(url.endsWith('/api/browser-failures')){reports.push(JSON.parse(options.body));return reply({accepted:true});}
     if(url.endsWith('/api/commands/claim'))return reply({command:++claims===1?command:null,config:{version:1,value:DEFAULT_CONFIG}});
     if(url.endsWith('/authorize')){authorizations++;return reply({authorized:true});}
     if(url.endsWith('/ack'))throw new Error('network lost after click');
     throw new Error('unexpected request');
   };
-  const options={storage:async()=>({v2Token:'a'.repeat(40),v2Environment:'local'}),fetchImpl,
+  const options={storage:async()=>({...memory}),storageSet:async patch=>Object.assign(memory,patch),fetchImpl,
     tabQuery:async()=>[{id:7,url:command.targetUrl,status:'complete'}],
     sendMessage:async(_tabId,message)=>{clicks++;return {commandId:message.command.id,status:'confirmed',facts:{pendingVisible:true}};}};
   const first=worker(options);
   assert.equal((await first.poll()).state,'paused');
+  assert.equal(memory.v2PendingFailures.length,1);
+  assert.equal(memory.v2PendingFailures[0].stage,'ack');
+  assert.equal(memory.v2PendingFailures[0].commandId,command.id);
   const restarted=worker(options);
   assert.equal((await restarted.poll()).state,'waiting');
   assert.equal(clicks,1);assert.equal(authorizations,1);assert.equal(claims,2);
+  assert.equal(reports.length,1);
+  assert.equal(reports[0].commandId,command.id);
+  assert.equal(memory.v2PendingFailures.length,0);
 });
 test('authorization network loss before the primitive reports not submitted',async()=>{
   const command={id:'authorize-lost',type:'EXECUTE_COMMENT',protocolVersion:1,configVersion:1,

@@ -1,6 +1,13 @@
 importScripts('build-info.js', 'config.js');
 
 const ENDPOINTS = Object.freeze({ local: 'http://localhost:8788', staging: 'https://api-v2.careeraccelerator.net' });
+const FAILURE_KEY = 'v2PendingFailures';
+const FAILURE_STAGES = new Set(['installation','claim','config','command','ack']);
+const FAILURE_CODES = new Set(['BACKEND_UNAVAILABLE','UNAUTHORIZED','CONFIG_INCOMPATIBLE','CONFIG_INVALID',
+  'NAVIGATION_FAILED','TAB_CLOSED','ACTION_NOT_AUTHORIZED','UNEXPECTED_BROWSER_STATE','COMMAND_EXPIRED',
+  'PROFILE_MISMATCH','STORAGE_UNAVAILABLE']);
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 let busy = false;
 let last = { state: 'idle', configVersion: null, installationId: null, error: null, environment: 'local' };
 
@@ -20,6 +27,40 @@ async function api(endpoint, token, path, payload = null) {
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || 'BACKEND_UNAVAILABLE');
   return data;
+}
+async function pendingFailures() {
+  const stored=(await chrome.storage.local.get([FAILURE_KEY]))[FAILURE_KEY];
+  if(!Array.isArray(stored))return [];
+  return stored.filter(item=>item&&UUID.test(item.eventId)&&FAILURE_STAGES.has(item.stage)&&
+    FAILURE_CODES.has(item.code)&&(item.commandId===null||UUID.test(item.commandId))&&
+    typeof item.occurredAt==='string'&&ISO_TIME.test(item.occurredAt)&&Number.isFinite(Date.parse(item.occurredAt))).slice(-8)
+    .map(item=>({eventId:item.eventId,stage:item.stage,code:item.code,
+      commandId:item.commandId,occurredAt:item.occurredAt}));
+}
+async function rememberFailure(stage, code, commandId) {
+  try {
+    const safeCommandId=UUID.test(commandId || '')?commandId:null;
+    const failures=await pendingFailures();
+    const recent=failures.at(-1);
+    if(recent?.stage===stage&&recent.code===code&&recent.commandId===safeCommandId&&
+      Date.now()-Date.parse(recent.occurredAt)<3600_000)return;
+    failures.push({eventId:crypto.randomUUID(),stage,code,commandId:safeCommandId,occurredAt:new Date().toISOString()});
+    await chrome.storage.local.set({[FAILURE_KEY]:failures.slice(-8)});
+  } catch { /* The popup still exposes the paused state if local storage fails. */ }
+}
+async function flushFailures(endpoint, token) {
+  const failures=await pendingFailures();
+  while(failures.length){
+    try {
+      const response=await api(endpoint,token,'/api/browser-failures',failures[0]);
+      if(response.accepted!==true)throw new Error('BACKEND_UNAVAILABLE');
+    } catch(error) {
+      if(!['BROWSER_REPORT_INVALID','COMMAND_NOT_OWNED'].includes(error.message))throw error;
+      // An invalid old receipt must not prevent later valid receipts from flushing.
+    }
+    failures.shift();
+    await chrome.storage.local.set({[FAILURE_KEY]:failures});
+  }
 }
 function assertCommand(c, configVersion) {
   if (!c || !['INSPECT_PROFILE', 'EXECUTE_CONNECT', 'INSPECT_COMMENT_STATE', 'EXTRACT_CONTACT_INFO', 'INSPECT_PENDING_INVITATION', 'EXECUTE_WITHDRAW','EXECUTE_COMMENT'].includes(c.type) || c.protocolVersion !== CALLUM_V2_BUILD.protocol || c.configVersion !== configVersion) throw new Error('CONFIG_INCOMPATIBLE');
@@ -55,19 +96,27 @@ async function primitive(tabId, command, config) {
 async function poll() {
   if (busy) return;
   busy = true;
+  let token=null,stage='installation',activeCommandId=null;
   try {
-    const { token, environment } = await settings();
+    const settingsValue = await settings();
+    token=settingsValue.token;
+    const environment=settingsValue.environment;
     last.environment = environment;
     if (!token) { last = { ...last, state: 'not_connected', error: null }; return; }
     const endpoint = ENDPOINTS[environment];
     const identity = await api(endpoint, token, '/api/installation');
     last.installationId = identity.id;
+    try { await flushFailures(endpoint,token); } catch { /* Retain reports for the next poll. */ }
+    stage='claim';
     const claimed = await api(endpoint, token, '/api/commands/claim', {});
     last.configVersion = claimed.config.version;
+    activeCommandId=claimed.command?.id || null;
+    stage='config';
     CallumConfig.validate(claimed.config.value);
     const command = claimed.command;
     if (!command) { last = { ...last, state: 'waiting', error: null }; return; }
     assertCommand(command, claimed.config.version);
+    stage='command';
     last = { ...last, state: `running ${command.type}`, error: null };
     let result;
     let primitiveStarted = false;
@@ -84,10 +133,13 @@ async function poll() {
       result = { commandId: command.id, status: ['EXECUTE_CONNECT','EXECUTE_WITHDRAW','EXECUTE_COMMENT'].includes(command.type) ? (primitiveStarted ? 'uncertain' : 'not_submitted') : 'observed',
         facts: { profileMatched: false, profileKey: null, pageReady: false, diagnosticCode: code } };
     }
+    stage='ack';
     await api(endpoint, token, `/api/commands/${command.id}/ack`, result);
     last = { ...last, state: 'waiting', error: null };
   } catch (error) {
-    last = { ...last, state: 'paused', error: /^[A-Z_]+$/.test(error.message || '') ? error.message : 'BACKEND_UNAVAILABLE' };
+    const code=FAILURE_CODES.has(error.message)?error.message:'BACKEND_UNAVAILABLE';
+    if(token)await rememberFailure(stage,code,activeCommandId);
+    last = { ...last, state: 'paused', error: code };
   } finally { busy = false; }
 }
 

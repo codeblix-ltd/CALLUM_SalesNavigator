@@ -103,6 +103,7 @@ const server = http.createServer(async (req, res) => {
       id: installation.id, operatorId: installation.operator_id, extensionVersion: installation.extension_version,
       buildSha: installation.build_sha, environment, protocolVersion: 1
     });
+    if (path === '/api/browser-failures' && req.method === 'POST') return json(res, 200, await control.reportBrowserFailure(installation, data));
     if (path === '/api/commands/claim' && req.method === 'POST') return json(res, 200, await control.claim(installation));
     const match = /^\/api\/commands\/([0-9a-f-]+)\/(authorize|ack)$/.exec(path);
     if (match && req.method === 'POST') {
