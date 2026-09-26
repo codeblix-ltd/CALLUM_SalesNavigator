@@ -1,5 +1,7 @@
 # Readiness decision
 
+A 2026-09-26 real-catalog shadow workflow completed 20 claim/ACK cycles across two concurrent V2-only runs. The end-to-end script, including setup and final checks, took 121.6 s (about 0.16 completed leads/s overall). All 20 leads completed with one simulated observation each; actions, intents, and pay remained zero, and V1 assignment count stayed 63,135. This strengthens state-machine and isolation evidence, but does not establish 1k/10k transactional throughput or authenticated browser behavior. See [SHADOW-LOAD.md](SHADOW-LOAD.md).
+
 **NOT PROD-READY-CANDIDATE** as of 2026-09-26. Starting main SHA: `68f5971a5e4b91d0814cd0f2b32dd18dbd64237b`. V1-overlap implementation commit: `2c8de40`; last reviewed local package build SHA: `f47af6c83434`. Protocol `1`; V2 source extension `2.5.1`; adapter `7`; dev remote config `27`; DB migrations `001_init` through `005_global_action_targets`.
 
 The local V2 architecture, migration, protocol fixtures, Cockroach action reconciliation, remote config update, Chrome MCP lifecycle, 1k/10k real-catalog shadow workloads, and local API smoke have evidence in sibling validation files. These results do not substitute for all 15 gates in the context kit.
