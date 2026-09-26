@@ -75,6 +75,9 @@ const server = http.createServer(async (req, res) => {
       if (!authorized(bearer(req), adminToken)) return json(res, 401, { error: 'UNAUTHORIZED' });
       const data = req.method === 'POST' ? await body(req) : {};
       if (path === '/api/admin/overview' && req.method === 'GET') return json(res, 200, await control.overview());
+      const payEvidenceMatch=/^\/api\/admin\/pay\/([0-9a-f-]+)$/i.exec(path);
+      if(payEvidenceMatch&&req.method==='GET')return json(res,200,
+        await control.payEvidence(payEvidenceMatch[1]));
       if (path === '/api/admin/operators' && req.method === 'POST') return json(res, 200, await control.createOperator(data.id, data.cohort, data.dailyLimit));
       if (path === '/api/admin/operators/disable' && req.method === 'POST') { await control.disableOperator(data.id, data.disabled); return json(res, 200, { ok:true }); }
       if (path === '/api/admin/installations' && req.method === 'POST') return json(res, 200, await control.createInstallation(data.operatorId, data.extensionVersion, data.buildSha,data.actorProfileUrl||null));
@@ -118,7 +121,8 @@ const server = http.createServer(async (req, res) => {
   } catch (error) {
     const code = /^[A-Z_]+$/.test(error.message || '') ? error.message : 'INTERNAL_ERROR';
     if (code === 'INTERNAL_ERROR') console.error('V2 request failed', error.code || error.name);
-    const status = code === 'UNAUTHORIZED' ? 401 : code === 'INTERNAL_ERROR' ? 500 : 400;
+    const status = code === 'UNAUTHORIZED' ? 401 : code === 'PAY_LINE_NOT_FOUND' ? 404 :
+      code === 'INTERNAL_ERROR' ? 500 : 400;
     json(res, status, { error: code });
   }
 });

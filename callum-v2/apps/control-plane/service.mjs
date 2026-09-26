@@ -953,6 +953,46 @@ export class ControlPlane {
     });
   }
 
+  async payEvidence(id) {
+    if(typeof id!=='string'||!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id))
+      throw new Error('PAY_LINE_INVALID');
+    const {rows}=await this.db.query(`SELECT l.id,l.operator_id,l.run_id,l.lead_id,l.action_intent_id,
+      l.source_event_id,l.pay_rule_version,l.amount_minor,l.currency,l.status,l.created_at,
+      intent.action_type,intent.state AS intent_state,
+      source.event_type AS source_event_type,source.action_intent_id AS source_action_intent_id,
+      source.operator_id AS source_operator_id,source.run_id AS source_run_id,source.lead_id AS source_lead_id,
+      source.command_id AS source_command_id,source.created_at AS source_event_at,
+      auth.id AS authorization_event_id,auth.event_type AS authorization_event_type,
+      auth.action_intent_id AS authorization_action_intent_id,auth.operator_id AS authorization_operator_id,
+      auth.run_id AS authorization_run_id,auth.lead_id AS authorization_lead_id,
+      auth.command_id AS authorization_command_id,auth.created_at AS authorization_event_at,
+      rule.event_type AS rule_event_type,rule.amount_minor AS rule_amount_minor,rule.currency AS rule_currency
+      FROM callum_v2.pay_ledger l
+      JOIN callum_v2.action_intents intent ON intent.id=l.action_intent_id
+      JOIN callum_v2.events source ON source.id=l.source_event_id
+      JOIN callum_v2.pay_rules rule ON rule.version=l.pay_rule_version
+      LEFT JOIN callum_v2.events auth
+        ON auth.event_key='intent:' || l.action_intent_id::STRING || ':authorized'
+      WHERE l.id=$1`,[id]);
+    const row=rows[0];
+    if(!row)throw new Error('PAY_LINE_NOT_FOUND');
+    const expected=row.action_type==='connect'?'connection':row.action_type==='comment'?'comment':null;
+    const matches=(prefix)=>row[`${prefix}_action_intent_id`]===row.action_intent_id&&
+      row[`${prefix}_operator_id`]===row.operator_id&&row[`${prefix}_run_id`]===row.run_id&&
+      row[`${prefix}_lead_id`]===row.lead_id;
+    let traceStatus='linked';
+    if(!expected||row.intent_state!=='confirmed')traceStatus='intent_mismatch';
+    else if(row.source_event_type!==`${expected}_confirmed`||!matches('source'))traceStatus='source_mismatch';
+    else if(row.rule_event_type!==row.source_event_type||
+      String(row.rule_amount_minor)!==String(row.amount_minor)||row.rule_currency!==row.currency)
+      traceStatus='rule_mismatch';
+    else if(!row.authorization_event_id)traceStatus='missing_authorization';
+    else if(row.authorization_event_type!==`${expected}_authorized`||!matches('authorization'))
+      traceStatus='authorization_mismatch';
+    const {rule_amount_minor,rule_currency,...safe}=row;
+    return {...safe,trace_status:traceStatus};
+  }
+
   async createConfig(config, minVersion = CURRENT_EXTENSION_VERSION) {
     const clean = validateConfig(config);
     if (!extensionVersionPattern.test(minVersion)) throw new Error('CONFIG_INVALID');
@@ -1031,7 +1071,7 @@ export class ControlPlane {
       configs: 'SELECT version,status,min_extension_version,rollout_percent,checksum,created_at FROM callum_v2.remote_configs ORDER BY version DESC LIMIT 30',
       flags: 'SELECT flag_key,disabled,updated_at FROM callum_v2.feature_flags ORDER BY flag_key',
       payRules: 'SELECT version,event_type,amount_minor,currency,enabled,created_at FROM callum_v2.pay_rules ORDER BY version DESC LIMIT 100',
-      pay: 'SELECT operator_id,run_id,lead_id,source_event_id,pay_rule_version,amount_minor,currency,status,created_at FROM callum_v2.pay_ledger ORDER BY created_at DESC LIMIT 100'
+      pay: 'SELECT id,operator_id,run_id,lead_id,source_event_id,pay_rule_version,amount_minor,currency,status,created_at FROM callum_v2.pay_ledger ORDER BY created_at DESC LIMIT 100'
     };
     const result = {};
     for (const [key, sql] of Object.entries(queries)) result[key] = (await this.db.query(sql)).rows;

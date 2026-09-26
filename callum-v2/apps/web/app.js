@@ -41,7 +41,7 @@ async function refresh() {
   table('configs',x.configs,['version','status','min_extension_version','rollout_percent','checksum','created_at']);
   table('flags',x.flags,['flag_key','disabled','updated_at']);
   table('payRules',x.payRules,['version','event_type','amount_minor','currency','enabled','created_at']);
-  table('payRows',x.pay,['operator_id','lead_id','source_event_id','pay_rule_version','amount_minor','currency','status','created_at']);
+  table('payRows',x.pay,['id','operator_id','lead_id','source_event_id','pay_rule_version','amount_minor','currency','status','created_at']);
   $('updated').textContent=`Updated ${new Date().toLocaleTimeString()}`;
 }
 function bindForm(id, path, convert, onResult) {
@@ -77,3 +77,14 @@ bindForm('configForm','/api/admin/configs',f=>({config:JSON.parse(f.get('config'
 bindForm('activateForm','/api/admin/configs/activate',f=>({version:Number(f.get('version')),channel:f.get('channel'),rolloutPercent:Number(f.get('rolloutPercent'))}));
 bindForm('payForm','/api/admin/pay-rules',f=>({version:Number(f.get('version')),eventType:f.get('eventType'),amountMinor:Number(f.get('amountMinor')),currency:String(f.get('currency')).toUpperCase(),enabled:f.get('enabled')==='on'}));
 bindForm('payRuleStatusForm','/api/admin/pay-rules/status',f=>({version:Number(f.get('version')),enabled:f.get('enabled')==='true'}));
+$('payEvidenceForm').addEventListener('submit',async e=>{
+  e.preventDefault();$('notice').textContent='';$('payEvidence').replaceChildren();
+  try{
+    const id=new FormData(e.currentTarget).get('id');
+    const x=await api('/api/admin/pay/'+encodeURIComponent(id));
+    table('payEvidence',[x],['id','trace_status','operator_id','run_id','lead_id','action_intent_id',
+      'intent_state','source_event_id','source_event_type','source_command_id','source_event_at',
+      'authorization_event_id','authorization_event_type','authorization_command_id',
+      'authorization_event_at','pay_rule_version','rule_event_type','amount_minor','currency','status','created_at']);
+  }catch(error){$('notice').textContent=error.message;}
+});

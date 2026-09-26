@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 import { openDatabase } from '../apps/control-plane/db.mjs';
 import { ControlPlane } from '../apps/control-plane/service.mjs';
 
@@ -11,6 +15,7 @@ test('Cockroach V2 command lease, lost ACK, reconciliation, and duplicate pay in
   const ruleVersion=Number(String(Date.now()).slice(-12));
   const previousQa=process.env.V2_QA_PROFILE_KEY;
   const actorKey=`qa-actor-${randomUUID().slice(0,8)}`;
+  let server=null;
   try {
     await s.seed();await s.createOperator(operatorId,'dev',5);
     const issued=await s.createInstallation(operatorId,'2.5.1','68f5971a',`https://www.linkedin.com/in/${actorKey}/`);
@@ -50,11 +55,43 @@ test('Cockroach V2 command lease, lost ACK, reconciliation, and duplicate pay in
     assert.equal(one,1);
     const state=(await db.query('SELECT state FROM callum_v2.action_intents WHERE run_id=$1',[first.run.id])).rows[0].state;
     assert.equal(state,'confirmed');
-    const reconciledPay=await db.query(`SELECT e.event_type,l.pay_rule_version FROM callum_v2.pay_ledger l
+    const reconciledPay=await db.query(`SELECT l.id,e.event_type,l.pay_rule_version FROM callum_v2.pay_ledger l
       JOIN callum_v2.events e ON e.id=l.source_event_id WHERE l.run_id=$1`,[first.run.id]);
     assert.equal(reconciledPay.rows.length,1);
     assert.equal(reconciledPay.rows[0].event_type,'connection_confirmed');
     assert.equal(Number(reconciledPay.rows[0].pay_rule_version),ruleVersion);
+    const payTrace=await s.payEvidence(reconciledPay.rows[0].id);
+    assert.equal(payTrace.trace_status,'linked');
+    assert.equal(payTrace.source_event_type,'connection_confirmed');
+    assert.equal(payTrace.authorization_event_type,'connection_authorized');
+    assert.equal(payTrace.action_intent_id,payTrace.source_action_intent_id);
+    assert.equal(payTrace.action_intent_id,payTrace.authorization_action_intent_id);
+    assert.equal(Object.hasOwn(payTrace,'details'),false);
+    const adminToken=randomBytes(32).toString('hex');
+    const port=20000+Math.floor(Math.random()*10000),origin=`http://127.0.0.1:${port}`;
+    server=spawn(process.execPath,['apps/control-plane/server.mjs'],{
+      cwd:fileURLToPath(new URL('../',import.meta.url)),
+      env:{...process.env,V2_PORT:String(port),V2_BIND_HOST:'127.0.0.1',V2_WEB_ORIGIN:origin,
+        V2_ADMIN_TOKEN:adminToken},stdio:'ignore',windowsHide:true
+    });
+    let ready=false;
+    for(let i=0;i<80;i++){
+      if(server.exitCode!==null||server.signalCode!==null)throw new Error('BACKEND_START_FAILED');
+      try{if((await fetch(`${origin}/api/health`)).ok){ready=true;break;}}catch{}
+      await delay(250);
+    }
+    assert.equal(ready,true);
+    const payPath=`${origin}/api/admin/pay/${reconciledPay.rows[0].id}`;
+    assert.equal((await fetch(payPath,{headers:{authorization:'Bearer wrong-token'}})).status,401);
+    const response=await fetch(payPath,{headers:{authorization:`Bearer ${adminToken}`}});
+    assert.equal(response.status,200);
+    const fromApi=await response.json();
+    assert.equal(fromApi.trace_status,'linked');
+    assert.equal(fromApi.source_event_id,payTrace.source_event_id);
+    assert.equal(JSON.stringify(fromApi).includes(adminToken),false);
+    const closed=once(server,'exit');server.kill();
+    await Promise.race([closed,delay(10000,null,{ref:false}).then(()=>{throw new Error('BACKEND_STOP_TIMEOUT')})]);
+    server=null;
     assert.equal((await s.acknowledge(install,{commandId:action.command.id,status:'uncertain',facts:{
       ...observed,diagnosticCode:'POSTCONDITION_UNKNOWN'}})).stage,'completed',
       'late uncertain action ACK cannot reopen a reconciled connection');
@@ -110,6 +147,10 @@ test('Cockroach V2 command lease, lost ACK, reconciliation, and duplicate pay in
     assert.equal(staleResult.stage,'completed','leased stale reconciliation cannot undo a confirmed intent');
     assert.equal((await db.query('SELECT stage FROM callum_v2.run_leads WHERE run_id=$1',[fifth.run.id])).rows[0].stage,'completed');
   } finally {
+    if(server?.exitCode===null&&server?.signalCode===null){
+      const closed=once(server,'exit');server.kill();
+      await Promise.race([closed,delay(10000,null,{ref:false}).then(()=>{throw new Error('BACKEND_STOP_TIMEOUT')})]);
+    }
     if(previousQa===undefined)delete process.env.V2_QA_PROFILE_KEY;else process.env.V2_QA_PROFILE_KEY=previousQa;
     await db.query('UPDATE callum_v2.pay_rules SET enabled=false WHERE version=$1',[ruleVersion]).catch(()=>{});
     await db.close();

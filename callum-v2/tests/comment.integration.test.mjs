@@ -69,6 +69,12 @@ test('reviewed QA comment authorizes once, then reconciles uncertain submission 
     assert.equal(outcome.stage,'completed');
     assert.equal((await control.acknowledge(installation,{commandId:reconciliation.id,status:'observed',facts:{}})).duplicate,true);
     assert.equal((await db.query('SELECT count(*)::INT4 n FROM callum_v2.pay_ledger WHERE action_intent_id=$1',[approved.actionIntentId])).rows[0].n,1);
+    const commentPay=(await db.query('SELECT id FROM callum_v2.pay_ledger WHERE action_intent_id=$1',
+      [approved.actionIntentId])).rows[0];
+    const commentTrace=await control.payEvidence(commentPay.id);
+    assert.equal(commentTrace.trace_status,'linked');
+    assert.equal(commentTrace.source_event_type,'comment_confirmed');
+    assert.equal(commentTrace.authorization_event_type,'comment_authorized');
     assert.equal((await db.query('SELECT state FROM callum_v2.action_intents WHERE id=$1',[approved.actionIntentId])).rows[0].state,'confirmed');
     assert.equal((await control.claim(installation)).command,null);
 
