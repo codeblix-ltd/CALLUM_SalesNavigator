@@ -325,7 +325,7 @@ export class ControlPlane {
 
   async expiredCommandIds(q, operatorId) {
     const { rows } = await q.query(`SELECT c.id FROM callum_v2.commands c
-      WHERE c.operator_id=$1 AND ((c.status='leased' AND c.lease_expires_at < now()) OR (c.status='pending' AND c.expires_at < now()))
+      WHERE c.operator_id=$1 AND ((c.status='leased' AND c.lease_expires_at < statement_timestamp()) OR (c.status='pending' AND c.expires_at < statement_timestamp()))
       ORDER BY CASE WHEN c.status='leased' THEN c.lease_expires_at ELSE c.expires_at END,c.id LIMIT $2`,
       [operatorId,RECOVERY_BATCH_SIZE]);
     return rows;
@@ -335,7 +335,7 @@ export class ControlPlane {
     // Only skip type-scoped flags here. A stale command still needs the config
     // update below, and every flag scope is checked again before leasing.
     return (await q.query(`SELECT c.id FROM callum_v2.commands c JOIN callum_v2.runs r ON r.id=c.run_id
-      WHERE c.operator_id=$1 AND c.status='pending' AND c.expires_at>now() AND r.status='running'
+      WHERE c.operator_id=$1 AND c.status='pending' AND c.expires_at>statement_timestamp() AND r.status='running'
       AND (r.installation_id IS NULL OR r.installation_id=$2)
       AND NOT EXISTS (SELECT 1 FROM callum_v2.feature_flags f WHERE f.disabled=true AND f.flag_key=
         CASE WHEN c.type='EXECUTE_CONNECT' THEN 'connection'
@@ -355,7 +355,7 @@ export class ControlPlane {
       const c=(await q.query(`SELECT c.*,r.mode,r.status AS run_status,l.linkedin_url,l.profile_key FROM callum_v2.commands c
         JOIN callum_v2.runs r ON r.id=c.run_id JOIN callum_v2.run_leads l ON l.run_id=c.run_id AND l.lead_id=c.lead_id
         WHERE c.id=$1 AND c.operator_id=$2
-          AND ((c.status='leased' AND c.lease_expires_at < now()) OR (c.status='pending' AND c.expires_at < now()))
+          AND ((c.status='leased' AND c.lease_expires_at < statement_timestamp()) OR (c.status='pending' AND c.expires_at < statement_timestamp()))
         FOR UPDATE OF c`, [id,operatorId])).rows[0];
       if(!c)continue;
       if (commandAfterLeaseExpiry(c.type) === 'reconcile_required') {
@@ -371,7 +371,7 @@ export class ControlPlane {
         await this.event(q, { event_key: `intent:${c.action_intent_id}:uncertain`, event_type: withdraw ? 'withdrawal_uncertain' : comment ? 'comment_uncertain' : 'connection_uncertain', operator_id: c.operator_id, run_id: c.run_id, lead_id: c.lead_id, command_id: c.id, action_intent_id: c.action_intent_id, config_version: Number(c.config_version), diagnostic_code: 'POSTCONDITION_UNKNOWN' });
         await this.diagnostic(q,{id:c.installation_id,operator_id:c.operator_id},c,'action_lease','POSTCONDITION_UNKNOWN');
       } else {
-        await q.query("UPDATE callum_v2.commands SET status='pending',expires_at=now()+INTERVAL '30 minutes',lease_expires_at=NULL,updated_at=now() WHERE id=$1", [c.id]);
+        await q.query("UPDATE callum_v2.commands SET status='pending',expires_at=statement_timestamp()+INTERVAL '30 minutes',lease_expires_at=NULL,updated_at=now() WHERE id=$1", [c.id]);
       }
     }
   }
@@ -416,7 +416,7 @@ export class ControlPlane {
       // Lock only the selected command; the operator-wide pending scan above is read-only.
       // Recheck status and run ownership after acquiring the row lock.
       const { rows } = await q.query(`SELECT c.* FROM callum_v2.commands c JOIN callum_v2.runs r ON r.id=c.run_id
-        WHERE c.id=$3 AND c.operator_id=$1 AND c.status='pending' AND c.expires_at>now() AND r.status='running'
+        WHERE c.id=$3 AND c.operator_id=$1 AND c.status='pending' AND c.expires_at>statement_timestamp() AND r.status='running'
         AND (r.installation_id IS NULL OR r.installation_id=$2) FOR UPDATE OF c`,
         [installation.operator_id, installation.id, candidate.id]);
       const c = rows[0];
@@ -445,7 +445,10 @@ export class ControlPlane {
         return { command: null, config: { version: Number(config.version), value: config.config, checksum: config.checksum } };
       }
       const attempt = (await q.query('SELECT count(*)::INT4 AS n FROM callum_v2.command_attempts WHERE command_id=$1', [c.id])).rows[0].n + 1;
-      await q.query("UPDATE callum_v2.commands SET status='leased',installation_id=$2,lease_expires_at=now()+INTERVAL '90 seconds',updated_at=now() WHERE id=$1", [c.id, installation.id]);
+      const leased=(await q.query(`UPDATE callum_v2.commands
+        SET status='leased',installation_id=$2,lease_expires_at=statement_timestamp()+INTERVAL '90 seconds',updated_at=now()
+        WHERE id=$1 AND status='pending' AND expires_at>statement_timestamp() RETURNING id`,[c.id,installation.id])).rows[0];
+      if(!leased)return {command:null,config:{version:Number(config.version),value:config.config,checksum:config.checksum}};
       await q.query('INSERT INTO callum_v2.command_attempts(command_id,installation_id,attempt_number) VALUES ($1,$2,$3)', [c.id, installation.id, attempt]);
       await q.query('UPDATE callum_v2.installations SET last_seen_at=now() WHERE id=$1', [installation.id]);
       const command = { id: c.id, runId: c.run_id, leadId: c.lead_id, operatorId: c.operator_id, traceId: c.trace_id,
