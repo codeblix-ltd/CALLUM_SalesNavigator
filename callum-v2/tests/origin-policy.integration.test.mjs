@@ -2,21 +2,22 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
-import {randomBytes} from 'node:crypto';
+import {randomBytes,randomUUID} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
 import {fileURLToPath} from 'node:url';
 
 const enabled=process.env.V2_TEST_DB==='1'&&!!process.env.COCKROACH_DATABASE_URL;
 
-test('staging server permits only the configured browser origins', {skip:!enabled},async()=>{
+test('staging server enforces browser origins and authenticates before parsing bodies', {skip:!enabled},async()=>{
   const port=30000+Math.floor(Math.random()*10000),base=`http://127.0.0.1:${port}`;
+  const adminToken=randomBytes(32).toString('hex');
   const extension='chrome-extension://blkkihmcpjhihcfihfoijkgnmfpeigbd';
   const other='chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
   const web='https://lead-v2.careeraccelerator.net';
   const server=spawn(process.execPath,['apps/control-plane/server.mjs'],{
     cwd:fileURLToPath(new URL('../',import.meta.url)),
     env:{...process.env,V2_PORT:String(port),V2_BIND_HOST:'127.0.0.1',V2_ENVIRONMENT:'staging',
-      V2_WEB_ORIGIN:web,V2_EXTENSION_ORIGIN:extension,V2_ADMIN_TOKEN:randomBytes(32).toString('hex')},
+      V2_WEB_ORIGIN:web,V2_EXTENSION_ORIGIN:extension,V2_ADMIN_TOKEN:adminToken},
     stdio:'ignore',windowsHide:true
   });
   try{
@@ -37,6 +38,46 @@ test('staging server permits only the configured browser origins', {skip:!enable
       assert.equal(response.status,403,origin);
       assert.equal(response.headers.get('access-control-allow-origin'),null);
     }
+    const malformed='{';
+    const adminWithoutToken=await fetch(`${base}/api/admin/operators`,{
+      method:'POST',headers:{'content-type':'application/json'},body:malformed
+    });
+    assert.equal(adminWithoutToken.status,401,'admin authentication precedes body parsing');
+    const installationWithoutToken=await fetch(`${base}/api/commands/claim`,{
+      method:'POST',headers:{'content-type':'application/json'},body:malformed
+    });
+    assert.equal(installationWithoutToken.status,401,'installation authentication precedes body parsing');
+    const malformedAdmin=await fetch(`${base}/api/admin/operators`,{
+      method:'POST',headers:{authorization:`Bearer ${adminToken}`,'content-type':'application/json'},body:malformed
+    });
+    assert.equal(malformedAdmin.status,400);
+    assert.equal((await malformedAdmin.json()).error,'INVALID_JSON');
+    const invalidShape=await fetch(`${base}/api/admin/operators`,{
+      method:'POST',headers:{authorization:`Bearer ${adminToken}`,'content-type':'application/json'},body:'null'
+    });
+    assert.equal(invalidShape.status,400);
+    assert.equal((await invalidShape.json()).error,'BODY_INVALID');
+    const operatorId=`v2http_${randomUUID().slice(0,8)}`;
+    const adminHeaders={authorization:`Bearer ${adminToken}`,'content-type':'application/json'};
+    const created=await fetch(`${base}/api/admin/operators`,{
+      method:'POST',headers:adminHeaders,body:JSON.stringify({id:operatorId,cohort:'dev',dailyLimit:1})
+    });
+    assert.equal(created.status,200,'valid authenticated admin JSON still reaches the control plane');
+    const issuedResponse=await fetch(`${base}/api/admin/installations`,{
+      method:'POST',headers:adminHeaders,
+      body:JSON.stringify({operatorId,extensionVersion:'2.5.2',buildSha:'d82031cc'})
+    });
+    assert.equal(issuedResponse.status,200);
+    const issued=await issuedResponse.json();
+    const claimed=await fetch(`${base}/api/commands/claim`,{
+      method:'POST',headers:{authorization:`Bearer ${issued.token}`,'content-type':'application/json'},body:'{}'
+    });
+    assert.equal(claimed.status,200,'valid authenticated installation JSON still reaches claim');
+    assert.equal((await claimed.json()).command,null);
+    const disabled=await fetch(`${base}/api/admin/operators/disable`,{
+      method:'POST',headers:adminHeaders,body:JSON.stringify({id:operatorId,disabled:true})
+    });
+    assert.equal(disabled.status,200);
   }finally{
     if(server.exitCode===null){
       const closed=once(server,'exit');

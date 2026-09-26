@@ -32,7 +32,11 @@ function json(res, status, body) {
 async function body(req) {
   const chunks = []; let bytes = 0;
   for await (const chunk of req) { bytes += chunk.length; if (bytes > 32768) throw new Error('BODY_TOO_LARGE'); chunks.push(chunk); }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+  let data;
+  try { data = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); }
+  catch { throw new Error('INVALID_JSON'); }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('BODY_INVALID');
+  return data;
 }
 function bearer(req) { return /^Bearer (.+)$/i.exec(req.headers.authorization || '')?.[1] || ''; }
 async function staticFile(pathname, res) {
@@ -67,9 +71,9 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { status: 'ok', environment, protocolVersion: 1 });
     }
     if (!path.startsWith('/api/')) return staticFile(path, res);
-    const data = req.method === 'POST' ? await body(req) : {};
     if (path.startsWith('/api/admin/')) {
       if (!authorized(bearer(req), adminToken)) return json(res, 401, { error: 'UNAUTHORIZED' });
+      const data = req.method === 'POST' ? await body(req) : {};
       if (path === '/api/admin/overview' && req.method === 'GET') return json(res, 200, await control.overview());
       if (path === '/api/admin/operators' && req.method === 'POST') return json(res, 200, await control.createOperator(data.id, data.cohort, data.dailyLimit));
       if (path === '/api/admin/operators/disable' && req.method === 'POST') { await control.disableOperator(data.id, data.disabled); return json(res, 200, { ok:true }); }
@@ -99,6 +103,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 404, { error: 'NOT_FOUND' });
     }
     const installation = await control.installation(bearer(req));
+    const data = req.method === 'POST' ? await body(req) : {};
     if (path === '/api/installation' && req.method === 'GET') return json(res, 200, {
       id: installation.id, operatorId: installation.operator_id, extensionVersion: installation.extension_version,
       buildSha: installation.build_sha, environment, protocolVersion: 1
