@@ -10,15 +10,19 @@ test('support can trace failures and reconciliation without receiving a contact 
   const db=openDatabase(),control=new ControlPlane(db),operatorId=`v2support_${randomUUID().slice(0,8)}`;
   const previousQa=process.env.V2_QA_PROFILE_KEY,profileKey=`qa-support-${randomUUID().slice(0,8)}`;
   const actorKey=`qa-actor-${randomUUID().slice(0,8)}`;
+  let installationId=null;
+  const runIds=[];
   try{
     await control.seed();await control.createOperator(operatorId,'dev',1);
     const issued=await control.createInstallation(operatorId,'2.5.1','0cb9a83',`https://www.linkedin.com/in/${actorKey}/`);
+    installationId=issued.id;
     const installation=await control.installation(issued.token);
     process.env.V2_QA_PROFILE_KEY=profileKey;
     const version=Number((await db.query("SELECT active_config_version FROM callum_v2.release_channels WHERE channel='dev'")).rows[0].active_config_version);
     async function fixture(){
       const leadId=randomUUID(),run=(await db.query("INSERT INTO callum_v2.runs(operator_id,installation_id,mode,config_version) VALUES ($1,$2,'live_canary',$3) RETURNING id",
         [operatorId,installation.id,version])).rows[0];
+      runIds.push(run.id);
       const lead={id:leadId,profile_key:profileKey,linkedin_url:`https://www.linkedin.com/in/${profileKey}/`};
       await db.query('INSERT INTO callum_v2.run_leads(run_id,lead_id,profile_key,linkedin_url) VALUES ($1,$2,$3,$4)',
         [run.id,leadId,profileKey,lead.linkedin_url]);
@@ -81,8 +85,28 @@ test('support can trace failures and reconciliation without receiving a contact 
     assert.equal(uncertain.reconciliation_status,'pending');
     assert.equal(uncertain.attempt_count,1);
     assert.equal(uncertain.code,'POSTCONDITION_UNKNOWN');
+    await db.query(`INSERT INTO callum_v2.support_diagnostics(operator_id,stage,code,created_at)
+      VALUES ($1,'pagination_fixture','TEST_ONLY',statement_timestamp()),
+        ($1,'pagination_fixture','TEST_ONLY',statement_timestamp())`,[operatorId]);
+    const expected=(await db.query(`SELECT id FROM callum_v2.support_diagnostics WHERE operator_id=$1
+      ORDER BY created_at DESC,id ASC`,[operatorId])).rows.map(x=>x.id);
+    const paged=[];
+    let before=null;
+    do{
+      const page=await control.listDiagnostics({operatorId,before,limit:1});
+      assert.equal(page.items.length,1);
+      paged.push(page.items[0].id);
+      assert.equal(JSON.stringify(page).includes('sensitive-fixture@example.com'),false);
+      before=page.nextCursor;
+    }while(before);
+    assert.deepEqual(paged,expected,'cursor pages cover tied timestamps without gaps or duplicates');
+    await assert.rejects(()=>control.listDiagnostics({operatorId,limit:101}),/DIAGNOSTIC_PAGE_INVALID/);
+    await assert.rejects(()=>control.listDiagnostics({operatorId,before:randomUUID()}),/DIAGNOSTIC_CURSOR_INVALID/);
   }finally{
     if(previousQa===undefined)delete process.env.V2_QA_PROFILE_KEY;else process.env.V2_QA_PROFILE_KEY=previousQa;
+    for(const id of runIds)await control.pauseRun(id).catch(()=>{});
+    if(installationId)await control.revokeInstallation(installationId).catch(()=>{});
+    await control.disableOperator(operatorId,true).catch(()=>{});
     await db.close();
   }
 });

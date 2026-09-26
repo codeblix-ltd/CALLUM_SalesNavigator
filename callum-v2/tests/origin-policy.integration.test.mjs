@@ -68,6 +68,14 @@ test('staging server enforces browser origins and authenticates before parsing b
       method:'POST',headers:adminHeaders,body:JSON.stringify({id:operatorId,cohort:'dev',dailyLimit:1})
     });
     assert.equal(created.status,200,'valid authenticated admin JSON still reaches the control plane');
+    const diagnosticPath=`${base}/api/admin/diagnostics?operatorId=${operatorId}`;
+    assert.equal((await fetch(diagnosticPath)).status,401,'diagnostic history requires admin auth');
+    const diagnosticPage=await fetch(diagnosticPath,{headers:adminHeaders});
+    assert.equal(diagnosticPage.status,200);
+    assert.deepEqual(await diagnosticPage.json(),{items:[],nextCursor:null});
+    const excessiveDiagnostics=await fetch(`${diagnosticPath}&limit=101`,{headers:adminHeaders});
+    assert.equal(excessiveDiagnostics.status,400);
+    assert.equal((await excessiveDiagnostics.json()).error,'DIAGNOSTIC_PAGE_INVALID');
     const issuedResponse=await fetch(`${base}/api/admin/installations`,{
       method:'POST',headers:adminHeaders,
       body:JSON.stringify({operatorId,extensionVersion:'2.5.2',buildSha:'d82031cc'})
@@ -79,6 +87,10 @@ test('staging server enforces browser origins and authenticates before parsing b
     });
     assert.equal(claimed.status,200,'valid authenticated installation JSON still reaches claim');
     assert.equal((await claimed.json()).command,null);
+    const revoked=await fetch(`${base}/api/admin/installations/revoke`,{
+      method:'POST',headers:adminHeaders,body:JSON.stringify({id:issued.id})
+    });
+    assert.equal(revoked.status,200);
     const disabled=await fetch(`${base}/api/admin/operators/disable`,{
       method:'POST',headers:adminHeaders,body:JSON.stringify({id:operatorId,disabled:true})
     });

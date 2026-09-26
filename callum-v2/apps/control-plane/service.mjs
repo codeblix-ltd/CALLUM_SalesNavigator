@@ -4,6 +4,25 @@ import { decideObservation, commandAfterLeaseExpiry, isPayable } from '../../pac
 import { DEFAULT_CONFIG, validateConfig } from '../../packages/linkedin-config/index.mjs';
 
 const hash = x => createHash('sha256').update(x).digest('hex');
+const diagnosticSelect=`SELECT d.id,d.operator_id,COALESCE(d.installation_id,c.installation_id) AS installation_id,
+  d.run_id,d.lead_id,d.command_id,d.action_intent_id,d.stage,d.code,d.created_at,
+  i.extension_version,i.build_sha,c.config_version,c.trace_id,c.type AS command_type,c.status AS command_status,
+  r.status AS run_status,l.stage AS lead_stage,a.state AS intent_state,
+  rc.id AS reconciliation_command_id,rc.status AS reconciliation_status,
+  (SELECT count(*)::INT4 FROM callum_v2.command_attempts t WHERE t.command_id=d.command_id) AS attempt_count,
+  o.facts->>'profileMatched' AS profile_matched,o.facts->>'pageReady' AS page_ready,
+  o.facts->>'pendingVisible' AS pending_visible,o.facts->>'connectedVisible' AS connected_visible,
+  o.facts->>'targetPostPresent' AS target_post_present,o.facts->>'viewerMatched' AS viewer_matched,
+  o.facts->>'invitationFound' AS invitation_found,o.facts->>'contactInfoOpened' AS contact_info_opened,
+  (o.facts->>'contactEmail') IS NOT NULL AS contact_email_present
+  FROM callum_v2.support_diagnostics d
+  LEFT JOIN callum_v2.commands c ON c.id=d.command_id
+  LEFT JOIN callum_v2.installations i ON i.id=COALESCE(d.installation_id,c.installation_id)
+  LEFT JOIN callum_v2.runs r ON r.id=d.run_id
+  LEFT JOIN callum_v2.run_leads l ON l.run_id=d.run_id AND l.lead_id=d.lead_id
+  LEFT JOIN callum_v2.action_intents a ON a.id=d.action_intent_id
+  LEFT JOIN callum_v2.commands rc ON rc.idempotency_key='reconcile:' || d.action_intent_id::STRING
+  LEFT JOIN callum_v2.observations o ON o.command_id=d.command_id`;
 const SENT_INVITATIONS_URL = 'https://www.linkedin.com/mynetwork/invitation-manager/sent/';
 const RECOVERY_BATCH_SIZE = 8;
 export const CURRENT_EXTENSION_VERSION = '2.5.2';
@@ -1028,19 +1047,19 @@ export class ControlPlane {
     if((operatorId!==null&&!/^[a-z][a-z0-9_-]{1,50}$/.test(operatorId))||
       (before!==null&&(typeof before!=='string'||!uuid.test(before)))||
       !Number.isSafeInteger(limit)||limit<1||limit>100)throw new Error('PAY_PAGE_INVALID');
-    let anchor=null;
     if(before!==null){
-      anchor=(await this.db.query('SELECT created_at,operator_id FROM callum_v2.pay_ledger WHERE id=$1',
+      const anchor=(await this.db.query('SELECT operator_id FROM callum_v2.pay_ledger WHERE id=$1',
         [before])).rows[0];
       if(!anchor||(operatorId!==null&&anchor.operator_id!==operatorId))throw new Error('PAY_CURSOR_INVALID');
     }
-    const {rows}=await this.db.query(`SELECT id,operator_id,run_id,lead_id,source_event_id,
-      pay_rule_version,amount_minor,currency,status,created_at FROM callum_v2.pay_ledger
-      WHERE ($1::STRING IS NULL OR operator_id=$1)
-        AND ($2::TIMESTAMPTZ IS NULL OR created_at<$2::TIMESTAMPTZ OR
-          (created_at=$2::TIMESTAMPTZ AND id<$3::UUID))
-      ORDER BY created_at DESC,id DESC LIMIT $4`,
-      [operatorId,anchor?.created_at??null,before,limit+1]);
+    const {rows}=await this.db.query(`SELECT l.id,l.operator_id,l.run_id,l.lead_id,l.source_event_id,
+      l.pay_rule_version,l.amount_minor,l.currency,l.status,l.created_at FROM callum_v2.pay_ledger l
+      LEFT JOIN callum_v2.pay_ledger anchor ON anchor.id=$2::UUID
+      WHERE ($1::STRING IS NULL OR l.operator_id=$1)
+        AND ($2::UUID IS NULL OR l.created_at<anchor.created_at OR
+          (l.created_at=anchor.created_at AND l.id<anchor.id))
+      ORDER BY l.created_at DESC,l.id DESC LIMIT $3`,
+      [operatorId,before,limit+1]);
     return {items:rows.slice(0,limit),nextCursor:rows.length>limit?rows[limit-1].id:null};
   }
 
@@ -1084,6 +1103,24 @@ export class ControlPlane {
     });
   }
 
+  async listDiagnostics({operatorId,before=null,limit=100} = {}) {
+    if(typeof operatorId!=='string'||!/^[a-z][a-z0-9_-]{1,50}$/.test(operatorId)||
+      (before!==null&&(typeof before!=='string'||!uuid.test(before)))||
+      !Number.isSafeInteger(limit)||limit<1||limit>100)throw new Error('DIAGNOSTIC_PAGE_INVALID');
+    if(before!==null){
+      const anchor=(await this.db.query(`SELECT id FROM callum_v2.support_diagnostics
+        WHERE id=$1 AND operator_id=$2`,[before,operatorId])).rows[0];
+      if(!anchor)throw new Error('DIAGNOSTIC_CURSOR_INVALID');
+    }
+    const {rows}=await this.db.query(`${diagnosticSelect}
+      LEFT JOIN callum_v2.support_diagnostics anchor ON anchor.id=$2::UUID
+      WHERE d.operator_id=$1 AND ($2::UUID IS NULL OR d.created_at<anchor.created_at OR
+        (d.created_at=anchor.created_at AND d.id>anchor.id))
+      ORDER BY d.created_at DESC,d.id ASC LIMIT $3`,
+      [operatorId,before,limit+1]);
+    return {items:rows.slice(0,limit),nextCursor:rows.length>limit?rows[limit-1].id:null};
+  }
+
   async overview() {
     const queries = {
       operators: 'SELECT id,enabled,cohort,daily_connection_limit FROM callum_v2.operators ORDER BY id LIMIT 100',
@@ -1107,26 +1144,7 @@ export class ControlPlane {
         CASE WHEN event_type IN ('pay_rule_created','pay_rule_enabled','pay_rule_disabled') THEN details->>'version' END AS pay_rule_version,
         CASE WHEN event_type IN ('pay_rule_created','pay_rule_enabled','pay_rule_disabled') THEN details->>'enabled' END AS pay_rule_enabled,
         created_at FROM callum_v2.events ORDER BY created_at DESC LIMIT 100`,
-      diagnostics: `SELECT d.operator_id,COALESCE(d.installation_id,c.installation_id) AS installation_id,
-        d.run_id,d.lead_id,d.command_id,d.action_intent_id,d.stage,d.code,d.created_at,
-        i.extension_version,i.build_sha,c.config_version,c.trace_id,c.type AS command_type,c.status AS command_status,
-        r.status AS run_status,l.stage AS lead_stage,a.state AS intent_state,
-        rc.id AS reconciliation_command_id,rc.status AS reconciliation_status,
-        (SELECT count(*)::INT4 FROM callum_v2.command_attempts t WHERE t.command_id=d.command_id) AS attempt_count,
-        o.facts->>'profileMatched' AS profile_matched,o.facts->>'pageReady' AS page_ready,
-        o.facts->>'pendingVisible' AS pending_visible,o.facts->>'connectedVisible' AS connected_visible,
-        o.facts->>'targetPostPresent' AS target_post_present,o.facts->>'viewerMatched' AS viewer_matched,
-        o.facts->>'invitationFound' AS invitation_found,o.facts->>'contactInfoOpened' AS contact_info_opened,
-        (o.facts->>'contactEmail') IS NOT NULL AS contact_email_present
-        FROM callum_v2.support_diagnostics d
-        LEFT JOIN callum_v2.commands c ON c.id=d.command_id
-        LEFT JOIN callum_v2.installations i ON i.id=COALESCE(d.installation_id,c.installation_id)
-        LEFT JOIN callum_v2.runs r ON r.id=d.run_id
-        LEFT JOIN callum_v2.run_leads l ON l.run_id=d.run_id AND l.lead_id=d.lead_id
-        LEFT JOIN callum_v2.action_intents a ON a.id=d.action_intent_id
-        LEFT JOIN callum_v2.commands rc ON rc.idempotency_key='reconcile:' || d.action_intent_id::STRING
-        LEFT JOIN callum_v2.observations o ON o.command_id=d.command_id
-        ORDER BY d.created_at DESC,d.id DESC LIMIT 100`,
+      diagnostics: `${diagnosticSelect} ORDER BY d.created_at DESC,d.id DESC LIMIT 100`,
       observations: `SELECT o.run_id,o.lead_id,o.command_id,c.type,o.diagnostic_code,
         o.facts->>'profileMatched' AS profile_matched,
         o.facts->>'contactInfoOpened' AS contact_info_opened,

@@ -108,6 +108,8 @@ test('Cockroach V2 command lease, lost ACK, reconciliation, and duplicate pay in
     assert.equal((await s.acknowledge(install,{commandId:send.command.id,status:'confirmed',facts:confirmed})).duplicate,true);
     const ledger=await db.query('SELECT count(*)::INT4 n, min(pay_rule_version)::INT8 AS version FROM callum_v2.pay_ledger WHERE run_id=$1',[second.run.id]);
     assert.equal(ledger.rows[0].n,1);assert.equal(Number(ledger.rows[0].version),ruleVersion);
+    await db.query(`UPDATE callum_v2.pay_ledger SET created_at=statement_timestamp()
+      WHERE run_id IN ($1,$2)`,[first.run.id,second.run.id]);
     const firstPage=await s.listPay({operatorId,limit:1});
     assert.equal(firstPage.items.length,1);
     assert.ok(firstPage.nextCursor);
@@ -115,6 +117,10 @@ test('Cockroach V2 command lease, lost ACK, reconciliation, and duplicate pay in
     assert.equal(secondPage.items.length,1);
     assert.notEqual(secondPage.items[0].id,firstPage.items[0].id);
     assert.equal(secondPage.nextCursor,null);
+    assert.deepEqual([firstPage.items[0].id,secondPage.items[0].id],
+      (await db.query(`SELECT id FROM callum_v2.pay_ledger WHERE operator_id=$1
+        ORDER BY created_at DESC,id DESC`,[operatorId])).rows.map(x=>x.id),
+      'pay pages retain both lines when their database timestamps tie');
     await assert.rejects(()=>s.listPay({operatorId,limit:101}),/PAY_PAGE_INVALID/);
     await assert.rejects(()=>s.listPay({operatorId,before:randomUUID(),limit:1}),/PAY_CURSOR_INVALID/);
 

@@ -22,8 +22,25 @@ function table(id, rows, fields) {
   t.append(body);wrap.append(t);root.append(wrap);
 }
 let payBefore=null,payNextCursor=null,payHistory=[],payLoading=false;
+let diagnosticOperator=null,diagnosticBefore=null,diagnosticNextCursor=null,diagnosticHistory=[],diagnosticLoading=false;
+const diagnosticFields=['operator_id','stage','code','run_id','run_status','lead_id','command_id','trace_id','installation_id',
+  'command_type','command_status','lead_stage','action_intent_id','intent_state','reconciliation_command_id',
+  'reconciliation_status','attempt_count','extension_version','build_sha','config_version','profile_matched',
+  'page_ready','pending_visible','connected_visible','target_post_present','viewer_matched','invitation_found',
+  'contact_info_opened','contact_email_present','created_at'];
 const payFields=['id','operator_id','lead_id','source_event_id','pay_rule_version',
   'amount_minor','currency','status','created_at'];
+async function fetchDiagnosticPage(operatorId,before=null) {
+  const query=new URLSearchParams({operatorId});
+  if(before)query.set('before',before);
+  return api('/api/admin/diagnostics?'+query);
+}
+function showDiagnosticPage(page) {
+  table('diagnosticHistory',page.items,diagnosticFields);
+  diagnosticNextCursor=page.nextCursor;
+  $('diagnosticNewer').hidden=diagnosticHistory.length===0;
+  $('diagnosticOlder').hidden=!diagnosticNextCursor;
+}
 async function fetchPayPage(before=null) {
   return api('/api/admin/pay'+(before?'?before='+encodeURIComponent(before):''));
 }
@@ -43,11 +60,7 @@ async function refresh() {
   table('assignments',x.assignments,['run_id','lead_id','full_name','niche','stage']);
   table('intents',x.intents,['id','operator_id','lead_id','action_type','state','updated_at']);
   table('drafts',x.drafts,['id','run_id','lead_id','post_url','body','status','reviewer','action_intent_id','created_at']);
-  table('diagnostics',x.diagnostics,['operator_id','stage','code','run_id','run_status','lead_id','command_id','trace_id','installation_id',
-    'command_type','command_status','lead_stage','action_intent_id','intent_state','reconciliation_command_id',
-    'reconciliation_status','attempt_count','extension_version','build_sha','config_version','profile_matched',
-    'page_ready','pending_visible','connected_visible','target_post_present','viewer_matched','invitation_found',
-    'contact_info_opened','contact_email_present','created_at']);
+  table('diagnostics',x.diagnostics,diagnosticFields);
   table('observations',x.observations,['run_id','lead_id','command_id','type','diagnostic_code','profile_matched','target_post_present','target_post_authored_by_lead','viewer_matched','own_comment_present','invitation_found','invitation_age_days','invitation_eligible','contact_info_opened','contact_email_present','created_at']);
   table('events',x.events,['event_type','operator_id','operator_cohort','operator_daily_limit','installation_id','installation_actor_bound','extension_version','build_sha','run_id','lead_id','command_id','action_intent_id','config_version','config_min_extension_version','config_channel','config_rollout_percent','failure_stage','flag_key','flag_disabled','pay_rule_version','pay_rule_enabled','diagnostic_code','reported_occurred_at','created_at']);
   table('configs',x.configs,['version','status','min_extension_version','rollout_percent','checksum','created_at']);
@@ -61,6 +74,34 @@ function bindForm(id, path, convert, onResult) {
 }
 $('connect').addEventListener('click',async()=>{token=$('adminToken').value;try{await refresh();$('adminToken').value='';$('login').hidden=true;$('workspace').hidden=false;}catch(error){token='';$('loginMessage').textContent=error.message;}});
 $('refresh').addEventListener('click',()=>refresh().catch(e=>$('notice').textContent=e.message));
+$('diagnosticHistoryForm').addEventListener('submit',async e=>{
+  e.preventDefault();if(diagnosticLoading)return;
+  diagnosticLoading=true;$('notice').textContent='';
+  try{
+    const operatorId=String(new FormData(e.currentTarget).get('operatorId')).trim();
+    const page=await fetchDiagnosticPage(operatorId);
+    diagnosticOperator=operatorId;diagnosticBefore=null;diagnosticHistory=[];showDiagnosticPage(page);
+  }catch(error){$('notice').textContent=error.message;}
+  finally{diagnosticLoading=false;}
+});
+$('diagnosticOlder').addEventListener('click',async()=>{
+  if(diagnosticLoading||!diagnosticOperator||!diagnosticNextCursor)return;
+  diagnosticLoading=true;$('notice').textContent='';
+  try{
+    const before=diagnosticNextCursor,page=await fetchDiagnosticPage(diagnosticOperator,before);
+    diagnosticHistory.push(diagnosticBefore);diagnosticBefore=before;showDiagnosticPage(page);
+  }catch(error){$('notice').textContent=error.message;}
+  finally{diagnosticLoading=false;}
+});
+$('diagnosticNewer').addEventListener('click',async()=>{
+  if(diagnosticLoading||!diagnosticHistory.length)return;
+  diagnosticLoading=true;$('notice').textContent='';
+  try{
+    const before=diagnosticHistory.at(-1),page=await fetchDiagnosticPage(diagnosticOperator,before);
+    diagnosticHistory.pop();diagnosticBefore=before;showDiagnosticPage(page);
+  }catch(error){$('notice').textContent=error.message;}
+  finally{diagnosticLoading=false;}
+});
 $('payOlder').addEventListener('click',async()=>{
   if(payLoading||!payNextCursor)return;
   payLoading=true;$('notice').textContent='';
