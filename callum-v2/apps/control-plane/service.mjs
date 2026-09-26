@@ -5,6 +5,7 @@ import { DEFAULT_CONFIG, validateConfig } from '../../packages/linkedin-config/i
 
 const hash = x => createHash('sha256').update(x).digest('hex');
 const SENT_INVITATIONS_URL = 'https://www.linkedin.com/mynetwork/invitation-manager/sent/';
+const RECOVERY_BATCH_SIZE = 8;
 export const CURRENT_EXTENSION_VERSION = '2.5.2';
 const MIN_ACTOR_BOUND_EXTENSION_VERSION = '2.5.1';
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -310,7 +311,8 @@ export class ControlPlane {
   async expiredCommandIds(q, operatorId) {
     const { rows } = await q.query(`SELECT c.id FROM callum_v2.commands c
       WHERE c.operator_id=$1 AND ((c.status='leased' AND c.lease_expires_at < now()) OR (c.status='pending' AND c.expires_at < now()))
-      ORDER BY c.created_at,c.id`, [operatorId]);
+      ORDER BY CASE WHEN c.status='leased' THEN c.lease_expires_at ELSE c.expires_at END,c.id LIMIT $2`,
+      [operatorId,RECOVERY_BATCH_SIZE]);
     return rows;
   }
 
