@@ -1035,10 +1035,15 @@ export class ControlPlane {
   async createConfig(config, minVersion = CURRENT_EXTENSION_VERSION) {
     const clean = validateConfig(config);
     if (!extensionVersionPattern.test(minVersion)) throw new Error('CONFIG_INVALID');
-    const { rows } = await this.db.query(`INSERT INTO callum_v2.remote_configs(version,status,min_extension_version,rollout_percent,config,checksum)
-      SELECT coalesce(max(version),0)+1,'draft',$1,0,$2,$3 FROM callum_v2.remote_configs RETURNING version,checksum`,
-      [minVersion,clean,hash(JSON.stringify(clean))]);
-    return rows[0];
+    return this.db.tx(async q=>{
+      const {rows}=await q.query(`INSERT INTO callum_v2.remote_configs(version,status,min_extension_version,rollout_percent,config,checksum)
+        SELECT coalesce(max(version),0)+1,'draft',$1,0,$2,$3 FROM callum_v2.remote_configs RETURNING version,checksum`,
+        [minVersion,clean,hash(JSON.stringify(clean))]);
+      const draft=rows[0];
+      await this.event(q,{event_key:`config:${draft.version}:drafted`,event_type:'config_drafted',
+        config_version:Number(draft.version),details:{minExtensionVersion:minVersion,checksum:draft.checksum}});
+      return draft;
+    });
   }
 
   async activateConfig(version, channel = 'canary', rolloutPercent = 100) {
@@ -1047,13 +1052,23 @@ export class ControlPlane {
       const config = (await q.query('SELECT * FROM callum_v2.remote_configs WHERE version=$1', [version])).rows[0];
       if (!config) throw new Error('CONFIG_NOT_FOUND');
       validateConfig(config.config);
-      await q.query('UPDATE callum_v2.release_channels SET active_config_version=$2,updated_at=now() WHERE channel=$1', [channel,version]);
-      const usedByStable=(await q.query("SELECT 1 FROM callum_v2.release_channels WHERE channel='stable' AND active_config_version=$1",[version])).rows.length>0;
+      const current=(await q.query('SELECT active_config_version FROM callum_v2.release_channels WHERE channel=$1 FOR UPDATE',[channel])).rows[0];
+      if(!current)throw new Error('CONFIG_CHANNEL_NOT_FOUND');
+      const stableVersion=channel==='stable'?version:
+        (await q.query("SELECT active_config_version FROM callum_v2.release_channels WHERE channel='stable'")).rows[0]?.active_config_version;
+      const usedByStable=Number(stableVersion)===version;
       const state=usedByStable?'stable':'canary';
-      await q.query('UPDATE callum_v2.remote_configs SET status=$2,rollout_percent=$3,activated_at=now() WHERE version=$1', [version,state,usedByStable?100:rolloutPercent]);
+      const effectiveRollout=usedByStable?100:rolloutPercent;
+      if(Number(current.active_config_version)===version&&config.status===state&&
+          Number(config.rollout_percent)===effectiveRollout)
+        return {version,channel,status:state,rolloutPercent:effectiveRollout,changed:false};
+      await q.query('UPDATE callum_v2.release_channels SET active_config_version=$2,updated_at=now() WHERE channel=$1', [channel,version]);
+      await q.query('UPDATE callum_v2.remote_configs SET status=$2,rollout_percent=$3,activated_at=now() WHERE version=$1', [version,state,effectiveRollout]);
       await q.query(`UPDATE callum_v2.remote_configs SET status='disabled' WHERE version<>$1 AND status IN ('canary','stable')
         AND NOT EXISTS (SELECT 1 FROM callum_v2.release_channels WHERE active_config_version=callum_v2.remote_configs.version)`, [version]);
-      return { version, channel, status: state, rolloutPercent: channel==='stable'?100:rolloutPercent };
+      await this.event(q,{event_key:`config:${version}:${channel}:activated:${randomUUID()}`,
+        event_type:'config_activated',config_version:version,details:{channel,status:state,rolloutPercent:effectiveRollout}});
+      return {version,channel,status:state,rolloutPercent:effectiveRollout,changed:true};
     });
   }
 
@@ -1073,6 +1088,9 @@ export class ControlPlane {
         CASE WHEN event_type='feature_flag_changed' THEN details->>'disabled' END AS flag_disabled,
         CASE WHEN event_type='operator_configured' THEN details->>'cohort' END AS operator_cohort,
         CASE WHEN event_type='operator_configured' THEN details->>'dailyLimit' END AS operator_daily_limit,
+        CASE WHEN event_type='config_drafted' THEN details->>'minExtensionVersion' END AS config_min_extension_version,
+        CASE WHEN event_type='config_activated' THEN details->>'channel' END AS config_channel,
+        CASE WHEN event_type='config_activated' THEN details->>'rolloutPercent' END AS config_rollout_percent,
         CASE WHEN event_type IN ('pay_rule_created','pay_rule_enabled','pay_rule_disabled') THEN details->>'version' END AS pay_rule_version,
         CASE WHEN event_type IN ('pay_rule_created','pay_rule_enabled','pay_rule_disabled') THEN details->>'enabled' END AS pay_rule_enabled,
         created_at FROM callum_v2.events ORDER BY created_at DESC LIMIT 100`,
