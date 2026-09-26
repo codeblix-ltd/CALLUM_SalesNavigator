@@ -14,6 +14,7 @@ const webRoot = fileURLToPath(new URL('../web/', import.meta.url));
 const webOrigin = process.env.V2_WEB_ORIGIN || `http://localhost:${port}`;
 const environment = process.env.V2_ENVIRONMENT || 'local';
 const bindHost = process.env.V2_BIND_HOST || '127.0.0.1';
+const stagingApiOrigin = 'https://api-v2.careeraccelerator.net';
 const originPolicy = createOriginPolicy({ environment, webOrigin, extensionOrigin:process.env.V2_EXTENSION_ORIGIN || '', bindHost, port });
 const db = openDatabase();
 const control = new ControlPlane(db);
@@ -46,9 +47,10 @@ async function staticFile(pathname, res) {
   if (!file.startsWith(resolve(webRoot))) return json(res, 404, { error: 'NOT_FOUND' });
   try {
     const content = await readFile(file);
+    const connectSources = ["'self'", webOrigin, ...(environment==='staging' ? [stagingApiOrigin] : [])];
     res.writeHead(200, { 'content-type': ({ '.html':'text/html', '.css':'text/css', '.js':'text/javascript' })[extname(file)],
       'cache-control': 'no-store', 'x-content-type-options':'nosniff',
-      'content-security-policy': `default-src 'self'; connect-src 'self' ${webOrigin}; script-src 'self'; style-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'` });
+      'content-security-policy': `default-src 'self'; connect-src ${connectSources.join(' ')}; script-src 'self'; style-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'` });
     res.end(content);
   } catch { json(res, 404, { error: 'NOT_FOUND' }); }
 }

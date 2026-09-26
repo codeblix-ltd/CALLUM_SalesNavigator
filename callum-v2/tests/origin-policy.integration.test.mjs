@@ -28,6 +28,11 @@ test('staging server enforces browser origins and authenticates before parsing b
       await delay(250);
     }
     assert.equal(ready,true,'staging server starts with exact origins');
+    const page=await fetch(`${base}/`);
+    assert.equal(page.status,200);
+    const pagePolicy=page.headers.get('content-security-policy');
+    assert.match(pagePolicy,/connect-src [^;]*https:\/\/api-v2\.careeraccelerator\.net/);
+    assert.match(pagePolicy,/frame-ancestors 'none'/);
     for(const origin of [web,extension]){
       const response=await fetch(`${base}/api/health`,{headers:{origin}});
       assert.equal(response.status,200,origin);

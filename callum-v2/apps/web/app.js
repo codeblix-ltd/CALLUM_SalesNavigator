@@ -82,7 +82,6 @@ $('payNewer').addEventListener('click',async()=>{
 for(const button of document.querySelectorAll('nav button'))button.addEventListener('click',()=>{for(const b of document.querySelectorAll('nav button'))b.classList.toggle('active',b===button);for(const v of document.querySelectorAll('.view'))v.hidden=v.id!==button.dataset.view;});
 const actorField=document.createElement('input');actorField.name='actorProfileUrl';actorField.placeholder='signed-in LinkedIn profile URL';actorField.type='url';
 $('installationForm').insertBefore(actorField,$('installationForm').querySelector('button'));
-$('configForm').elements.minVersion.value='2.5.1';
 const payEvent=document.createElement('select');payEvent.name='eventType';payEvent.innerHTML='<option value="connection_confirmed">Confirmed connection</option><option value="comment_confirmed">Confirmed comment</option>';
 $('payForm').insertBefore(payEvent,$('payForm').querySelector('button'));
 bindForm('operatorForm','/api/admin/operators',f=>({id:f.get('id'),cohort:f.get('cohort'),dailyLimit:Number(f.get('dailyLimit'))}));
@@ -103,7 +102,8 @@ $('support').append(comments);
 bindForm('draftForm','/api/admin/comment-drafts',f=>({runId:f.get('runId'),leadId:f.get('leadId'),inspectionCommandId:f.get('inspectionCommandId'),body:f.get('body')}));
 bindForm('reviewForm','/api/admin/comment-drafts/review',f=>({draftId:f.get('draftId'),reviewer:f.get('reviewer'),decision:f.get('decision')}));
 bindForm('flagForm','/api/admin/flags',f=>({flagKey:f.get('flagKey'),disabled:f.get('disabled')==='true'}));
-bindForm('configForm','/api/admin/configs',f=>({config:JSON.parse(f.get('config')),minVersion:f.get('minVersion')}));
+bindForm('configForm','/api/admin/configs',f=>({config:JSON.parse(f.get('config')),
+  ...(f.get('minVersion') ? {minVersion:f.get('minVersion')} : {})}));
 bindForm('activateForm','/api/admin/configs/activate',f=>({version:Number(f.get('version')),channel:f.get('channel'),rolloutPercent:Number(f.get('rolloutPercent'))}));
 bindForm('payForm','/api/admin/pay-rules',f=>({version:Number(f.get('version')),eventType:f.get('eventType'),amountMinor:Number(f.get('amountMinor')),currency:String(f.get('currency')).toUpperCase(),enabled:f.get('enabled')==='on'}));
 bindForm('payRuleStatusForm','/api/admin/pay-rules/status',f=>({version:Number(f.get('version')),enabled:f.get('enabled')==='true'}));

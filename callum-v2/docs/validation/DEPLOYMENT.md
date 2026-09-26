@@ -18,4 +18,6 @@ Baseline SHA: `68f5971a5e4b91d0814cd0f2b32dd18dbd64237b`.
 - Backend Dockerfile/compose example isolates the API. No V1 Convex push or V1 web deployment ran.
 - The staging API now requires an exact HTTPS `V2_WEB_ORIGIN` and a valid `V2_EXTENSION_ORIGIN`; a non-loopback server cannot start in local mode. Unit origin-policy checks passed 2/2. A focused Cockroach-backed local staging server test passed 1/1: configured web and V2 extension origins received HTTP 200 and exact CORS headers, while another extension ID, a path-suffixed extension origin, and local web origin received HTTP 403. The server test was bound to loopback and did not establish public API availability or managed admin identity.
 
+- The Node-served page's staging HTTP CSP now permits the dedicated V2 API origin used by the web client; the static HTML meta CSP already permitted it. The focused staging-server integration fetched `/` and verified the HTTP header, passing with the existing origin/auth checks. Actual public headers and browser requests remain unverified until the V2 hosts serve over HTTPS.
+
 Exact external gate: provision V2 DNS and dedicated API host/TLS with V2 server credentials, then verify public web/API endpoints and auth. The V2 web FTP directory and upload work. Do not reuse the V1 Convex deployment.
