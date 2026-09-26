@@ -3,7 +3,7 @@ import {AsyncLocalStorage} from 'node:async_hooks';
 import {randomUUID} from 'node:crypto';
 import {performance} from 'node:perf_hooks';
 import {openDatabase} from '../apps/control-plane/db.mjs';
-import {ControlPlane} from '../apps/control-plane/service.mjs';
+import {ControlPlane,CURRENT_EXTENSION_VERSION} from '../apps/control-plane/service.mjs';
 
 const countPerRun=Number(process.argv[2]||5);
 if(!Number.isInteger(countPerRun)||countPerRun<1||countPerRun>25)throw new Error('Count per run must be 1..25');
@@ -11,6 +11,7 @@ const rawDb=openDatabase();
 const profileSql=process.env.V2_SHADOW_PROFILE_SQL==='1';
 const sqlPhase=new AsyncLocalStorage();
 const sqlStats=new Map();
+const transactionStats=new Map();
 async function queryWithProfile(query,sql,args){
   if(!profileSql)return query(sql,args);
   const started=performance.now();
@@ -27,27 +28,46 @@ async function queryWithProfile(query,sql,args){
 }
 const db={
   query:(sql,args)=>queryWithProfile(rawDb.query,sql,args),
-  tx:fn=>rawDb.tx(q=>fn({query:(sql,args)=>queryWithProfile(q.query.bind(q),sql,args)})),
+  tx:async fn=>{
+    if(!profileSql)return rawDb.tx(fn);
+    const phase=sqlPhase.getStore() || 'setup',started=performance.now();
+    let queryMs=0;
+    try{
+      return await rawDb.tx(q=>fn({query:async(sql,args)=>{
+        const queryStarted=performance.now();
+        try{return await queryWithProfile(q.query.bind(q),sql,args);}
+        finally{queryMs+=performance.now()-queryStarted;}
+      }}));
+    }finally{
+      const stat=transactionStats.get(phase)||{count:0,totalMs:0,queryMs:0,maxMs:0};
+      const duration=performance.now()-started;
+      stat.count++;stat.totalMs+=duration;stat.queryMs+=queryMs;stat.maxMs=Math.max(stat.maxMs,duration);
+      transactionStats.set(phase,stat);
+    }
+  },
   close:()=>rawDb.close()
 };
 const control=new ControlPlane(db);
 const operatorId=`v2shadow_${randomUUID().slice(0,8)}`;
 const started=performance.now();
 let setupSeconds=null,processingSeconds=null,verificationSeconds=null;
+const installationIds=[],runs=[];
+let operatorCreated=false;
 try{
   await control.seed();
   const before=Number((await db.query('SELECT count(*)::INT8 n FROM public.lead_assignments')).rows[0].n);
   await control.createOperator(operatorId,'dev',1);
+  operatorCreated=true;
   const installations=[];
   for(let n=0;n<2;n++){
-    const issued=await control.createInstallation(operatorId,'2.5.0','ed7ada2');
+    const issued=await control.createInstallation(operatorId,CURRENT_EXTENSION_VERSION,'ed7ada2');
+    installationIds.push(issued.id);
     installations.push(await control.installation(issued.token));
   }
-  const runs=[];
   for(const installation of installations){
     const run=await control.createRun({operatorId,mode:'shadow',count:countPerRun,installationId:installation.id});
-    assert.ok(run.selected>0,'real catalog supplied at least one valid profile');
     runs.push(run);
+    assert.ok(run.selected>0,'real catalog supplied at least one valid profile');
   }
   const processingStarted=performance.now();
   setupSeconds=(processingStarted-started)/1000;
@@ -118,7 +138,18 @@ try{
       ackTotalSeconds:Math.round(outcome.timing.ackMs/100)/10,
       ackMaxSeconds:Math.round(outcome.timing.ackMaxMs/100)/10})),
     rssMb:Math.round(process.memoryUsage().rss/1024/1024),
+    ...(profileSql?{transactionProfile:[...transactionStats].map(([phase,stat])=>({phase,count:stat.count,
+      totalSeconds:Math.round(stat.totalMs/100)/10,querySeconds:Math.round(stat.queryMs/100)/10,
+      otherSeconds:Math.round((stat.totalMs-stat.queryMs)/100)/10,
+      maxSeconds:Math.round(stat.maxMs/100)/10}))}:{}),
     ...(profileSql?{sqlProfile:[...sqlStats].map(([query,stat])=>({query:query.slice(0,120),count:stat.count,
       totalSeconds:Math.round(stat.totalMs/100)/10,maxSeconds:Math.round(stat.maxMs/100)/10}))
       .sort((a,b)=>b.totalSeconds-a.totalSeconds).slice(0,15)}:{})}));
-}finally{await db.close();}
+}finally{
+  const cleanupErrors=[];
+  for(const run of runs)try{await control.pauseRun(run.id);}catch(error){cleanupErrors.push(error);}
+  for(const id of installationIds)try{await control.revokeInstallation(id);}catch(error){cleanupErrors.push(error);}
+  if(operatorCreated)try{await control.disableOperator(operatorId,true);}catch(error){cleanupErrors.push(error);}
+  await db.close();
+  if(cleanupErrors.length)throw new AggregateError(cleanupErrors,'SHADOW_FIXTURE_CLEANUP_FAILED');
+}
