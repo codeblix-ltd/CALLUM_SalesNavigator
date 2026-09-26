@@ -5,6 +5,14 @@ import {openDatabase} from '../apps/control-plane/db.mjs';
 import {ControlPlane} from '../apps/control-plane/service.mjs';
 
 const enabled=process.env.V2_TEST_DB==='1'&&!!process.env.COCKROACH_DATABASE_URL;
+async function withClockOffset(offsetMs,work){
+  const RealDate=globalThis.Date;
+  globalThis.Date=class extends RealDate{
+    constructor(...args){super(...(args.length?args:[RealDate.now()+offsetMs]));}
+    static now(){return RealDate.now()+offsetMs;}
+  };
+  try{return await work();}finally{globalThis.Date=RealDate;}
+}
 test('operator ownership and revocation are rechecked at claim and action authorization', {skip:!enabled},async()=>{
   const db=openDatabase(),control=new ControlPlane(db),suffix=randomUUID().slice(0,8);
   const owner=`v2owner_${suffix}`,other=`v2other_${suffix}`;
@@ -77,8 +85,12 @@ test('Connect authorization rechecks live-canary mode, installation and QA recip
     runId=run.id;
     await db.query('INSERT INTO callum_v2.run_leads(run_id,lead_id,profile_key,linkedin_url) VALUES ($1,$2,$3,$4)',
       [run.id,leadId,profileKey,lead.linkedin_url]);
-    await db.tx(q=>control.enqueue(q,{id:run.id,operator_id:operatorId,config_version:version},lead,
-      'INSPECT_PROFILE',`qa-final-auth:${run.id}`,null,{expectedName:'QA Fixture',actorProfileKey:actorKey}));
+    await withClockOffset(3_600_000,()=>db.tx(q=>control.enqueue(q,{id:run.id,operator_id:operatorId,config_version:version},lead,
+      'INSPECT_PROFILE',`qa-final-auth:${run.id}`,null,{expectedName:'QA Fixture',actorProfileKey:actorKey})));
+    const expiry=(await db.query(`SELECT extract(epoch FROM (expires_at-now()))/60 AS minutes_remaining
+      FROM callum_v2.commands WHERE idempotency_key=$1`,[`qa-final-auth:${run.id}`])).rows[0];
+    assert.ok(Number(expiry.minutes_remaining)>28&&Number(expiry.minutes_remaining)<31,
+      'read-only command expires from database time despite a fast API clock');
     const inspection=(await control.claim(installation)).command;
     process.env.V2_QA_PROFILE_KEY=profileKey;
     await control.acknowledge(installation,{commandId:inspection.id,status:'observed',facts:{
@@ -107,7 +119,12 @@ test('Connect authorization rechecks live-canary mode, installation and QA recip
     await db.query("UPDATE callum_v2.observations SET facts=jsonb_set(facts,'{viewerMatched}','false') WHERE command_id=$1",[inspection.id]);
     await assert.rejects(()=>control.authorizeAction(installation,action.id),/ACTION_NOT_AUTHORIZED/,'source viewer mismatch');
     await db.query("UPDATE callum_v2.observations SET facts=jsonb_set(facts,'{viewerMatched}','true') WHERE command_id=$1",[inspection.id]);
-    assert.equal((await control.authorizeAction(installation,action.id)).authorized,true);
+    await db.query("UPDATE callum_v2.commands SET lease_expires_at=now()-INTERVAL '1 second' WHERE id=$1",[action.id]);
+    await withClockOffset(-3_600_000,()=>assert.rejects(()=>control.authorizeAction(installation,action.id),
+      /ACTION_NOT_AUTHORIZED/,'expired database lease is denied despite a slow API clock'));
+    await db.query("UPDATE callum_v2.commands SET lease_expires_at=now()+INTERVAL '90 seconds' WHERE id=$1",[action.id]);
+    assert.equal((await withClockOffset(3_600_000,()=>control.authorizeAction(installation,action.id))).authorized,true,
+      'valid database lease is accepted despite a fast API clock');
     await assert.rejects(()=>control.authorizeAction(installation,action.id),/ACTION_NOT_AUTHORIZED/);
     assert.equal((await db.query("SELECT count(*)::INT4 n FROM callum_v2.events WHERE run_id=$1 AND event_type='connection_authorized'",[run.id])).rows[0].n,1);
   }finally{

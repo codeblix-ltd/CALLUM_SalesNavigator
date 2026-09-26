@@ -304,13 +304,13 @@ export class ControlPlane {
 
   async enqueue(q, run, lead, type, key, actionIntentId = null, payload = {}) {
     const id = randomUUID();
-    const expires = new Date(Date.now() + (['EXECUTE_CONNECT','EXECUTE_WITHDRAW','EXECUTE_COMMENT'].includes(type) ? 5 : 30) * 60_000);
+    const lifetimeMinutes=['EXECUTE_CONNECT','EXECUTE_WITHDRAW','EXECUTE_COMMENT'].includes(type)?5:30;
     const { rows } = await q.query(`INSERT INTO callum_v2.commands
       (id,run_id,operator_id,lead_id,action_intent_id,type,idempotency_key,target_profile_key,target_url,config_version,protocol_version,payload,expires_at)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,statement_timestamp()+$13::INT4*INTERVAL '1 minute')
       ON CONFLICT (idempotency_key) DO UPDATE SET idempotency_key=excluded.idempotency_key RETURNING *`,
       [id, run.run_id || run.id, run.operator_id, lead.id || lead.lead_id, actionIntentId, type, key, lead.profile_key,
-        type==='EXECUTE_COMMENT' ? payload.postUrl : lead.linkedin_url, run.config_version, PROTOCOL_VERSION, payload, expires]);
+        type==='EXECUTE_COMMENT' ? payload.postUrl : lead.linkedin_url, run.config_version, PROTOCOL_VERSION, payload, lifetimeMinutes]);
     return rows[0];
   }
 
@@ -485,7 +485,7 @@ export class ControlPlane {
       if (!c || c.installation_disabled || !c.operator_enabled || c.current_token_hash!==installation.token_hash ||
           !['EXECUTE_CONNECT','EXECUTE_WITHDRAW','EXECUTE_COMMENT'].includes(c.type) || c.intent_type !== (withdraw?'withdraw':comment?'comment':'connect') ||
           c.installation_id !== installation.id || c.status !== 'leased' || c.intent_state !== 'reserved' ||
-          c.run_status !== 'running' || c.expires_at <= new Date() || c.lease_expires_at <= new Date()) throw new Error('ACTION_NOT_AUTHORIZED');
+          c.run_status !== 'running') throw new Error('ACTION_NOT_AUTHORIZED');
       if (c.run_mode!=='live_canary' || c.run_installation_id!==installation.id || !process.env.V2_QA_PROFILE_KEY ||
           c.target_profile_key!==process.env.V2_QA_PROFILE_KEY.toLowerCase()) throw new Error('ACTION_NOT_AUTHORIZED');
       await this.assertNoV1Assignment(q, c.lead_id, 'ACTION_NOT_AUTHORIZED');
@@ -523,6 +523,8 @@ export class ControlPlane {
       const currentInstallation={...installation,cohort:c.current_cohort};
       const config = await this.activeConfig(q, currentInstallation);
       if (Number(config.version) !== Number(c.config_version) || (await this.flagDisabled(q, currentInstallation, c.type, c.config_version)).length) throw new Error('ACTION_NOT_AUTHORIZED');
+      const checkedAt=(await q.query('SELECT statement_timestamp() AS checked_at')).rows[0].checked_at;
+      if(c.expires_at<=checkedAt||!c.lease_expires_at||c.lease_expires_at<=checkedAt)throw new Error('ACTION_NOT_AUTHORIZED');
       await q.query("UPDATE callum_v2.action_intents SET state='submitted',updated_at=now() WHERE id=$1 AND state='reserved'", [c.action_intent_id]);
       await this.event(q, { event_key:`intent:${c.action_intent_id}:authorized`, event_type:withdraw?'withdrawal_authorized':comment?'comment_authorized':'connection_authorized',
         operator_id:c.operator_id,installation_id:installation.id,run_id:c.run_id,lead_id:c.lead_id,
