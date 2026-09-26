@@ -866,10 +866,31 @@ export class ControlPlane {
     });
   }
   async disableOperator(id, disabled) {
-    await this.db.query('UPDATE callum_v2.operators SET enabled=$2 WHERE id=$1', [id, disabled !== true]);
+    if (!/^[a-z][a-z0-9_-]{1,50}$/.test(id || '') || typeof disabled !== 'boolean') throw new Error('OPERATOR_INVALID');
+    return this.db.tx(async q=>{
+      const current=(await q.query('SELECT enabled FROM callum_v2.operators WHERE id=$1 FOR UPDATE',[id])).rows[0];
+      if(!current)throw new Error('OPERATOR_NOT_FOUND');
+      const enabled=!disabled;
+      if(current.enabled===enabled)return {changed:false};
+      await q.query('UPDATE callum_v2.operators SET enabled=$2 WHERE id=$1',[id,enabled]);
+      await this.event(q,{event_key:`operator:${id}:enabled:${randomUUID()}`,
+        event_type:enabled?'operator_enabled':'operator_disabled',operator_id:id,details:{enabled}});
+      return {changed:true};
+    });
   }
   async revokeInstallation(id) {
-    await this.db.query('UPDATE callum_v2.installations SET disabled=true WHERE id=$1', [id]);
+    if(!uuid.test(id || ''))throw new Error('INSTALLATION_INVALID');
+    return this.db.tx(async q=>{
+      const current=(await q.query(`SELECT disabled,operator_id,extension_version,build_sha
+        FROM callum_v2.installations WHERE id=$1 FOR UPDATE`,[id])).rows[0];
+      if(!current)throw new Error('INSTALLATION_NOT_FOUND');
+      if(current.disabled)return {changed:false};
+      await q.query('UPDATE callum_v2.installations SET disabled=true WHERE id=$1',[id]);
+      await this.event(q,{event_key:`installation:${id}:revoked`,event_type:'installation_revoked',
+        operator_id:current.operator_id,installation_id:id,extension_version:current.extension_version,
+        build_sha:current.build_sha,protocol_version:PROTOCOL_VERSION});
+      return {changed:true};
+    });
   }
   async rotateInstallationToken(id) {
     if (!uuid.test(id || '')) throw new Error('INSTALLATION_INVALID');
@@ -886,9 +907,17 @@ export class ControlPlane {
   }
 
   async setFlag(flagKey, disabled) {
-    if (!/^(all|connection|comment|withdrawal|contact|operator:[a-z0-9_-]+|cohort:(dev|canary|stable)|config:\d+|extension:[a-z0-9.-]+)$/.test(flagKey)) throw new Error('FLAG_INVALID');
-    await this.db.query(`INSERT INTO callum_v2.feature_flags(flag_key,disabled) VALUES ($1,$2)
-      ON CONFLICT (flag_key) DO UPDATE SET disabled=excluded.disabled,updated_at=now()`, [flagKey, disabled === true]);
+    if (!/^(all|connection|comment|withdrawal|contact|operator:[a-z0-9_-]+|cohort:(dev|canary|stable)|config:\d+|extension:[a-z0-9.-]+)$/.test(flagKey || '') ||
+      typeof disabled !== 'boolean') throw new Error('FLAG_INVALID');
+    return this.db.tx(async q=>{
+      const current=(await q.query('SELECT disabled FROM callum_v2.feature_flags WHERE flag_key=$1 FOR UPDATE',[flagKey])).rows[0];
+      if(current?.disabled===disabled)return {changed:false};
+      await q.query(`INSERT INTO callum_v2.feature_flags(flag_key,disabled) VALUES ($1,$2)
+        ON CONFLICT (flag_key) DO UPDATE SET disabled=excluded.disabled,updated_at=now()`,[flagKey,disabled]);
+      await this.event(q,{event_key:`flag:${flagKey}:${randomUUID()}`,event_type:'feature_flag_changed',
+        operator_id:flagKey.startsWith('operator:')?flagKey.slice(9):null,details:{flagKey,disabled}});
+      return {changed:true};
+    });
   }
 
   async createConfig(config, minVersion = CURRENT_EXTENSION_VERSION) {
@@ -928,6 +957,8 @@ export class ControlPlane {
         action_intent_id,config_version,diagnostic_code,
         CASE WHEN event_type='browser_failure' THEN details->>'stage' END AS failure_stage,
         CASE WHEN event_type='browser_failure' THEN details->>'occurredAt' END AS reported_occurred_at,
+        CASE WHEN event_type='feature_flag_changed' THEN details->>'flagKey' END AS flag_key,
+        CASE WHEN event_type='feature_flag_changed' THEN details->>'disabled' END AS flag_disabled,
         created_at FROM callum_v2.events ORDER BY created_at DESC LIMIT 100`,
       diagnostics: `SELECT d.operator_id,COALESCE(d.installation_id,c.installation_id) AS installation_id,
         d.run_id,d.lead_id,d.command_id,d.action_intent_id,d.stage,d.code,d.created_at,

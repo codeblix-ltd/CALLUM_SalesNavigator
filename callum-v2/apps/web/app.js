@@ -35,7 +35,7 @@ async function refresh() {
     'page_ready','pending_visible','connected_visible','target_post_present','viewer_matched','invitation_found',
     'contact_info_opened','contact_email_present','created_at']);
   table('observations',x.observations,['run_id','lead_id','command_id','type','diagnostic_code','profile_matched','target_post_present','target_post_authored_by_lead','viewer_matched','own_comment_present','invitation_found','invitation_age_days','invitation_eligible','contact_info_opened','contact_email_present','created_at']);
-  table('events',x.events,['event_type','operator_id','installation_id','extension_version','build_sha','run_id','lead_id','command_id','action_intent_id','config_version','failure_stage','diagnostic_code','reported_occurred_at','created_at']);
+  table('events',x.events,['event_type','operator_id','installation_id','extension_version','build_sha','run_id','lead_id','command_id','action_intent_id','config_version','failure_stage','flag_key','flag_disabled','diagnostic_code','reported_occurred_at','created_at']);
   table('configs',x.configs,['version','status','min_extension_version','rollout_percent','checksum','created_at']);
   table('flags',x.flags,['flag_key','disabled','updated_at']);
   table('payRows',x.pay,['operator_id','lead_id','source_event_id','pay_rule_version','amount_minor','currency','status','created_at']);
@@ -49,7 +49,6 @@ $('refresh').addEventListener('click',()=>refresh().catch(e=>$('notice').textCon
 for(const button of document.querySelectorAll('nav button'))button.addEventListener('click',()=>{for(const b of document.querySelectorAll('nav button'))b.classList.toggle('active',b===button);for(const v of document.querySelectorAll('.view'))v.hidden=v.id!==button.dataset.view;});
 const actorField=document.createElement('input');actorField.name='actorProfileUrl';actorField.placeholder='signed-in LinkedIn profile URL';actorField.type='url';
 $('installationForm').insertBefore(actorField,$('installationForm').querySelector('button'));
-$('installationForm').elements.extensionVersion.value='2.5.1';
 $('configForm').elements.minVersion.value='2.5.1';
 const payEvent=document.createElement('select');payEvent.name='eventType';payEvent.innerHTML='<option value="connection_confirmed">Confirmed connection</option><option value="comment_confirmed">Confirmed comment</option>';
 $('payForm').insertBefore(payEvent,$('payForm').querySelector('button'));
