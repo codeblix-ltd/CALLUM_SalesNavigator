@@ -920,6 +920,37 @@ export class ControlPlane {
     });
   }
 
+  async createPayRule({version,eventType,amountMinor,currency,enabled} = {}) {
+    if(!Number.isSafeInteger(version)||version<1||!Number.isSafeInteger(amountMinor)||amountMinor<0||
+      !/^[A-Z]{3}$/.test(currency || '')||!['connection_confirmed','comment_confirmed'].includes(eventType)||
+      typeof enabled!=='boolean')throw new Error('PAY_RULE_INVALID');
+    return this.db.tx(async q=>{
+      const rule=(await q.query(`INSERT INTO callum_v2.pay_rules(version,event_type,amount_minor,currency,enabled)
+        VALUES ($1,$2,$3,$4,$5) ON CONFLICT (version) DO NOTHING
+        RETURNING version,event_type,amount_minor,currency,enabled`,
+        [version,eventType,amountMinor,currency,enabled])).rows[0];
+      if(!rule)throw new Error('PAY_RULE_EXISTS');
+      await this.event(q,{event_key:`pay_rule:${version}:created`,event_type:'pay_rule_created',
+        details:{version,eventType,amountMinor,currency,enabled}});
+      return {version,eventType,amountMinor,currency,enabled};
+    });
+  }
+
+  async setPayRuleEnabled(version,enabled) {
+    if(!Number.isSafeInteger(version)||version<1||typeof enabled!=='boolean')throw new Error('PAY_RULE_INVALID');
+    return this.db.tx(async q=>{
+      const rule=(await q.query(`SELECT event_type,amount_minor,currency,enabled
+        FROM callum_v2.pay_rules WHERE version=$1 FOR UPDATE`,[version])).rows[0];
+      if(!rule)throw new Error('PAY_RULE_NOT_FOUND');
+      if(rule.enabled===enabled)return {version,enabled,changed:false};
+      await q.query('UPDATE callum_v2.pay_rules SET enabled=$2 WHERE version=$1',[version,enabled]);
+      await this.event(q,{event_key:`pay_rule:${version}:${enabled?'enabled':'disabled'}:${randomUUID()}`,
+        event_type:enabled?'pay_rule_enabled':'pay_rule_disabled',
+        details:{version,eventType:rule.event_type,amountMinor:String(rule.amount_minor),currency:rule.currency,enabled}});
+      return {version,enabled,changed:true};
+    });
+  }
+
   async createConfig(config, minVersion = CURRENT_EXTENSION_VERSION) {
     const clean = validateConfig(config);
     if (!extensionVersionPattern.test(minVersion)) throw new Error('CONFIG_INVALID');
@@ -959,6 +990,8 @@ export class ControlPlane {
         CASE WHEN event_type='browser_failure' THEN details->>'occurredAt' END AS reported_occurred_at,
         CASE WHEN event_type='feature_flag_changed' THEN details->>'flagKey' END AS flag_key,
         CASE WHEN event_type='feature_flag_changed' THEN details->>'disabled' END AS flag_disabled,
+        CASE WHEN event_type IN ('pay_rule_created','pay_rule_enabled','pay_rule_disabled') THEN details->>'version' END AS pay_rule_version,
+        CASE WHEN event_type IN ('pay_rule_created','pay_rule_enabled','pay_rule_disabled') THEN details->>'enabled' END AS pay_rule_enabled,
         created_at FROM callum_v2.events ORDER BY created_at DESC LIMIT 100`,
       diagnostics: `SELECT d.operator_id,COALESCE(d.installation_id,c.installation_id) AS installation_id,
         d.run_id,d.lead_id,d.command_id,d.action_intent_id,d.stage,d.code,d.created_at,
@@ -995,6 +1028,7 @@ export class ControlPlane {
         ORDER BY o.created_at DESC LIMIT 100`,
       configs: 'SELECT version,status,min_extension_version,rollout_percent,checksum,created_at FROM callum_v2.remote_configs ORDER BY version DESC LIMIT 30',
       flags: 'SELECT flag_key,disabled,updated_at FROM callum_v2.feature_flags ORDER BY flag_key',
+      payRules: 'SELECT version,event_type,amount_minor,currency,enabled,created_at FROM callum_v2.pay_rules ORDER BY version DESC LIMIT 100',
       pay: 'SELECT operator_id,run_id,lead_id,source_event_id,pay_rule_version,amount_minor,currency,status,created_at FROM callum_v2.pay_ledger ORDER BY created_at DESC LIMIT 100'
     };
     const result = {};

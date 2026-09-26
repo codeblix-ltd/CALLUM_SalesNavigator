@@ -94,12 +94,10 @@ const server = http.createServer(async (req, res) => {
       if (path === '/api/admin/flags' && req.method === 'POST') { await control.setFlag(data.flagKey, data.disabled); return json(res, 200, { ok: true }); }
       if (path === '/api/admin/configs' && req.method === 'POST') return json(res, 200, await control.createConfig(data.config, data.minVersion));
       if (path === '/api/admin/configs/activate' && req.method === 'POST') return json(res, 200, await control.activateConfig(data.version, data.channel, data.rolloutPercent ?? 100));
-      if (path === '/api/admin/pay-rules' && req.method === 'POST') {
-        if (!Number.isInteger(data.version) || !Number.isInteger(data.amountMinor) || data.amountMinor < 0 || !/^[A-Z]{3}$/.test(data.currency || '') || !['connection_confirmed','comment_confirmed'].includes(data.eventType)) throw new Error('PAY_RULE_INVALID');
-        await db.query(`INSERT INTO callum_v2.pay_rules(version,event_type,amount_minor,currency,enabled) VALUES ($1,$2,$3,$4,$5)`,
-          [data.version,data.eventType,data.amountMinor,data.currency,data.enabled === true]);
-        return json(res, 200, { ok: true });
-      }
+      if (path === '/api/admin/pay-rules/status' && req.method === 'POST') return json(res, 200,
+        await control.setPayRuleEnabled(data.version,data.enabled));
+      if (path === '/api/admin/pay-rules' && req.method === 'POST') return json(res, 200,
+        await control.createPayRule(data));
       return json(res, 404, { error: 'NOT_FOUND' });
     }
     const installation = await control.installation(bearer(req));

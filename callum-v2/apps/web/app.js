@@ -35,9 +35,10 @@ async function refresh() {
     'page_ready','pending_visible','connected_visible','target_post_present','viewer_matched','invitation_found',
     'contact_info_opened','contact_email_present','created_at']);
   table('observations',x.observations,['run_id','lead_id','command_id','type','diagnostic_code','profile_matched','target_post_present','target_post_authored_by_lead','viewer_matched','own_comment_present','invitation_found','invitation_age_days','invitation_eligible','contact_info_opened','contact_email_present','created_at']);
-  table('events',x.events,['event_type','operator_id','installation_id','extension_version','build_sha','run_id','lead_id','command_id','action_intent_id','config_version','failure_stage','flag_key','flag_disabled','diagnostic_code','reported_occurred_at','created_at']);
+  table('events',x.events,['event_type','operator_id','installation_id','extension_version','build_sha','run_id','lead_id','command_id','action_intent_id','config_version','failure_stage','flag_key','flag_disabled','pay_rule_version','pay_rule_enabled','diagnostic_code','reported_occurred_at','created_at']);
   table('configs',x.configs,['version','status','min_extension_version','rollout_percent','checksum','created_at']);
   table('flags',x.flags,['flag_key','disabled','updated_at']);
+  table('payRules',x.payRules,['version','event_type','amount_minor','currency','enabled','created_at']);
   table('payRows',x.pay,['operator_id','lead_id','source_event_id','pay_rule_version','amount_minor','currency','status','created_at']);
   $('updated').textContent=`Updated ${new Date().toLocaleTimeString()}`;
 }
@@ -73,3 +74,4 @@ bindForm('flagForm','/api/admin/flags',f=>({flagKey:f.get('flagKey'),disabled:f.
 bindForm('configForm','/api/admin/configs',f=>({config:JSON.parse(f.get('config')),minVersion:f.get('minVersion')}));
 bindForm('activateForm','/api/admin/configs/activate',f=>({version:Number(f.get('version')),channel:f.get('channel'),rolloutPercent:Number(f.get('rolloutPercent'))}));
 bindForm('payForm','/api/admin/pay-rules',f=>({version:Number(f.get('version')),eventType:f.get('eventType'),amountMinor:Number(f.get('amountMinor')),currency:String(f.get('currency')).toUpperCase(),enabled:f.get('enabled')==='on'}));
+bindForm('payRuleStatusForm','/api/admin/pay-rules/status',f=>({version:Number(f.get('version')),enabled:f.get('enabled')==='true'}));
