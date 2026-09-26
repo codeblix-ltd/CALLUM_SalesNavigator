@@ -21,6 +21,18 @@ function table(id, rows, fields) {
   for (const row of rows) { const tr=document.createElement('tr');for (const f of fields) { const td=document.createElement('td');const v=row[f];td.textContent=v==null?'—':typeof v==='object'?JSON.stringify(v):String(v);td.title=td.textContent;tr.append(td); }body.append(tr); }
   t.append(body);wrap.append(t);root.append(wrap);
 }
+let payBefore=null,payNextCursor=null,payHistory=[],payLoading=false;
+const payFields=['id','operator_id','lead_id','source_event_id','pay_rule_version',
+  'amount_minor','currency','status','created_at'];
+async function fetchPayPage(before=null) {
+  return api('/api/admin/pay'+(before?'?before='+encodeURIComponent(before):''));
+}
+function showPayPage(page) {
+  table('payRows',page.items,payFields);
+  payNextCursor=page.nextCursor;
+  $('payNewer').hidden=payHistory.length===0;
+  $('payOlder').hidden=!payNextCursor;
+}
 async function refresh() {
   const health=await fetch(apiOrigin+'/api/health',{cache:'no-store'}).then(r=>r.json());
   $('health').textContent=`${health.environment} backend · ${health.status}`;
@@ -41,7 +53,7 @@ async function refresh() {
   table('configs',x.configs,['version','status','min_extension_version','rollout_percent','checksum','created_at']);
   table('flags',x.flags,['flag_key','disabled','updated_at']);
   table('payRules',x.payRules,['version','event_type','amount_minor','currency','enabled','created_at']);
-  table('payRows',x.pay,['id','operator_id','lead_id','source_event_id','pay_rule_version','amount_minor','currency','status','created_at']);
+  payBefore=null;payHistory=[];showPayPage(await fetchPayPage());
   $('updated').textContent=`Updated ${new Date().toLocaleTimeString()}`;
 }
 function bindForm(id, path, convert, onResult) {
@@ -49,6 +61,24 @@ function bindForm(id, path, convert, onResult) {
 }
 $('connect').addEventListener('click',async()=>{token=$('adminToken').value;try{await refresh();$('adminToken').value='';$('login').hidden=true;$('workspace').hidden=false;}catch(error){token='';$('loginMessage').textContent=error.message;}});
 $('refresh').addEventListener('click',()=>refresh().catch(e=>$('notice').textContent=e.message));
+$('payOlder').addEventListener('click',async()=>{
+  if(payLoading||!payNextCursor)return;
+  payLoading=true;$('notice').textContent='';
+  try{
+    const before=payNextCursor,page=await fetchPayPage(before);
+    payHistory.push(payBefore);payBefore=before;showPayPage(page);
+  }catch(error){$('notice').textContent=error.message;}
+  finally{payLoading=false;}
+});
+$('payNewer').addEventListener('click',async()=>{
+  if(payLoading||!payHistory.length)return;
+  payLoading=true;$('notice').textContent='';
+  try{
+    const before=payHistory.at(-1),page=await fetchPayPage(before);
+    payHistory.pop();payBefore=before;showPayPage(page);
+  }catch(error){$('notice').textContent=error.message;}
+  finally{payLoading=false;}
+});
 for(const button of document.querySelectorAll('nav button'))button.addEventListener('click',()=>{for(const b of document.querySelectorAll('nav button'))b.classList.toggle('active',b===button);for(const v of document.querySelectorAll('.view'))v.hidden=v.id!==button.dataset.view;});
 const actorField=document.createElement('input');actorField.name='actorProfileUrl';actorField.placeholder='signed-in LinkedIn profile URL';actorField.type='url';
 $('installationForm').insertBefore(actorField,$('installationForm').querySelector('button'));

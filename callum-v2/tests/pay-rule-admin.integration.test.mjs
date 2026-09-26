@@ -39,6 +39,17 @@ test('pay-rule administration is versioned, auditable and reversible without a D
       assert.equal((await getPay('00000000-0000-4000-8000-000000000000','wrong-token')).status,401);
       assert.equal((await getPay('abc')).status,400);
       assert.equal((await getPay('00000000-0000-4000-8000-000000000000')).status,404);
+      assert.equal((await fetch(`${origin}/api/admin/pay?limit=1`,{
+        headers:{authorization:'Bearer wrong-token'}})).status,401);
+      assert.equal((await fetch(`${origin}/api/admin/pay?limit=101`,{
+        headers:{authorization:`Bearer ${adminToken}`}})).status,400);
+      const firstPage=await fetch(`${origin}/api/admin/pay?limit=1`,{
+        headers:{authorization:`Bearer ${adminToken}`}});
+      assert.equal(firstPage.status,200);
+      const page=await firstPage.json();
+      assert.ok(Array.isArray(page.items));
+      assert.equal(page.items.some(x=>Object.hasOwn(x,'details')),false);
+      assert.equal(JSON.stringify(page).includes(adminToken),false);
       const rule={version,eventType:'connection_confirmed',amountMinor:0,currency:'USD',enabled:false};
       assert.equal((await post('/api/admin/pay-rules',rule,'wrong-token')).status,401);
       assert.equal((await post('/api/admin/pay-rules',{...rule,version:Number.MAX_SAFE_INTEGER+1})).status,400);

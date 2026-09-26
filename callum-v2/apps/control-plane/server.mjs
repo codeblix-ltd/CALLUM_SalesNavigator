@@ -75,6 +75,10 @@ const server = http.createServer(async (req, res) => {
       if (!authorized(bearer(req), adminToken)) return json(res, 401, { error: 'UNAUTHORIZED' });
       const data = req.method === 'POST' ? await body(req) : {};
       if (path === '/api/admin/overview' && req.method === 'GET') return json(res, 200, await control.overview());
+      if(path==='/api/admin/pay'&&req.method==='GET')return json(res,200,await control.listPay({
+        operatorId:url.searchParams.get('operatorId'),before:url.searchParams.get('before'),
+        limit:url.searchParams.has('limit')?Number(url.searchParams.get('limit')):100
+      }));
       const payEvidenceMatch=/^\/api\/admin\/pay\/([0-9a-f-]+)$/i.exec(path);
       if(payEvidenceMatch&&req.method==='GET')return json(res,200,
         await control.payEvidence(payEvidenceMatch[1]));

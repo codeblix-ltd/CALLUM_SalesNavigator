@@ -993,6 +993,26 @@ export class ControlPlane {
     return {...safe,trace_status:traceStatus};
   }
 
+  async listPay({operatorId=null,before=null,limit=100} = {}) {
+    if((operatorId!==null&&!/^[a-z][a-z0-9_-]{1,50}$/.test(operatorId))||
+      (before!==null&&(typeof before!=='string'||!uuid.test(before)))||
+      !Number.isSafeInteger(limit)||limit<1||limit>100)throw new Error('PAY_PAGE_INVALID');
+    let anchor=null;
+    if(before!==null){
+      anchor=(await this.db.query('SELECT created_at,operator_id FROM callum_v2.pay_ledger WHERE id=$1',
+        [before])).rows[0];
+      if(!anchor||(operatorId!==null&&anchor.operator_id!==operatorId))throw new Error('PAY_CURSOR_INVALID');
+    }
+    const {rows}=await this.db.query(`SELECT id,operator_id,run_id,lead_id,source_event_id,
+      pay_rule_version,amount_minor,currency,status,created_at FROM callum_v2.pay_ledger
+      WHERE ($1::STRING IS NULL OR operator_id=$1)
+        AND ($2::TIMESTAMPTZ IS NULL OR created_at<$2::TIMESTAMPTZ OR
+          (created_at=$2::TIMESTAMPTZ AND id<$3::UUID))
+      ORDER BY created_at DESC,id DESC LIMIT $4`,
+      [operatorId,anchor?.created_at??null,before,limit+1]);
+    return {items:rows.slice(0,limit),nextCursor:rows.length>limit?rows[limit-1].id:null};
+  }
+
   async createConfig(config, minVersion = CURRENT_EXTENSION_VERSION) {
     const clean = validateConfig(config);
     if (!extensionVersionPattern.test(minVersion)) throw new Error('CONFIG_INVALID');
@@ -1070,8 +1090,7 @@ export class ControlPlane {
         ORDER BY o.created_at DESC LIMIT 100`,
       configs: 'SELECT version,status,min_extension_version,rollout_percent,checksum,created_at FROM callum_v2.remote_configs ORDER BY version DESC LIMIT 30',
       flags: 'SELECT flag_key,disabled,updated_at FROM callum_v2.feature_flags ORDER BY flag_key',
-      payRules: 'SELECT version,event_type,amount_minor,currency,enabled,created_at FROM callum_v2.pay_rules ORDER BY version DESC LIMIT 100',
-      pay: 'SELECT id,operator_id,run_id,lead_id,source_event_id,pay_rule_version,amount_minor,currency,status,created_at FROM callum_v2.pay_ledger ORDER BY created_at DESC LIMIT 100'
+      payRules: 'SELECT version,event_type,amount_minor,currency,enabled,created_at FROM callum_v2.pay_rules ORDER BY version DESC LIMIT 100'
     };
     const result = {};
     for (const [key, sql] of Object.entries(queries)) result[key] = (await this.db.query(sql)).rows;
