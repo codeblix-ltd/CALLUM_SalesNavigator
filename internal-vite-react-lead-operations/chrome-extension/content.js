@@ -987,6 +987,12 @@
 
     // Verify the modal belongs to the profile before sending anything.
     updateStatus(`Checking that this request is for ${targetProfileName}...`);
+    if (invitationRequiresEmail(invitationDialog)) {
+      dismissInvitationDialog(invitationDialog);
+      throw new Error(
+        "LinkedIn requires the person's email address to connect. No request was sent. This lead needs manual review.",
+      );
+    }
     const invitationRecipient = getInvitationRecipient(
       invitationDialog,
       targetProfileName,
@@ -2689,6 +2695,12 @@
         );
       }) || null
     );
+  }
+
+  function invitationRequiresEmail(dialog) {
+    const content = dialog.querySelector(".artdeco-modal__content") || dialog;
+    const text = content.textContent?.replace(/\s+/g, " ").trim() || "";
+    return /(?:enter|provide)\s+(?:their|the (?:person'?s|member'?s))\s+e-?mail\s+to\s+connect/i.test(text);
   }
 
   function getInvitationRecipient(dialog, targetProfileName = "") {

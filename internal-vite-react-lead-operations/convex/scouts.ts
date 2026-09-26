@@ -9,7 +9,7 @@ import { requestCodexGateway } from "./lib/codexGateway";
 import { getPool } from "./lib/cockroach";
 import { isGhlCompatibleEmail } from "./lib/ghl";
 import { upsertVeblenLeadMatches, veblenMatchExistsSql } from "./lib/veblenExclusions";
-import { leadNeedsReviewSql, PROFILE_LINK_REVIEW_MESSAGE, ONLY_PROFILE_LINK_REVIEWS_MESSAGE } from "./lib/profileLinkReview";
+import { leadNeedsReviewSql, PROFILE_LINK_REVIEW_MESSAGE, ONLY_PROFILE_LINK_REVIEWS_MESSAGE, isUncompletedConnectionAction } from "./lib/profileLinkReview";
 
 type ScoutIdentity = {
   userId: string;
@@ -686,12 +686,11 @@ export const claimNextLead = action({
     if (
       recentOutcomes.rows.length === 3 &&
       recentOutcomes.rows.every((row) =>
-        row.event_type === "failed" &&
-        row.error === "The connection state could not be confirmed. Nothing was sent for this lead."
+        isUncompletedConnectionAction(row.event_type, row.error)
       )
     ) {
       throw new Error(
-        "LinkedIn connection actions were unavailable on three recent profiles. Scout stopped to avoid checking more leads. Please open LinkedIn in this Chrome profile and use Report Bug with a screenshot of the profile actions.",
+        "LinkedIn connection requests could not be completed on three recent profiles. Scout stopped to avoid checking more leads. Please open LinkedIn in this Chrome profile and use Report Bug with a screenshot of the profile actions.",
       );
     }
     if (args.resumeExisting) {

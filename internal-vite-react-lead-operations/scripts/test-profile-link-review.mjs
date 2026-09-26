@@ -21,9 +21,9 @@ const next = {...base,id:nextId,linkedin_url:'https://www.linkedin.com/in/verifi
 const repeatedUnreadable={...base,linkedin_url:'https://www.linkedin.com/in/ameera-ashraf-9880',last_error:rules.UNREADABLE_LINKEDIN_PAGE_ERROR,pause_count:2};
 // Execute the actual handler. These doubles verify query wiring and side
 // effects; Cockroach predicate semantics are checked separately with --live.
-function harness(rows) {
+function harness(rows,{recentOutcomes=[]}={}) {
  const sql=[],writes=[];
- const held = row => (row.last_error===rules.UNVERIFIED_PROFILE_LINK_ERROR && /\/in\/AC[ow][A-Za-z0-9_-]{15,}\/?([?#].*)?$/.test(row.linkedin_url)) || (row.last_error===rules.UNREADABLE_LINKEDIN_PAGE_ERROR && row.pause_count>=2) || row.last_error===rules.UNCERTAIN_INVITATION_ERROR;
+ const held = row => (row.last_error===rules.UNVERIFIED_PROFILE_LINK_ERROR && /\/in\/AC[ow][A-Za-z0-9_-]{15,}\/?([?#].*)?$/.test(row.linkedin_url)) || (row.last_error===rules.UNREADABLE_LINKEDIN_PAGE_ERROR && row.pause_count>=2) || row.last_error===rules.UNCERTAIN_INVITATION_ERROR || row.last_error===rules.LINKEDIN_EMAIL_REQUIRED_ERROR;
  const query = async (text,args=[]) => {
   sql.push(text);
   if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(text))return {rows:[]};
@@ -33,7 +33,7 @@ function harness(rows) {
   }
   assert.equal(args[0],'erin','queue query must be bound to authenticated scout');
   if (text.includes('FROM lead_assignment_events') && text.includes('ORDER BY created_at DESC')) {
-   return {rows:[]}; // No global connection-action outage in these queue fixtures.
+   return {rows:recentOutcomes};
   }
   if (text.includes('AS lead_needs_review'))return {rows:rows.filter(r=>r.id===args[1]).map(r=>({...r,lead_needs_review:held(r)}))};
   assert(text.includes(rules.leadNeedsReviewSql()),'every automatic selection uses the same guard');
@@ -80,6 +80,17 @@ const uncertainInvitation={...next,id,status:'failed',last_error:rules.UNCERTAIN
 await assert.rejects(harness([uncertainInvitation]).run({failedOnly:true}),/remaining leads need attention/);
 await assert.rejects(harness([uncertainInvitation]).run({leadId:id}),/start a normal run/);
 assert.equal((await harness([{...uncertainInvitation,last_error:null}]).run({failedOnly:true})).id,id,'reviewed uncertain invitations can be retried after the hold is cleared');
+const emailRequired={...next,id,status:'failed',last_error:rules.LINKEDIN_EMAIL_REQUIRED_ERROR};
+await assert.rejects(harness([emailRequired]).run({failedOnly:true}),/remaining leads need attention/);
+assert.equal((await harness([emailRequired,{...next,status:'failed'}]).run({failedOnly:true})).id,nextId,'email-gated lead must not block another failed lead');
+assert.equal((await harness([{...emailRequired,last_error:null}]).run({failedOnly:true})).id,id,'manual review can release an email-gated lead');
+const mixedFailures=[
+ {event_type:'failed',error:'The connection state could not be confirmed. Nothing was sent for this lead.'},
+ {event_type:'failed',error:'We couldn’t check that the request is for Bob Jordan. Nothing was sent.'},
+ {event_type:'failed',error:'The connection state could not be confirmed. Nothing was sent for this lead.'},
+];
+await assert.rejects(harness([next],{recentOutcomes:mixedFailures}).run({}),/three recent profiles/,'mixed recipient and state failures must stop before another lead is claimed');
+assert.equal((await harness([next],{recentOutcomes:[{event_type:'connection_requested',error:null},...mixedFailures.slice(0,2)]}).run({})).id,nextId,'a successful request breaks the circuit');
 const repaired=harness([{...base,linkedin_url:next.linkedin_url}]);
 assert.equal((await repaired.run({resumeExisting:true})).id,id,'verified repair re-enters queue');
 const pristine=harness([{...base,last_error:null}]);
@@ -117,6 +128,8 @@ if(process.argv.includes('--live')) {
    const result=await c.query(`SELECT ${rules.profileLinkNeedsReviewSql()} AS held FROM (SELECT $1::STRING AS last_error,$2::STRING AS resolved_linkedin_url) AS a CROSS JOIN (SELECT $3::STRING AS linkedin_url) AS l`,[lastError,resolved,imported]);
    assert.equal(result.rows[0].held,expected,'real Cockroach null/URL/error predicate');
   }
+  const emailHold=await c.query(`SELECT ${rules.leadNeedsReviewSql()} AS held FROM (SELECT $1::STRING AS last_error,NULL::STRING AS resolved_linkedin_url,NULL::TIMESTAMPTZ AS last_error_at,NULL::UUID AS lead_id,''::STRING AS operator_id) AS a CROSS JOIN (SELECT $2::STRING AS linkedin_url) AS l`,[rules.LINKEDIN_EMAIL_REQUIRED_ERROR,next.linkedin_url]);
+  assert.equal(emailHold.rows[0].held,true,'email-required lead must be held by real Cockroach predicate');
   const dashboardCount=await c.query(`SELECT count(*) FILTER (WHERE a.status='failed' AND NOT (${rules.leadNeedsReviewSql()}))::FLOAT8 AS retryable_failed FROM lead_assignments AS a JOIN leads AS l ON l.id=a.lead_id WHERE a.operator_id=$1`,['jen']);
   assert(Number.isFinite(Number(dashboardCount.rows[0].retryable_failed)),'dashboard retry count executes on Cockroach');
   const progressReview=await c.query(`SELECT ${rules.leadNeedsReviewSql()} AS needs_review FROM lead_assignments AS a JOIN leads AS l ON l.id=a.lead_id WHERE a.operator_id=$1 LIMIT 1`,['jen']);

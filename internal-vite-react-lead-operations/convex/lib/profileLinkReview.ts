@@ -9,6 +9,20 @@ export const UNREADABLE_LINKEDIN_PAGE_ERROR =
 export const UNCERTAIN_INVITATION_ERROR =
   "The connection request could not be confirmed. Check LinkedIn Pending before this lead is retried; ask your manager to review it.";
 
+export const LINKEDIN_EMAIL_REQUIRED_ERROR =
+  "LinkedIn requires the person's email address to connect. No request was sent. This lead needs manual review.";
+
+// Older extension versions report an anonymous invite dialog as a recipient
+// verification failure. A run with several of these mixed with unreadable
+// connection actions cannot safely keep consuming leads.
+export function isUncompletedConnectionAction(eventType: string, error: string | null) {
+  return eventType === "failed" && (
+    error === "The connection state could not be confirmed. Nothing was sent for this lead." ||
+    error === LINKEDIN_EMAIL_REQUIRED_ERROR ||
+    /^We couldn.t check that the request is for .+\. Nothing was sent\.$/.test(error ?? "")
+  );
+}
+
 export const PROFILE_LINK_REVIEW_MESSAGE =
   "This lead needs attention and is still saved. Please start a normal run to work on other leads. Support will check this lead before it is retried.";
 
@@ -52,8 +66,16 @@ export function uncertainInvitationNeedsReviewSql(assignmentAlias = "a") {
   return `coalesce(${assignmentAlias}.last_error, '') = '${error}'`;
 }
 
+// This is a real LinkedIn gate, not a transient selector failure. Reopening
+// the same lead cannot bypass the email requirement; leave it for manual review.
+export function emailRequiredNeedsReviewSql(assignmentAlias = "a") {
+  const error = LINKEDIN_EMAIL_REQUIRED_ERROR.replace(/'/g, "''");
+  return `coalesce(${assignmentAlias}.last_error, '') = '${error}'`;
+}
+
 export function leadNeedsReviewSql(leadAlias = "l", assignmentAlias = "a") {
   return `(${profileLinkNeedsReviewSql(leadAlias, assignmentAlias)}
     OR ${repeatedUnreadablePageNeedsReviewSql(assignmentAlias)}
-    OR ${uncertainInvitationNeedsReviewSql(assignmentAlias)})`;
+    OR ${uncertainInvitationNeedsReviewSql(assignmentAlias)}
+    OR ${emailRequiredNeedsReviewSql(assignmentAlias)})`;
 }
