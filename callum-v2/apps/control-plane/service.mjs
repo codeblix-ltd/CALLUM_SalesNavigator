@@ -50,7 +50,7 @@ export class ControlPlane {
 
   async installation(token) {
     if (typeof token !== 'string' || token.length < 30) throw new Error('UNAUTHORIZED');
-    const { rows } = await this.db.query(`SELECT i.id,i.operator_id,i.extension_version,i.build_sha,i.protocol_version,i.disabled,i.actor_profile_key,
+    const { rows } = await this.db.query(`SELECT i.id,i.operator_id,i.extension_version,i.build_sha,i.protocol_version,i.disabled,i.actor_profile_key,i.token_hash,
       o.enabled,o.cohort,o.daily_connection_limit FROM callum_v2.installations i
       JOIN callum_v2.operators o ON o.id=i.operator_id WHERE i.token_hash=$1`, [hash(token)]);
     const item = rows[0];
@@ -349,10 +349,10 @@ export class ControlPlane {
 
   async claim(installation) {
     return this.db.tx(async q => {
-      const enabled=(await q.query(`SELECT i.disabled,o.enabled FROM callum_v2.installations i
+      const enabled=(await q.query(`SELECT i.disabled,i.token_hash,o.enabled FROM callum_v2.installations i
         JOIN callum_v2.operators o ON o.id=i.operator_id WHERE i.id=$1 AND i.operator_id=$2`,
         [installation.id,installation.operator_id])).rows[0];
-      if(!enabled||enabled.disabled||!enabled.enabled)throw new Error('UNAUTHORIZED');
+      if(!enabled||enabled.disabled||!enabled.enabled||enabled.token_hash!==installation.token_hash)throw new Error('UNAUTHORIZED');
       await this.recoverExpired(q, installation.operator_id);
       const config = await this.activeConfig(q, installation);
       const { rows } = await q.query(`SELECT c.* FROM callum_v2.commands c JOIN callum_v2.runs r ON r.id=c.run_id
@@ -399,7 +399,8 @@ export class ControlPlane {
   async authorizeAction(installation, commandId) {
     return this.db.tx(async q => {
       const { rows } = await q.query(`SELECT c.*,i.state AS intent_state,i.action_type AS intent_type,r.status AS run_status,r.mode AS run_mode,r.installation_id AS run_installation_id,
-        installation.disabled AS installation_disabled,op.enabled AS operator_enabled FROM callum_v2.commands c
+        installation.disabled AS installation_disabled,installation.token_hash AS current_token_hash,
+        op.enabled AS operator_enabled FROM callum_v2.commands c
         JOIN callum_v2.action_intents i ON i.id=c.action_intent_id JOIN callum_v2.runs r ON r.id=c.run_id
         JOIN callum_v2.installations installation ON installation.id=c.installation_id
         JOIN callum_v2.operators op ON op.id=c.operator_id
@@ -407,7 +408,8 @@ export class ControlPlane {
       const c = rows[0];
       const withdraw=c?.type==='EXECUTE_WITHDRAW';
       const comment=c?.type==='EXECUTE_COMMENT';
-      if (!c || c.installation_disabled || !c.operator_enabled || !['EXECUTE_CONNECT','EXECUTE_WITHDRAW','EXECUTE_COMMENT'].includes(c.type) || c.intent_type !== (withdraw?'withdraw':comment?'comment':'connect') ||
+      if (!c || c.installation_disabled || !c.operator_enabled || c.current_token_hash!==installation.token_hash ||
+          !['EXECUTE_CONNECT','EXECUTE_WITHDRAW','EXECUTE_COMMENT'].includes(c.type) || c.intent_type !== (withdraw?'withdraw':comment?'comment':'connect') ||
           c.installation_id !== installation.id || c.status !== 'leased' || c.intent_state !== 'reserved' ||
           c.run_status !== 'running' || c.expires_at <= new Date() || c.lease_expires_at <= new Date()) throw new Error('ACTION_NOT_AUTHORIZED');
       if (c.run_mode!=='live_canary' || c.run_installation_id!==installation.id || !process.env.V2_QA_PROFILE_KEY ||
@@ -458,15 +460,16 @@ export class ControlPlane {
   async acknowledge(installation, raw) {
     const result = sanitizeResult(raw);
     return this.db.tx(async q => {
-      const { rows } = await q.query(`SELECT c.*,r.mode,l.stage FROM callum_v2.commands c
+      const { rows } = await q.query(`SELECT c.*,r.mode,l.stage,installation.token_hash AS current_token_hash FROM callum_v2.commands c
         JOIN callum_v2.runs r ON r.id=c.run_id JOIN callum_v2.run_leads l ON l.run_id=c.run_id AND l.lead_id=c.lead_id
+        JOIN callum_v2.installations installation ON installation.id=c.installation_id
         WHERE c.id=$1 AND c.operator_id=$2 FOR UPDATE OF c`, [result.commandId, installation.operator_id]);
       const c = rows[0];
       const finish=async outcome=>{
         await this.finishCompletedRun(q,installation.operator_id,c.run_id);
         return outcome;
       };
-      if (!c || c.installation_id !== installation.id) throw new Error('COMMAND_NOT_OWNED');
+      if (!c || c.installation_id !== installation.id || c.current_token_hash!==installation.token_hash) throw new Error('COMMAND_NOT_OWNED');
       if (c.status === 'completed') return finish({ duplicate: true, state: c.status });
       if (!['leased', 'uncertain'].includes(c.status)) throw new Error('COMMAND_NOT_ACTIVE');
       const facts = result.facts;
@@ -783,6 +786,19 @@ export class ControlPlane {
   }
   async revokeInstallation(id) {
     await this.db.query('UPDATE callum_v2.installations SET disabled=true WHERE id=$1', [id]);
+  }
+  async rotateInstallationToken(id) {
+    if (!uuid.test(id || '')) throw new Error('INSTALLATION_INVALID');
+    const token=randomBytes(32).toString('base64url');
+    return this.db.tx(async q=>{
+      const installation=(await q.query(`UPDATE callum_v2.installations SET token_hash=$2
+        WHERE id=$1 AND disabled=false RETURNING id,operator_id,extension_version,build_sha`,[id,hash(token)])).rows[0];
+      if(!installation)throw new Error('INSTALLATION_NOT_FOUND');
+      await this.event(q,{event_key:`installation:${id}:token_rotated:${randomUUID()}`,event_type:'installation_token_rotated',
+        operator_id:installation.operator_id,installation_id:id,extension_version:installation.extension_version,
+        build_sha:installation.build_sha,protocol_version:PROTOCOL_VERSION});
+      return {id:installation.id,operator_id:installation.operator_id,token};
+    });
   }
 
   async setFlag(flagKey, disabled) {

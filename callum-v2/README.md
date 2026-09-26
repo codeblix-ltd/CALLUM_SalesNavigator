@@ -4,6 +4,8 @@ Production-isolated canary. The Node control plane owns workflow, command claims
 
 Current browser work includes profile observation, recent-post/comment-state and sent-invitation inspection, controlled contact-email extraction, guarded connection and withdrawal actions, and a reviewed QA comment action. Connect, withdrawal, and comment actions require the configured signed-in actor and recent same-installation observation before one-time server authorization. Uncertain submissions receive observation-only reconciliation. Authenticated LinkedIn action validation remains open; do not use this branch for production scouts. See the readiness record for the remaining gates.
 
+An admin can rotate an installation token in place. The replacement is shown once, the old token stops authenticating, and active server requests recheck the stored token hash before claiming, authorizing, or acknowledging commands. The installation ID and its run bindings stay intact.
+
 ## Local setup
 
 Use Node 24 and pnpm 10. From this directory:

@@ -74,6 +74,7 @@ const server = http.createServer(async (req, res) => {
       if (path === '/api/admin/operators' && req.method === 'POST') return json(res, 200, await control.createOperator(data.id, data.cohort, data.dailyLimit));
       if (path === '/api/admin/operators/disable' && req.method === 'POST') { await control.disableOperator(data.id, data.disabled); return json(res, 200, { ok:true }); }
       if (path === '/api/admin/installations' && req.method === 'POST') return json(res, 200, await control.createInstallation(data.operatorId, data.extensionVersion, data.buildSha,data.actorProfileUrl||null));
+      if (path === '/api/admin/installations/rotate-token' && req.method === 'POST') return json(res, 200, await control.rotateInstallationToken(data.id));
       if (path === '/api/admin/installations/revoke' && req.method === 'POST') { await control.revokeInstallation(data.id); return json(res, 200, { ok:true }); }
       if (path === '/api/admin/runs' && req.method === 'POST') return json(res, 200, await control.createRun(data));
       if (path === '/api/admin/inspections' && req.method === 'POST') return json(res, 200, await control.queueInspection(data));
