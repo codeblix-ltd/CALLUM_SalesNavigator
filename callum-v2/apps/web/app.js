@@ -35,7 +35,7 @@ async function refresh() {
     'page_ready','pending_visible','connected_visible','target_post_present','viewer_matched','invitation_found',
     'contact_info_opened','contact_email_present','created_at']);
   table('observations',x.observations,['run_id','lead_id','command_id','type','diagnostic_code','profile_matched','target_post_present','target_post_authored_by_lead','viewer_matched','own_comment_present','invitation_found','invitation_age_days','invitation_eligible','contact_info_opened','contact_email_present','created_at']);
-  table('events',x.events,['event_type','operator_id','run_id','lead_id','command_id','action_intent_id','config_version','diagnostic_code','created_at']);
+  table('events',x.events,['event_type','operator_id','installation_id','extension_version','build_sha','run_id','lead_id','command_id','action_intent_id','config_version','diagnostic_code','created_at']);
   table('configs',x.configs,['version','status','min_extension_version','rollout_percent','checksum','created_at']);
   table('flags',x.flags,['flag_key','disabled','updated_at']);
   table('payRows',x.pay,['operator_id','lead_id','source_event_id','pay_rule_version','amount_minor','currency','status','created_at']);

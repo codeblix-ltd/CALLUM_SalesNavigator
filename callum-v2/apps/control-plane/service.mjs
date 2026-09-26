@@ -74,8 +74,14 @@ export class ControlPlane {
       }
     }
     if (!config) throw new Error('CONFIG_UNAVAILABLE');
-    if (installation && !versionAtLeast(installation.extension_version, config.min_extension_version)) throw new Error('CONFIG_INCOMPATIBLE');
-    validateConfig(config.config);
+    if (installation && !versionAtLeast(installation.extension_version, config.min_extension_version)) {
+      const error=new Error('CONFIG_INCOMPATIBLE');
+      error.configVersion=Number(config.version);
+      error.minExtensionVersion=config.min_extension_version;
+      throw error;
+    }
+    try { validateConfig(config.config); }
+    catch(error) { error.configVersion=Number(config.version); throw error; }
     return config;
   }
 
@@ -348,7 +354,7 @@ export class ControlPlane {
   }
 
   async claim(installation) {
-    return this.db.tx(async q => {
+    try { return await this.db.tx(async q => {
       const enabled=(await q.query(`SELECT i.disabled,i.token_hash,o.enabled FROM callum_v2.installations i
         JOIN callum_v2.operators o ON o.id=i.operator_id WHERE i.id=$1 AND i.operator_id=$2`,
         [installation.id,installation.operator_id])).rows[0];
@@ -393,7 +399,20 @@ export class ControlPlane {
         expiresAt: c.expires_at.toISOString(), payload: c.payload };
       assertCommand(command);
       return { command, config: { version: Number(config.version), value: config.config, checksum: config.checksum } };
-    });
+    }); }
+    catch(error) {
+      if (['CONFIG_INCOMPATIBLE','CONFIG_UNAVAILABLE','CONFIG_INVALID'].includes(error.message)) {
+        const configVersion=Number.isSafeInteger(error.configVersion)?error.configVersion:null;
+        const hour=Math.floor(Date.now()/3_600_000);
+        const key=`installation:${installation.id}:claim_rejected:${error.message}:${configVersion ?? 'none'}:${hour}`;
+        await this.db.query(`INSERT INTO callum_v2.events
+          (event_key,event_type,operator_id,installation_id,extension_version,build_sha,protocol_version,config_version,diagnostic_code,details)
+          VALUES ($1,'claim_rejected',$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (event_key) DO NOTHING`,
+          [key,installation.operator_id,installation.id,installation.extension_version,installation.build_sha,
+            PROTOCOL_VERSION,configVersion,error.message,{minimumExtensionVersion:error.minExtensionVersion || null}]).catch(()=>{});
+      }
+      throw error;
+    }
   }
 
   async authorizeAction(installation, commandId) {
@@ -840,7 +859,7 @@ export class ControlPlane {
       assignments: 'SELECT run_id,lead_id,full_name,niche,stage FROM callum_v2.run_leads ORDER BY created_at DESC LIMIT 100',
       intents: 'SELECT id,run_id,operator_id,lead_id,action_type,state,updated_at FROM callum_v2.action_intents ORDER BY updated_at DESC LIMIT 100',
       drafts: 'SELECT id,run_id,lead_id,inspection_command_id,post_url,body,body_sha256,status,reviewer,action_intent_id,created_at FROM callum_v2.comment_drafts ORDER BY created_at DESC LIMIT 100',
-      events: 'SELECT id,event_type,operator_id,run_id,lead_id,command_id,action_intent_id,config_version,diagnostic_code,created_at FROM callum_v2.events ORDER BY created_at DESC LIMIT 100',
+      events: 'SELECT id,event_type,operator_id,installation_id,extension_version,build_sha,run_id,lead_id,command_id,action_intent_id,config_version,diagnostic_code,created_at FROM callum_v2.events ORDER BY created_at DESC LIMIT 100',
       diagnostics: `SELECT d.operator_id,COALESCE(d.installation_id,c.installation_id) AS installation_id,
         d.run_id,d.lead_id,d.command_id,d.action_intent_id,d.stage,d.code,d.created_at,
         i.extension_version,i.build_sha,c.config_version,c.trace_id,c.type AS command_type,c.status AS command_status,

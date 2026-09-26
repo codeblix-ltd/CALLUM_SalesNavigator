@@ -12,7 +12,7 @@ test('server hotfix, rollback and operator kill apply to pending commands', {ski
   try {
     await s.seed();await s.createOperator(op,'dev',1);
     previousConfig=Number((await db.query("SELECT active_config_version FROM callum_v2.release_channels WHERE channel='dev'")).rows[0].active_config_version);
-    const issued=await s.createInstallation(op,'2.5.0','68f5971a'),installation=await s.installation(issued.token);
+    const issued=await s.createInstallation(op,'2.5.1','68f5971a'),installation=await s.installation(issued.token);
     const before=await s.createRun({operatorId:op,mode:'shadow',count:1});
     const draft=await s.createConfig({...DEFAULT_CONFIG,connect:['button[data-callum-hotfix="connect"]']});version=Number(draft.version);
     await s.activateConfig(version,'dev');
