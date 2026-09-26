@@ -317,9 +317,18 @@ export class ControlPlane {
   }
 
   async pendingCandidate(q, installation) {
+    // Only skip type-scoped flags here. A stale command still needs the config
+    // update below, and every flag scope is checked again before leasing.
     return (await q.query(`SELECT c.id FROM callum_v2.commands c JOIN callum_v2.runs r ON r.id=c.run_id
       WHERE c.operator_id=$1 AND c.status='pending' AND c.expires_at>now() AND r.status='running'
-      AND (r.installation_id IS NULL OR r.installation_id=$2) ORDER BY c.created_at,c.id LIMIT 1`,
+      AND (r.installation_id IS NULL OR r.installation_id=$2)
+      AND NOT EXISTS (SELECT 1 FROM callum_v2.feature_flags f WHERE f.disabled=true AND f.flag_key=
+        CASE WHEN c.type='EXECUTE_CONNECT' THEN 'connection'
+          WHEN c.type IN ('INSPECT_COMMENT_STATE','EXECUTE_COMMENT') THEN 'comment'
+          WHEN c.type='EXTRACT_CONTACT_INFO' THEN 'contact'
+          WHEN c.type IN ('INSPECT_PENDING_INVITATION','EXECUTE_WITHDRAW') THEN 'withdrawal'
+          ELSE NULL END)
+      ORDER BY c.created_at,c.id LIMIT 1`,
       [installation.operator_id, installation.id])).rows[0];
   }
 

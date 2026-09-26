@@ -2,18 +2,21 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { openDatabase } from '../apps/control-plane/db.mjs';
-import { ControlPlane } from '../apps/control-plane/service.mjs';
+import { ControlPlane, CURRENT_EXTENSION_VERSION } from '../apps/control-plane/service.mjs';
 import { DEFAULT_CONFIG } from '../packages/linkedin-config/index.mjs';
 
 const enabled=process.env.V2_TEST_DB==='1' && !!process.env.COCKROACH_DATABASE_URL;
 test('server hotfix, rollback and operator kill apply to pending commands', {skip:!enabled}, async()=>{
   const db=openDatabase(),s=new ControlPlane(db),op=`v2cfg_${randomUUID().slice(0,8)}`;
-  let version=null,previousConfig=null;
+  let version=null,previousConfig=null,installationId=null;
+  const runIds=[];
   try {
     await s.seed();await s.createOperator(op,'dev',1);
     previousConfig=Number((await db.query("SELECT active_config_version FROM callum_v2.release_channels WHERE channel='dev'")).rows[0].active_config_version);
-    const issued=await s.createInstallation(op,'2.5.1','68f5971a'),installation=await s.installation(issued.token);
+    const issued=await s.createInstallation(op,CURRENT_EXTENSION_VERSION,'68f5971a'),installation=await s.installation(issued.token);
+    installationId=issued.id;
     const before=await s.createRun({operatorId:op,mode:'shadow',count:1});
+    runIds.push(before.id);
     const draft=await s.createConfig({...DEFAULT_CONFIG,connect:['button[data-callum-hotfix="connect"]']});version=Number(draft.version);
     await s.activateConfig(version,'dev');
     const claimed=await s.claim(installation);
@@ -23,6 +26,7 @@ test('server hotfix, rollback and operator kill apply to pending commands', {ski
     await s.activateConfig(1,'dev');
     assert.equal((await db.query('SELECT status FROM callum_v2.remote_configs WHERE version=1')).rows[0].status,'stable');
     const after=await s.createRun({operatorId:op,mode:'shadow',count:1});
+    runIds.push(after.id);
     await s.setFlag(`operator:${op}`,true);
     const blocked=await s.claim(installation);
     assert.equal(blocked.command,null);
@@ -34,6 +38,9 @@ test('server hotfix, rollback and operator kill apply to pending commands', {ski
   } finally {
     await s.setFlag(`operator:${op}`,false).catch(()=>{});
     if(previousConfig!==null)await s.activateConfig(previousConfig,'dev').catch(()=>{});
+    for(const id of runIds)await s.pauseRun(id).catch(()=>{});
+    if(installationId)await s.revokeInstallation(installationId).catch(()=>{});
+    await s.disableOperator(op,true).catch(()=>{});
     await db.close();
   }
 });
