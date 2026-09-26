@@ -924,6 +924,7 @@ export class ControlPlane {
     if(!Number.isSafeInteger(version)||version<1||!Number.isSafeInteger(amountMinor)||amountMinor<0||
       !/^[A-Z]{3}$/.test(currency || '')||!['connection_confirmed','comment_confirmed'].includes(eventType)||
       typeof enabled!=='boolean')throw new Error('PAY_RULE_INVALID');
+    if(enabled&&amountMinor>0)throw new Error('PAY_POLICY_NOT_APPROVED');
     return this.db.tx(async q=>{
       const rule=(await q.query(`INSERT INTO callum_v2.pay_rules(version,event_type,amount_minor,currency,enabled)
         VALUES ($1,$2,$3,$4,$5) ON CONFLICT (version) DO NOTHING
@@ -942,6 +943,7 @@ export class ControlPlane {
       const rule=(await q.query(`SELECT event_type,amount_minor,currency,enabled
         FROM callum_v2.pay_rules WHERE version=$1 FOR UPDATE`,[version])).rows[0];
       if(!rule)throw new Error('PAY_RULE_NOT_FOUND');
+      if(enabled&&Number(rule.amount_minor)>0)throw new Error('PAY_POLICY_NOT_APPROVED');
       if(rule.enabled===enabled)return {version,enabled,changed:false};
       await q.query('UPDATE callum_v2.pay_rules SET enabled=$2 WHERE version=$1',[version,enabled]);
       await this.event(q,{event_key:`pay_rule:${version}:${enabled?'enabled':'disabled'}:${randomUUID()}`,

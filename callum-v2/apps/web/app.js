@@ -6,7 +6,9 @@ async function api(path, payload) {
     headers: { authorization: `Bearer ${token}`, ...(payload === undefined ? {} : { 'content-type':'application/json' }) },
     body: payload === undefined ? undefined : JSON.stringify(payload), cache:'no-store' });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Request failed');
+  if (!res.ok) throw new Error(data.error === 'PAY_POLICY_NOT_APPROVED'
+    ? 'Positive pay rates are disabled while the compensation policy is pending.'
+    : data.error || 'Request failed');
   return data;
 }
 function table(id, rows, fields) {

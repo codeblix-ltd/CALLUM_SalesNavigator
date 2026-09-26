@@ -13,8 +13,9 @@ test('pay-rule administration is versioned, auditable and reversible without a D
   {skip:!enabled,timeout:180000},async()=>{
     const db=openDatabase(),adminToken=randomBytes(32).toString('hex');
     const version=Number(String(Date.now()).slice(-12));
+    const positiveFixtureVersion=version+1;
     const port=20000+Math.floor(Math.random()*10000),origin=`http://127.0.0.1:${port}`;
-    let server=null;
+    let server=null,positiveFixtureCreated=false;
     try{
       server=spawn(process.execPath,['apps/control-plane/server.mjs'],{
         cwd:fileURLToPath(new URL('../',import.meta.url)),
@@ -36,6 +37,21 @@ test('pay-rule administration is versioned, auditable and reversible without a D
       assert.equal((await post('/api/admin/pay-rules',rule,'wrong-token')).status,401);
       assert.equal((await post('/api/admin/pay-rules',{...rule,version:Number.MAX_SAFE_INTEGER+1})).status,400);
       assert.equal((await post('/api/admin/pay-rules',{...rule,enabled:undefined})).status,400);
+      const rejectedPositive=await post('/api/admin/pay-rules',
+        {...rule,version:positiveFixtureVersion,amountMinor:1,currency:'XTS',enabled:true});
+      assert.equal(rejectedPositive.status,400);
+      assert.equal((await rejectedPositive.json()).error,'PAY_POLICY_NOT_APPROVED');
+      assert.equal((await db.query('SELECT count(*)::INT4 AS n FROM callum_v2.pay_rules WHERE version=$1',
+        [positiveFixtureVersion])).rows[0].n,0);
+      const fixture=await db.query(`INSERT INTO callum_v2.pay_rules(version,event_type,amount_minor,currency,enabled)
+        VALUES ($1,'connection_confirmed',1,'XTS',false) ON CONFLICT DO NOTHING`,[positiveFixtureVersion]);
+      assert.equal(fixture.rowCount,1);
+      positiveFixtureCreated=true;
+      const blockedEnable=await post('/api/admin/pay-rules/status',{version:positiveFixtureVersion,enabled:true});
+      assert.equal(blockedEnable.status,400);
+      assert.equal((await blockedEnable.json()).error,'PAY_POLICY_NOT_APPROVED');
+      assert.equal((await db.query('SELECT enabled FROM callum_v2.pay_rules WHERE version=$1',
+        [positiveFixtureVersion])).rows[0].enabled,false);
       const created=await post('/api/admin/pay-rules',rule);
       assert.equal(created.status,200);
       assert.equal((await created.json()).version,version);
@@ -69,6 +85,8 @@ test('pay-rule administration is versioned, auditable and reversible without a D
       assert.equal((await db.query('SELECT count(*)::INT4 AS n FROM callum_v2.pay_ledger WHERE pay_rule_version=$1',[version])).rows[0].n,0);
     }finally{
       await db.query('UPDATE callum_v2.pay_rules SET enabled=false WHERE version=$1',[version]).catch(()=>{});
+      if(positiveFixtureCreated)await db.query('DELETE FROM callum_v2.pay_rules WHERE version=$1',
+        [positiveFixtureVersion]).catch(()=>{});
       if(server?.exitCode===null){
         const closed=once(server,'exit');server.kill();
         await Promise.race([closed,delay(10000,null,{ref:false}).then(()=>{throw new Error('BACKEND_STOP_TIMEOUT')})]);
