@@ -83,7 +83,38 @@ test('independent backend processes claim and authorize one V2 action once',
       assert.equal(ack.status,200);
       assert.equal(ack.data.stage,'awaiting_action');
 
-      const actionClaims=await Promise.all(origins.map(origin=>post(origin,'/api/commands/claim')));
+      const pendingAction=(await db.query(`SELECT id FROM callum_v2.commands
+        WHERE run_id=$1 AND type='EXECUTE_CONNECT' AND status='pending'`,[runId])).rows[0];
+      assert.ok(pendingAction);
+      let releaseLock,lockedResolve,lockedReject;
+      const gate=new Promise(resolve=>{releaseLock=resolve;});
+      const locked=new Promise((resolve,reject)=>{lockedResolve=resolve;lockedReject=reject;});
+      const holder=db.tx(async q=>{
+        await q.query('SELECT id FROM callum_v2.commands WHERE id=$1 FOR UPDATE',[pendingAction.id]);
+        lockedResolve();
+        await gate;
+      }).then(()=>null,error=>{lockedReject(error);return error;});
+      let actionRequests,overlap=0,observedKinds=[];
+      try{
+        await locked;
+        actionRequests=origins.map(origin=>post(origin,'/api/commands/claim'));
+        for(let i=0;i<30;i++){
+          const active=(await db.query(`SELECT query FROM [SHOW QUERIES]
+            WHERE query LIKE '%callum_v2.commands%' AND query NOT LIKE '%SHOW QUERIES%'`)).rows;
+          observedKinds=active.map(({query})=>query.includes('FOR UPDATE OF c')?'row_lock':
+            query.includes("status='pending'")?'pending_discovery':
+            query.includes('lease_expires_at')?'expiry_discovery':'other_command_query');
+          overlap=active.length;
+          if(overlap>=2)break;
+          await delay(250);
+        }
+      }finally{
+        releaseLock();
+        const holdError=await holder;
+        if(holdError)throw holdError;
+      }
+      const actionClaims=await Promise.all(actionRequests);
+      assert.ok(overlap>=2,`held lock overlapped ${overlap} command queries: ${observedKinds.join(',')}`);
       assert.ok(actionClaims.every(x=>x.status===200));
       const actions=actionClaims.map(x=>x.data.command).filter(Boolean);
       assert.equal(actions.length,1);
