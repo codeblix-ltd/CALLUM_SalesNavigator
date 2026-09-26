@@ -306,12 +306,31 @@ export class ControlPlane {
     return rows[0].id;
   }
 
-  async recoverExpired(q, operatorId) {
-    const { rows } = await q.query(`SELECT c.*,r.mode,r.status AS run_status,l.linkedin_url,l.profile_key FROM callum_v2.commands c
-      JOIN callum_v2.runs r ON r.id=c.run_id JOIN callum_v2.run_leads l ON l.run_id=c.run_id AND l.lead_id=c.lead_id
+  async expiredCommandIds(q, operatorId) {
+    const { rows } = await q.query(`SELECT c.id FROM callum_v2.commands c
       WHERE c.operator_id=$1 AND ((c.status='leased' AND c.lease_expires_at < now()) OR (c.status='pending' AND c.expires_at < now()))
-      FOR UPDATE OF c`, [operatorId]);
-    for (const c of rows) {
+      ORDER BY c.created_at,c.id`, [operatorId]);
+    return rows;
+  }
+
+  async pendingCandidate(q, installation) {
+    return (await q.query(`SELECT c.id FROM callum_v2.commands c JOIN callum_v2.runs r ON r.id=c.run_id
+      WHERE c.operator_id=$1 AND c.status='pending' AND c.expires_at>now() AND r.status='running'
+      AND (r.installation_id IS NULL OR r.installation_id=$2) ORDER BY c.created_at,c.id LIMIT 1`,
+      [installation.operator_id, installation.id])).rows[0];
+  }
+
+  async recoverExpired(q, operatorId, expiredIds = null) {
+    // Discovery is normally a single-statement read outside the write transaction.
+    // Recheck under a row lock because another claimant may recover an ID first.
+    const expired=expiredIds ?? await this.expiredCommandIds(q,operatorId);
+    for (const { id } of expired) {
+      const c=(await q.query(`SELECT c.*,r.mode,r.status AS run_status,l.linkedin_url,l.profile_key FROM callum_v2.commands c
+        JOIN callum_v2.runs r ON r.id=c.run_id JOIN callum_v2.run_leads l ON l.run_id=c.run_id AND l.lead_id=c.lead_id
+        WHERE c.id=$1 AND c.operator_id=$2
+          AND ((c.status='leased' AND c.lease_expires_at < now()) OR (c.status='pending' AND c.expires_at < now()))
+        FOR UPDATE OF c`, [id,operatorId])).rows[0];
+      if(!c)continue;
       if (commandAfterLeaseExpiry(c.type) === 'reconcile_required') {
         const withdraw=c.type==='EXECUTE_WITHDRAW';
         const comment=c.type==='EXECUTE_COMMENT';
@@ -354,16 +373,24 @@ export class ControlPlane {
   }
 
   async claim(installation) {
-    try { return await this.db.tx(async q => {
+    try {
+      const expired=await this.expiredCommandIds(this.db,installation.operator_id);
+      const discovered=expired.length ? null : await this.pendingCandidate(this.db,installation);
+      return await this.db.tx(async q => {
       const enabled=(await q.query(`SELECT i.disabled,i.token_hash,o.enabled FROM callum_v2.installations i
         JOIN callum_v2.operators o ON o.id=i.operator_id WHERE i.id=$1 AND i.operator_id=$2`,
         [installation.id,installation.operator_id])).rows[0];
       if(!enabled||enabled.disabled||!enabled.enabled||enabled.token_hash!==installation.token_hash)throw new Error('UNAUTHORIZED');
-      await this.recoverExpired(q, installation.operator_id);
+      await this.recoverExpired(q, installation.operator_id, expired);
       const config = await this.activeConfig(q, installation);
+      const candidate=expired.length ? await this.pendingCandidate(q,installation) : discovered;
+      if (!candidate) return { command: null, config: { version: Number(config.version), value: config.config, checksum: config.checksum } };
+      // Lock only the selected command; the operator-wide pending scan above is read-only.
+      // Recheck status and run ownership after acquiring the row lock.
       const { rows } = await q.query(`SELECT c.* FROM callum_v2.commands c JOIN callum_v2.runs r ON r.id=c.run_id
-        WHERE c.operator_id=$1 AND c.status='pending' AND c.expires_at>now() AND r.status='running'
-        AND (r.installation_id IS NULL OR r.installation_id=$2) ORDER BY c.created_at,c.id LIMIT 1 FOR UPDATE OF c`, [installation.operator_id, installation.id]);
+        WHERE c.id=$3 AND c.operator_id=$1 AND c.status='pending' AND c.expires_at>now() AND r.status='running'
+        AND (r.installation_id IS NULL OR r.installation_id=$2) FOR UPDATE OF c`,
+        [installation.operator_id, installation.id, candidate.id]);
       const c = rows[0];
       if (!c) return { command: null, config: { version: Number(config.version), value: config.config, checksum: config.checksum } };
       if (Number(c.config_version) !== Number(config.version)) {

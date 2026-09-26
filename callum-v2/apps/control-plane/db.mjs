@@ -6,18 +6,32 @@ export function openDatabase(url = process.env.COCKROACH_DATABASE_URL) {
   return {
     query: (sql, args) => pool.query(sql, args),
     async tx(fn) {
-      for (let attempt = 0; attempt < 5; attempt++) {
-        const client = await pool.connect();
-        try {
-          await client.query('BEGIN');
-          const value = await fn(client);
+      const maxAttempts = 8;
+      const client = await pool.connect();
+      let committed = false;
+      try {
+        await client.query('BEGIN');
+        await client.query('SAVEPOINT cockroach_restart');
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+          let value;
+          try {
+            value = await fn(client);
+            // In CockroachDB, releasing this special savepoint is the commit point.
+            await client.query('RELEASE SAVEPOINT cockroach_restart');
+          } catch (error) {
+            if (error.code !== '40001' || attempt === maxAttempts - 1) throw error;
+            await client.query('ROLLBACK TO SAVEPOINT cockroach_restart');
+            const backoffMs = Math.min(500, 25 * 2 ** attempt) + Math.floor(Math.random() * 25);
+            await new Promise(resolve => setTimeout(resolve, backoffMs));
+            continue;
+          }
           await client.query('COMMIT');
+          committed = true;
           return value;
-        } catch (error) {
-          await client.query('ROLLBACK').catch(() => {});
-          if (error.code !== '40001' || attempt === 4) throw error;
-          await new Promise(resolve => setTimeout(resolve, 15 * (attempt + 1)));
-        } finally { client.release(); }
+        }
+      } finally {
+        if (!committed) await client.query('ROLLBACK').catch(() => {});
+        client.release();
       }
     },
     close: () => pool.end()
