@@ -18,4 +18,6 @@ The admin event view now exposes selected cohort and daily-limit values for `ope
 
 Config draft and activation events now show their selected version and policy fields in the admin event view. A focused Cockroach case passed one draft and one activation record, no duplicate event for an identical activation, and rollback of an attempted rollout change when event insertion failed. Raw selector config and event details remain absent from the view. Staff attribution remains unavailable until managed admin identity is chosen and deployed.
 
+Installation issuance now appears as a selected event with its ID, extension version, build SHA and actor-bound flag. A focused Cockroach case passed the event and verified that an injected event failure rolls back issuance. The event and admin view omit the token and actor profile key. Staff attribution and token handoff remain open.
+
 These are fixture and local API tests, not a staffed support session or authenticated LinkedIn browser failure. A fully offline browser cannot report until it reconnects, and a local-storage failure cannot persist a receipt; the popup still shows its paused state. The buffered receipts have not been verified in a running Chrome profile. Managed staff identity and an approved retention policy remain prerequisites for broader access.

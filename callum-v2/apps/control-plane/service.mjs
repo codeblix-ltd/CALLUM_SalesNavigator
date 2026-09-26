@@ -53,9 +53,16 @@ export class ControlPlane {
     const actorKey=actorProfileUrl===null?null:profileKeyFromUrl(actorProfileUrl);
     if(actorProfileUrl!==null&&!actorKey)throw new Error('INSTALLATION_ACTOR_INVALID');
     const token = randomBytes(32).toString('base64url');
-    const { rows } = await this.db.query(`INSERT INTO callum_v2.installations(operator_id,token_hash,extension_version,build_sha,protocol_version,actor_profile_key)
-      VALUES ($1,$2,$3,$4,$5,$6) RETURNING id,operator_id,actor_profile_key`, [operatorId, hash(token), extensionVersion, buildSha, PROTOCOL_VERSION, actorKey]);
-    return { ...rows[0], token };
+    return this.db.tx(async q=>{
+      const {rows}=await q.query(`INSERT INTO callum_v2.installations(operator_id,token_hash,extension_version,build_sha,protocol_version,actor_profile_key)
+        VALUES ($1,$2,$3,$4,$5,$6) RETURNING id,operator_id,actor_profile_key`,
+        [operatorId,hash(token),extensionVersion,buildSha,PROTOCOL_VERSION,actorKey]);
+      const issued=rows[0];
+      await this.event(q,{event_key:`installation:${issued.id}:issued`,event_type:'installation_issued',
+        operator_id:operatorId,installation_id:issued.id,extension_version:extensionVersion,
+        build_sha:buildSha,protocol_version:PROTOCOL_VERSION,details:{actorBound:!!actorKey}});
+      return {...issued,token};
+    });
   }
 
   async installation(token) {
@@ -1091,6 +1098,7 @@ export class ControlPlane {
         CASE WHEN event_type='config_drafted' THEN details->>'minExtensionVersion' END AS config_min_extension_version,
         CASE WHEN event_type='config_activated' THEN details->>'channel' END AS config_channel,
         CASE WHEN event_type='config_activated' THEN details->>'rolloutPercent' END AS config_rollout_percent,
+        CASE WHEN event_type='installation_issued' THEN details->>'actorBound' END AS installation_actor_bound,
         CASE WHEN event_type IN ('pay_rule_created','pay_rule_enabled','pay_rule_disabled') THEN details->>'version' END AS pay_rule_version,
         CASE WHEN event_type IN ('pay_rule_created','pay_rule_enabled','pay_rule_disabled') THEN details->>'enabled' END AS pay_rule_enabled,
         created_at FROM callum_v2.events ORDER BY created_at DESC LIMIT 100`,

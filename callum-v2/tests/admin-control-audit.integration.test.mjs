@@ -26,6 +26,9 @@ test('operator policy, installation and kill-switch changes have one sanitized a
         [operatorId])).rows[0];
       assert.equal(unchanged.cohort,'dev');
       assert.equal(unchanged.daily_connection_limit,1,'policy update rolls back with failed audit');
+      await assert.rejects(()=>failedAudit.createInstallation(operatorId,'2.5.2','aaf758d4'),/AUDIT_INJECTED_FAILURE/);
+      assert.equal((await db.query('SELECT count(*)::INT4 AS n FROM callum_v2.installations WHERE operator_id=$1',
+        [operatorId])).rows[0].n,0,'failed issuance leaves no installation');
       const issued=await control.createInstallation(operatorId,'2.5.2','aaf758d4');
       assert.equal((await control.disableOperator(operatorId,true)).changed,true);
       assert.equal((await control.disableOperator(operatorId,true)).changed,false);
@@ -51,6 +54,13 @@ test('operator policy, installation and kill-switch changes have one sanitized a
       assert.deepEqual(rows.filter(x=>x.event_type==='feature_flag_changed').map(x=>x.details.disabled).sort(),[false,true]);
       assert.equal(rows.find(x=>x.event_type==='installation_revoked')?.installation_id,issued.id);
       assert.equal(JSON.stringify(rows).includes(issued.token),false);
+      const issueEvents=(await db.query(`SELECT installation_id,extension_version,build_sha,details FROM callum_v2.events
+        WHERE operator_id=$1 AND event_type='installation_issued'`,[operatorId])).rows;
+      assert.equal(issueEvents.length,1);
+      assert.equal(issueEvents[0].installation_id,issued.id);
+      assert.equal(issueEvents[0].extension_version,'2.5.2');
+      assert.equal(issueEvents[0].build_sha,'aaf758d4');
+      assert.deepEqual(issueEvents[0].details,{actorBound:false});
       const configured=(await db.query(`SELECT details FROM callum_v2.events
         WHERE operator_id=$1 AND event_type='operator_configured' ORDER BY created_at,id`,[operatorId])).rows;
       assert.deepEqual(configured.map(x=>[x.details.cohort,x.details.dailyLimit]).sort(),
@@ -61,6 +71,7 @@ test('operator policy, installation and kill-switch changes have one sanitized a
       assert.deepEqual(visible.filter(x=>x.event_type==='operator_configured')
         .map(x=>[x.operator_cohort,x.operator_daily_limit]).sort(),
         [['dev','1'],['canary','2'],['dev','1']].sort());
+      assert.equal(visible.find(x=>x.event_type==='installation_issued')?.installation_actor_bound,'false');
       assert.equal(visibleFlags.some(x=>Object.hasOwn(x,'details')),false);
       assert.equal(JSON.stringify(visible).includes(issued.token),false);
     }finally{
