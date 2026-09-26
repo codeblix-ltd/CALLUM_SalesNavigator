@@ -2,8 +2,12 @@ import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 
 const extensionPath=resolve(process.argv[2] || 'dist/extension');
-const child=spawn('pnpm.cmd',['dlx','chrome-devtools-mcp@latest','--categoryExtensions','--headless','--isolated','--workspace=.'],{
-  stdio:['pipe','pipe','pipe'],windowsHide:true,shell:true
+const mcpEntry=process.env.V2_CHROME_MCP_ENTRY;
+const mcpCommand=mcpEntry ? process.execPath : 'pnpm.cmd';
+const mcpArgs=mcpEntry ? [mcpEntry,'--categoryExtensions','--headless','--isolated','--workspace=.'] :
+  ['dlx','chrome-devtools-mcp@latest','--categoryExtensions','--headless','--isolated','--workspace=.'];
+const child=spawn(mcpCommand,mcpArgs,{
+  stdio:['pipe','pipe','pipe'],windowsHide:true,shell:!mcpEntry
 });
 let buffer='',nextId=0;const pending=new Map();
 child.stdout.on('data',chunk=>{buffer+=chunk.toString();let pos;while((pos=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,pos).trim();buffer=buffer.slice(pos+1);if(!line.startsWith('{'))continue;try{const x=JSON.parse(line);if(x.id&&pending.has(x.id)){const p=pending.get(x.id);pending.delete(x.id);x.error?p.reject(new Error(x.error.message)):p.resolve(x.result);}}catch{}}});

@@ -1,6 +1,6 @@
 # Extension validation
 
-Environment: Chrome DevTools MCP launched with `--categoryExtensions --headless --isolated --workspace=.` against a dedicated temporary Chrome profile. Latest packaged extension version `2.3.0`, build SHA `7a1e5a3dd88c` from implementation commit `7a1e5a3dd88c9eda430ba483b97e2b230ecd9997`.
+Environment: Chrome DevTools MCP launched with `--categoryExtensions --headless --isolated --workspace=.` against a dedicated temporary Chrome profile. Latest locally reviewed package: extension `2.5.2`, build SHA `bc97f36091b2`, adapter `7`.
 
 | Command | Result | Proves | Does not prove |
 | --- | --- | --- | --- |
@@ -26,3 +26,5 @@ After the recovery commit, the 2.4.0 package was rebuilt with SHA `a142581d708c`
 Adapter 6 / extension 2.5.0 was locally packaged from implementation commit `8b04b5c7f891`. `pnpm test` passed 38 unit checks (10 DB-gated checks skipped); targeted Cockroach comment, concurrency and authorization integrations passed separately. The authenticated Chrome profile was inspected read-only to revise the selector contract, but the 2.5 package has not been installed there or exercised as a running extension. See [AUTHENTICATED-DOM.md](AUTHENTICATED-DOM.md).
 
 The 2.5.0 package then passed the isolated Chrome DevTools MCP lifecycle: installed/listed as `blkkihmcpjhihcfihfoijkgnmfpeigbd`, reloaded, triggered, popup and service worker observed with SHA `8b04b5c7f891` and adapter 6, no popup console errors, then uninstalled. Read-only shadow run `5fec94ba-9d69-4e54-b2dd-82a3a8da2af6` delivered dev config 27 to that package and completed profile and comment-state commands with `PROFILE_MISMATCH` after LinkedIn authwall. This proves command delivery and safe mismatch handling in the isolated browser, not authenticated DOM behavior.
+
+The 2.5.2 package passed an isolated lifecycle check using the already cached Chrome DevTools MCP 1.10.1 CLI, selected through `V2_CHROME_MCP_ENTRY` without an install. It installed/listed as `blkkihmcpjhihcfihfoijkgnmfpeigbd`, reloaded, opened the popup, returned an idle service-worker status with build SHA `bc97f36091b2` and adapter 7, showed no popup console errors, and uninstalled. The older global MCP 0.4.0 lacked extension tools, so it could not run this check. The isolated profile has no LinkedIn installation token or authenticated session; no 2.5.2 backend round trip or authenticated page behavior was verified.
